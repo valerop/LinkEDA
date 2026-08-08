@@ -1,0 +1,66 @@
+---
+title: "Data, R and multiple imputation"
+description: "Supported imports, the LinkEDA–R bridge and current multiple-imputation support."
+---
+
+<p class="eyebrow">Data workflow</p>
+
+# Data, R and multiple imputation
+
+## Import data
+
+Choose **File > Import Data…**. The native chooser exposes a **Data format** menu so the file list can be filtered to one of the formats implemented below.
+
+| Data format | Extensions | R component used |
+|---|---|---|
+| Delimited text | `.csv`, `.tsv`, `.txt` | Base R import functions |
+| Excel | `.xls`, `.xlsx` | `readxl` |
+| SPSS | `.sav`, `.zsav` | `haven` |
+| Stata | `.dta` | `haven` |
+| SAS | `.sas7bdat`, `.xpt` | `haven` |
+| R objects | `.rds`, `.rda`, `.RData` | Base R serialization |
+
+The program reads the file through R, registers a data set and opens its data sheet. An `.RData` or `.rda` file must contain at least one data-frame-like object. Labelled values from foreign formats are preserved where the import path supports them.
+
+The programmatic equivalent is `ls_import_data(path)`, with specialised helpers such as `ls_import_spss()`, `ls_import_excel()` and `ls_import_rds()`.
+
+## The native application and R
+
+Calling `LinkEDA()` starts a separate native application process. The R package and the native process communicate through a local session protocol (named pipes and local task notifications on macOS). The native layer owns windows, events and drawing; the shared core owns plot state, case identities and hit testing; R retains the registered data and performs statistical calculations.
+
+This division has practical consequences:
+
+- LinkEDA does not replace the active R session.
+- Data can be supplied at launch with `LinkEDA(data)` or chosen from the connected R session.
+- Menu commands can open data from R or return edited data/selected rows to R.
+- Model fitting, tests, smoothing and pooling are requested from R and displayed in native result windows.
+- **Quit LinkEDA** closes the workbench; it is not intended to quit R.
+
+## Exchange data with R
+
+The **File** menu contains the connection commands used by the current implementation. **Open Data from R…** lists suitable data-frame-like objects. Return commands send the active data or selected rows back to the connected R session. Cancelling a return leaves the R environment unchanged.
+
+When starting from code, these are the two principal forms:
+
+```r
+library(LinkEDA)
+
+LinkEDA()          # start first; choose or import data later
+LinkEDA(mtcars)    # register and open a data frame immediately
+```
+
+## Selections and analysis scopes
+
+Selections are row identities, not a new copy of the data. The current selection can be named and retained as an analysis scope. Saved selections appear alongside **Selected**, **Panel**, **Plot** and **All** scopes, and may be combined or used to make a subset. An analysis output should therefore identify the named selection it used rather than merely saying “selected observations”.
+
+[How linked selection works across plots](linked-eda.qmd#selection-across-views)
+
+## Multiple imputation
+
+Multiple imputation is an experimental workflow built around `mice`. LinkEDA can configure imputation methods, construct a predictor matrix and retain multiple completed versions of a data set. Available methods depend on variable type; current choices include predictive mean matching, normal regression, logistic or polytomous regression, proportional odds, CART and random forest where supported by `mice`.
+
+Some analyses can pool estimates over the completed data sets, including selected descriptive, mean-comparison, linear-model and generalized-model workflows. Coverage is not uniform: non-parametric mean tests and contingency tables are currently excluded from the multiple-imputation path, and individual analysis windows may impose additional restrictions. Treat pooled output as experimental and check the method reported in the result window.
+
+::: {.callout-note}
+The presence of a command in the interface does not imply that every variant can pool imputed data. LinkEDA should report an explicit limitation instead of silently analysing a single completed data set.
+:::

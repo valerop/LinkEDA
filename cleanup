@@ -1,0 +1,4 @@
+#!/bin/sh
+rm -f inst/bin/rlispstat_backend
+rm -f inst/bin/LinkEDA
+rm -f src/*.o src/*.so src/symbols.rds

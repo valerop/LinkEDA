@@ -1,0 +1,32 @@
+/* Cache-busting responsive corrections for the initial public preview. */
+.experimental-banner {
+  box-sizing: border-box;
+  display: block !important;
+  grid-template-columns: none !important;
+  padding: 1rem clamp(1.3rem, 4vw, 4rem) !important;
+  width: 100%;
+}
+
+.experimental-banner > p {
+  display: block;
+  margin: 0 auto;
+  max-width: 1120px;
+  min-width: 0;
+  overflow-wrap: normal;
+  white-space: normal;
+  width: 100%;
+  word-break: normal;
+}
+
+.band {
+  padding-left: clamp(1.3rem, 4vw, 4rem) !important;
+  padding-right: clamp(1.3rem, 4vw, 4rem) !important;
+}
+
+@media (max-width: 767px) {
+  .experimental-banner,
+  .band {
+    padding-left: 1.3rem !important;
+    padding-right: 1.3rem !important;
+  }
+}

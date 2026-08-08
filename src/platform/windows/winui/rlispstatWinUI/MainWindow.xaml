@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="rlispstatWinUI.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Background="White">
+        <Canvas x:Name="ReceivedPointsCanvas" />
+        <TextBlock x:Name="PlotTitle"
+                   Margin="24"
+                   FontSize="22"
+                   Text="LinkEDA scatterplot" />
+    </Grid>
+</Window>

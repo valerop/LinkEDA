@@ -1,0 +1,7 @@
+^build$
+^output$
+^(LinkEDA|rlispstat)[.]Rcheck$
+^(LinkEDA|rlispstat)_.*[.]tar[.]gz$
+^Rplots[.]pdf$
+^tests/testthat/Rplots[.]pdf$
+^src/.*[.](o|so|dylib)$

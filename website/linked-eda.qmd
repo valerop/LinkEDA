@@ -1,0 +1,64 @@
+---
+title: "Linked exploratory data analysis"
+description: "How LinkEDA preserves case identity and selection across native views."
+---
+
+<p class="eyebrow">One data set · one set of row identities</p>
+
+# Linked exploratory data analysis
+
+LinkEDA treats selection as analytical state. A point is not merely coloured inside one chart: it represents a row in the registered data set, and that row identity can be recognised by every compatible view in the same linked group.
+
+## Selection across views {#selection-across-views}
+
+When a plot is created from an active data set, it receives the data set's linking group and a mapping from each graphical mark back to original row indices. The portable core stores the selected indices. A click or brush updates that shared state, not a private selection inside the window.
+
+The update then follows this path:
+
+:::: {.steps}
+::: {.step}
+<div class="step-number">1</div>
+<div><h3>Hit testing identifies cases</h3><p>The plot converts the pointer position to plot coordinates and determines which point, line, bin or bar segment was hit. Aggregate marks resolve to all rows that contributed to them.</p></div>
+:::
+
+::: {.step}
+<div class="step-number">2</div>
+<div><h3>The selection operation is applied</h3><p>Replace, add, subtract and toggle operations update the shared set of original row indices. Brushing applies the same logic to every case inside the rectangle.</p></div>
+:::
+
+::: {.step}
+<div class="step-number">3</div>
+<div><h3>Linked views are notified</h3><p>Scatterplots, boxplots, histograms, bar charts, trellis panels and the data sheet that share the group receive the new state and redraw their corresponding cases.</p></div>
+:::
+
+::: {.step}
+<div class="step-number">4</div>
+<div><h3>The theme supplies the appearance</h3><p>Selection is shown using the theme's selected and unselected colours. Linking does not force a hard-coded colour, so the same selection remains consistent with the active visual theme.</p></div>
+:::
+::::
+
+This means, for example, that selecting a point in a scatterplot can highlight the same car in a second scatterplot, its point in a grouped boxplot and its row in the data sheet. Clicking a bar segment is different only in scale: because the segment summarises several rows, all contributing observations become selected.
+
+## What linking does—and does not—share
+
+Linking shares **case selection**. It does not force plots to use the same variables, coordinate system, scale or aggregation. Two windows can therefore show different statistical representations while referring to the same observational units.
+
+Plots created with linking disabled, or from separately registered data sets without a common mapping, do not participate in the selection. Missing values can also mean that a selected row has no visible mark in a particular plot even though the row remains selected in the data set.
+
+## Selection operations
+
+- **Replace** makes the newly hit cases the selection.
+- **Add** keeps the existing selection and includes new cases.
+- **Subtract** removes hit cases.
+- **Toggle** reverses the state of hit cases.
+- **Clear**, **Invert** and **All** operate on the current linked universe.
+
+The same operations are available to point selection and brushing where the plot supports them.
+
+## From selection to analysis
+
+A transient selection can be given a name and retained as an analysis scope. The named scope then appears in the scope menu and can be reused after the on-screen selection changes. This distinction matters for reproducibility: result windows can state which named set of rows was analysed instead of ambiguously referring to “the selected cases”. Saved scopes can also be combined or used to create a subset through the **Data** menu.
+
+::: {.callout-note}
+Linked highlighting is exploratory evidence, not an inferential test. If an apparent subgroup matters, define an appropriate analysis scope and fit a model or test that addresses the question explicitly.
+:::

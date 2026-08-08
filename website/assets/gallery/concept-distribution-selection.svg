@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 340" role="img" aria-label="Conceptual grouped distribution showing selection">
+  <rect width="560" height="340" fill="#f0f5f4"/><path d="M74 277H512M74 277V52" stroke="#60717a" stroke-width="2"/>
+  <g stroke="#76a29d" stroke-width="18"><path d="M152 255V119"/><path d="M278 255V84"/><path d="M404 255V150"/></g><g stroke="#c85b45" stroke-width="18"><path d="M139 225V162"/><path d="M265 207V114"/><path d="M391 235V177"/></g>
+  <g fill="#142b36" font-family="Arial" font-size="14"><text x="136" y="304">Group A</text><text x="262" y="304">Group B</text><text x="388" y="304">Group C</text></g><text x="74" y="30" fill="#0e6673" font-family="Arial" font-size="14" font-weight="700" letter-spacing="1">CONCEPTUAL DISTRIBUTION VIEW</text><text x="292" y="67" fill="#60717a" font-family="Arial" font-size="13" text-anchor="middle">Highlighted marks represent the linked selection</text>
+</svg>

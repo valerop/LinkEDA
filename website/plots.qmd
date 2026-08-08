@@ -1,0 +1,133 @@
+---
+title: "Plots"
+description: "Visual examples of every plot currently available in LinkEDA."
+toc-depth: 2
+---
+
+<p class="eyebrow">Plot menu · visual reference</p>
+
+# Plot examples
+
+The native captures show LinkEDA itself. The remaining examples were generated reproducibly in R from `mtcars` or `airquality`, using the variables and panel structures accepted by the corresponding LinkEDA plot.
+
+## Main plots
+
+:::: {.visual-gallery}
+::: {.visual-card .featured}
+<img src="assets/screenshots/scatterplot.png" alt="Native LinkEDA scatterplot of fuel economy against vehicle weight.">
+<div class="visual-card-caption"><h3>Scatterplot…</h3><span>Native capture · `mtcars`: `mpg` × `wt`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/time-series.png" alt="Time-series example showing daily temperature with a line for each month.">
+<div class="visual-card-caption"><h3>Time Series…</h3><span>R example · `airquality`: `Day`, `Temp`, series `Month`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/scatterplot-matrix.png" alt="Scatterplot-matrix example for mpg, wt, hp and qsec, with variable names on the diagonal.">
+<div class="visual-card-caption"><h3>Scatterplot Matrix…</h3><span>R example · `mtcars`: `mpg`, `wt`, `hp`, `qsec`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/parallel-coordinates.png" alt="Parallel-coordinates example with standardized vehicle variables and selected lines in orange.">
+<div class="visual-card-caption"><h3>Parallel Coordinates…</h3><span>R example · six standardized `mtcars` variables</span></div>
+:::
+
+::: {.visual-card .featured}
+<img src="assets/screenshots/boxplot.png" alt="Native LinkEDA boxplot and violin display of fuel economy by cylinder count.">
+<div class="visual-card-caption"><h3>Boxplot…</h3><span>Native capture · `mtcars`: `mpg` by `cyl`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/histogram.png" alt="Histogram example of fuel economy with density curve and rug marks.">
+<div class="visual-card-caption"><h3>Histogram…</h3><span>R example · `mtcars`: `mpg`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/bar-chart.png" alt="Bar-chart example showing the number of cars for each cylinder category.">
+<div class="visual-card-caption"><h3>Bar Chart…</h3><span>R example · `mtcars`: `cyl`</span></div>
+:::
+::::
+
+## Trellis Plots
+
+:::: {.visual-gallery .trellis-gallery}
+::: {.visual-card .wide}
+<img src="assets/plot-examples/trellis-scatterplot.png" alt="Trellis scatterplot example of mpg against wt with one panel for each cylinder category.">
+<div class="visual-card-caption"><h3>Scatterplot…</h3><span>`mpg` × `wt` · conditioned by `cyl`</span></div>
+:::
+
+::: {.visual-card .wide}
+<img src="assets/plot-examples/trellis-time-series.png" alt="Trellis time-series example with one daily temperature panel for each month.">
+<div class="visual-card-caption"><h3>Time Series…</h3><span>`Temp` over `Day` · conditioned by `Month`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/trellis-boxplot.png" alt="Trellis boxplot example of mpg by cylinders with panels for automatic and manual transmissions.">
+<div class="visual-card-caption"><h3>Boxplot…</h3><span>`mpg` by `cyl` · conditioned by `am`</span></div>
+:::
+
+::: {.visual-card}
+<img src="assets/plot-examples/trellis-bar-chart.png" alt="Trellis bar-chart example of cylinder counts with panels for transmission type.">
+<div class="visual-card-caption"><h3>Bar Chart…</h3><span>`cyl` counts · conditioned by `am`</span></div>
+:::
+
+::: {.visual-card .wide}
+<img src="assets/plot-examples/trellis-histogram.png" alt="Trellis histogram example of mpg with one panel for each cylinder category.">
+<div class="visual-card-caption"><h3>Histogram…</h3><span>`mpg` · conditioned by `cyl`</span></div>
+:::
+::::
+
+## Interactive demonstrations
+
+:::: {.demo-gallery}
+::: {.demo-card .demo-wide}
+<img src="assets/demos/linked-bar-selection.gif" alt="Animated native LinkEDA capture: selecting the four-cylinder bar highlights the corresponding observations in a linked scatterplot.">
+<div class="demo-card-caption"><h3>Selection across linked plots</h3><span>Select a bar → the same cases light up in the scatterplot</span></div>
+:::
+
+::: {.demo-card}
+<img src="assets/demos/point-colors-regression.gif" alt="Animated native LinkEDA capture: groups of points receive different colors and separate regression lines are displayed for each point color.">
+<div class="demo-card-caption"><h3>Point colors and regressions</h3><span>Color selected points → regression by point color</span></div>
+:::
+
+::: {.demo-card}
+<img src="assets/demos/selected-regression.gif" alt="Animated native LinkEDA capture: a regression line is recalculated when a different subset of scatterplot points is selected.">
+<div class="demo-card-caption"><h3>Regression for selected points</h3><span>Change the selection → the fitted line updates</span></div>
+:::
+
+::: {.demo-card .demo-wide}
+<img src="assets/demos/parallel-variable-change.gif" alt="Animated native LinkEDA capture: clicking the cyl label in a parallel-coordinates plot opens its variable menu and replaces cyl with qsec.">
+<div class="demo-card-caption"><h3>Change a parallel-coordinate variable</h3><span>Click `cyl` → Replace Variable → `qsec`</span></div>
+:::
+::::
+
+## Context menu to analysis
+
+<img class="screenshot-wide" src="assets/screenshots/context-menu.gif" alt="Animated native capture: a LinkEDA boxplot context menu opens, Descriptive statistics is chosen, and the resulting Table 1 window appears in full.">
+
+::: {.visual-note}
+Right-click → **Analyze This Boxplot** → **Descriptive statistics** → native **Table 1** window.
+:::
+
+## Linked selection
+
+:::: {.selection-strip}
+::: {.selection-step}
+<span>1</span><strong>Select a point, row or aggregate mark</strong>
+:::
+::: {.selection-arrow aria-hidden="true"}
+→
+:::
+::: {.selection-step}
+<span>2</span><strong>LinkEDA retains the original row identities</strong>
+:::
+::: {.selection-arrow aria-hidden="true"}
+→
+:::
+::: {.selection-step}
+<span>3</span><strong>Every linked view redraws the same cases</strong>
+:::
+::::
+
+[See the linked-selection model](linked-eda.qmd#selection-across-views).
