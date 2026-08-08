@@ -20,8 +20,8 @@ project:
 website:
   title: "LinkEDA"
   description: "Experimental exploratory data analysis with native, interactive, linked graphics and R."
-  site-url: "https://valerop.github.io/rlispstat/"
-  repo-url: "https://github.com/valerop/rlispstat"
+  site-url: "https://valerop.github.io/LinkEDA/"
+  repo-url: "https://github.com/valerop/LinkEDA"
   open-graph: true
   favicon: assets/LinkEDA.png
   navbar:

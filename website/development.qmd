@@ -7,7 +7,7 @@ description: "Current architecture, project status and authorship of LinkEDA."
 
 # Development
 
-LinkEDA is experimental software authored by **Pedro Valero-Mora** at the **Universitat de València**. Its public application and R package are currently named LinkEDA. The source repository retains an earlier technical identifier in its URL; changing that internal identity is outside the scope of the website and could break existing build or installation paths.
+LinkEDA is experimental software authored by **Pedro Valero-Mora** at the **Universitat de València**. Its public application, R package and source repository are named LinkEDA. Some internal source-code identifiers retain earlier technical names for compatibility; changing those identifiers is outside the scope of the website and could break existing build or installation paths.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ Interface names, result layouts, file compatibility and model options can change
 
 ## Source and feedback
 
-The current code and issue history are available in the [project repository](https://github.com/valerop/rlispstat). Useful reports include the exact LinkEDA version, R version, macOS version, data format or a minimal reproducible data set, and the precise steps that led to the problem.
+The current code is available in the [project repository](https://github.com/valerop/LinkEDA), and reports can be filed through the [issue tracker](https://github.com/valerop/LinkEDA/issues). Useful reports include the exact LinkEDA version, R version, macOS version, data format or a minimal reproducible data set, and the precise steps that led to the problem.
 
 ## Author
 

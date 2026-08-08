@@ -45,7 +45,7 @@ xcode-select --install
 From the directory that contains this package:
 
 ```sh
-R CMD INSTALL rlispstat
+R CMD INSTALL .
 ```
 
 Or from inside the package directory:
