@@ -1,0 +1,59 @@
+---
+title: "Analyses"
+description: "Native LinkEDA analysis windows and the commands represented by each family."
+toc-depth: 2
+---
+
+<p class="eyebrow">Analyze menu · window gallery</p>
+
+# Analysis windows
+
+All images on this page are real LinkEDA windows or real LinkEDA result views. No substitute statistical graphics are used here.
+
+## Descriptives
+
+::: {.analysis-window}
+<img src="assets/analysis-windows/table-1.png" alt="Native LinkEDA Table 1 window showing descriptive statistics for mpg grouped by cyl.">
+<div class="analysis-window-meta"><h3>Table 1</h3><div class="menu-tags"><span>Table 1…</span><span>Descriptive statistics from a plot</span></div></div>
+:::
+
+::: {.analysis-window}
+<img src="assets/analysis-windows/correlation-matrix.png" alt="Native LinkEDA Pearson Correlation Matrix window for mpg, wt, hp and qsec.">
+<div class="analysis-window-meta"><h3>Pearson Correlation Matrix</h3><div class="menu-tags"><span>Correlation Matrix…</span></div></div>
+:::
+
+::: {.menu-family}
+<strong>Other commands in Descriptives</strong>
+<div class="menu-tags"><span>Contingency Table…</span><span>Principal Components / Factor Analysis…</span><span>Quick Cluster…</span></div>
+:::
+
+## Test
+
+::: {.analysis-window .result-detail}
+<img src="assets/analysis-windows/linear-model-trellis.png" alt="Real LinkEDA statistical result view showing panel-specific estimates and confidence intervals.">
+<div class="analysis-window-meta"><h3>Inferential result table</h3><div class="menu-tags"><span>One-Sample t Test…</span><span>Independent-Samples t Test…</span><span>Paired-Samples t Test…</span><span>One-Way ANOVA…</span></div></div>
+:::
+
+## Regression
+
+::: {.analysis-window}
+<img src="assets/analysis-windows/binary-regression.png" alt="Native LinkEDA Binary Regression window fitted to the mtcars data.">
+<div class="analysis-window-meta"><h3>Binary Regression</h3><div class="menu-tags"><span>Binary Regression…</span><span>Logit link</span><span>R fit</span></div></div>
+:::
+
+::: {.analysis-window .wide-window}
+<img src="assets/analysis-windows/linear-model-trellis-window.png" alt="Native LinkEDA Linear Model Trellis window with one model panel for each cylinder category.">
+<div class="analysis-window-meta"><h3>Linear Model Trellis</h3><div class="menu-tags"><span>Linear Model Trellis…</span><span>Add predictor to every panel</span></div></div>
+:::
+
+::: {.menu-family}
+<strong>Other commands in Regression</strong>
+<div class="menu-tags"><span>Linear Model…</span><span>Compare Linear Models…</span><span>Compare Binary Regression Models…</span><span>Generalized Linear Model…</span><span>Compare Generalized Linear Models…</span></div>
+:::
+
+## Mixed Models
+
+::: {.menu-family .experimental-family}
+<strong>Experimental windows</strong>
+<div class="menu-tags"><span>Linear Mixed Model…</span><span>Generalized Linear Mixed Model…</span></div>
+:::

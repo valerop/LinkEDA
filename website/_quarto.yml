@@ -1,0 +1,71 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+    - getting-started.qmd
+    - data-and-r.qmd
+    - analyses.qmd
+    - plots.qmd
+    - linked-eda.qmd
+    - release-notes.qmd
+    - development.qmd
+    - license.qmd
+  resources:
+    - assets/LinkEDA.png
+    - assets/screenshots/**
+    - assets/plot-examples/**
+    - assets/analysis-windows/**
+    - assets/demos/**
+
+website:
+  title: "LinkEDA"
+  description: "Experimental exploratory data analysis with native, interactive, linked graphics and R."
+  site-url: "https://valerop.github.io/LinkEDA/"
+  repo-url: "https://github.com/valerop/LinkEDA"
+  open-graph: true
+  favicon: assets/LinkEDA.png
+  navbar:
+    logo: assets/LinkEDA.png
+    logo-alt: "LinkEDA application icon"
+    left:
+      - href: index.qmd
+        text: Overview
+      - href: getting-started.qmd
+        text: Getting started
+      - href: data-and-r.qmd
+        text: Data & R
+      - href: analyses.qmd
+        text: Analyses
+      - href: plots.qmd
+        text: Plots
+      - href: linked-eda.qmd
+        text: Linked EDA
+      - href: release-notes.qmd
+        text: Release
+      - href: development.qmd
+        text: Development
+  page-footer:
+    left: "LinkEDA — experimental software"
+    center: "Pedro Valero-Mora · Universitat de València"
+    right: "[Documentation licence](license.qmd)"
+
+format:
+  html:
+    theme: cosmo
+    css:
+      - assets/styles.css
+      - assets/layout-fixes-20260803.css
+    toc: true
+    toc-location: right
+    smooth-scroll: true
+    link-external-newwindow: true
+    code-copy: true
+    include-in-header:
+      - text: |
+          <meta name="theme-color" content="#0b5ea8">
+          <meta property="og:image" content="assets/LinkEDA.png">
+          <meta property="og:image:alt" content="LinkEDA application icon">
+
+execute:
+  freeze: auto

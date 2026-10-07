@@ -1,0 +1,42 @@
+---
+title: "Release v0.0.113R"
+description: "Public release notes and download verification for LinkEDA 0.0.113."
+---
+
+<p class="eyebrow">Public release</p>
+
+# LinkEDA v0.0.113R
+
+`v0.0.113R` identifies the public release. The R package and application use
+the numeric functional version `0.0.113`; the final `R` is the publication
+marker for the build made available to other users.
+
+## Highlights
+
+- Two double-click Windows installers: a complete edition with a private R
+  runtime and a smaller edition for users who already have R.
+- Native linked data sheets, plots, selections, explicit case exclusions and
+  immutable analysis scopes.
+- Saved selections continue to identify their original cases while later
+  exclusions are respected by active analyses.
+- Linear, generalized, count, scale, dimensionality, missing-data and
+  multiple-imputation workflows calculated in R.
+- Shared R verification recipes and publication exports.
+- GPL version 3 or later for the software and CC BY-NC-ND 4.0 for original
+  published documentation.
+- A more resilient desktop launcher that remains active while large native
+  windows are maximized or resized.
+
+[Download LinkEDA](getting-started.qmd#download){.button .button-primary}
+
+## Release files
+
+The GitHub Release contains both installers, their ZIP equivalents and the
+corresponding source required by the distributed GPL components. The complete
+edition also carries the exact R 4.4.2 source archive and third-party notices.
+
+## Platform status
+
+Windows 11 x64 is the validated binary platform for this release. The shared
+source is ready for macOS continuation, but a matching macOS binary still
+requires compilation and native validation on macOS.

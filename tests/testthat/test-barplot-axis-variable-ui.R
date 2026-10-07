@@ -1,0 +1,27 @@
+test_that("macOS bar-chart X-axis labels open their variable chooser", {
+  root <- linkeda_source_test_root()
+  path <- file.path(root, "src", "platform", "macos", "linkeda_macos_app.mm")
+  source <- paste(readLines(path, warn = FALSE), collapse = "\n")
+
+  implementation_start <- regexpr("@implementation BarplotView", source, fixed = TRUE)
+  expect_gt(implementation_start[[1]], 0L)
+  implementation <- substr(source, implementation_start[[1]], nchar(source))
+  implementation_end <- regexpr("\n@end", implementation, fixed = TRUE)
+  expect_gt(implementation_end[[1]], 0L)
+  implementation <- substr(implementation, 1L, implementation_end[[1]])
+
+  method_start <- regexpr("- \\(void\\)mouseDown:\\(NSEvent \\*\\)event", implementation)
+  expect_gt(method_start[[1]], 0L)
+  method_tail <- substr(implementation, method_start[[1]], nchar(implementation))
+  axis_hit <- regexpr("NSPointInRect\\(point, \\[self xAxisLabelRect\\]\\)", method_tail)
+  category_hit <- regexpr("\\[self xCategoryComponentAtPoint:point", method_tail)
+  expect_gt(axis_hit[[1]], 0L)
+  expect_gt(category_hit[[1]], 0L)
+  expect_lt(axis_hit[[1]], category_hit[[1]])
+
+  chooser_start <- regexpr("- \\(void\\)showXVariableMenuAtPoint:\\(NSPoint\\)point", implementation)
+  expect_gt(chooser_start[[1]], 0L)
+  chooser <- substr(implementation, chooser_start[[1]], chooser_start[[1]] + 300L)
+  expect_match(chooser, "popUpMenuPositioningItem:nil atLocation:point inView:self", fixed = TRUE)
+  expect_false(grepl("mouseEventWithType", chooser, fixed = TRUE))
+})

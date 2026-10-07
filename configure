@@ -1,0 +1,118 @@
+#!/bin/sh
+set -eu
+
+mkdir -p inst/bin
+
+case "$(uname -s)" in
+  Darwin)
+    : "${CXX:=clang++}"
+    rm -f inst/bin/LinkEDA
+    $CXX -std=c++17 \
+      src/core/backend_runtime.cpp \
+      src/core/analysis_initialization.cpp \
+      src/core/binary_regression_export.cpp \
+      src/core/analysis_scope.cpp \
+      src/core/application_state.cpp \
+      src/core/barplot_model.cpp \
+      src/core/boxplot_model.cpp \
+      src/core/command_dispatcher.cpp \
+      src/core/command_model.cpp \
+      src/core/correlation_model.cpp \
+      src/core/dataset_model.cpp \
+      src/core/linkeda_document.cpp \
+      src/core/dataset_protocol.cpp \
+      src/core/dendrogram_model.cpp \
+      src/core/dimensionality_model.cpp \
+      src/core/scale_analysis_model.cpp \
+      src/core/export_model.cpp \
+      src/core/trellis_scatterplot_model.cpp \
+      src/core/format_model.cpp \
+      src/core/glm_model.cpp \
+      src/core/histogram_model.cpp \
+      src/core/main_r_task_model.cpp \
+      src/core/mean_comparison_model.cpp \
+      src/core/mixed_model.cpp \
+      src/core/model_trellis_model.cpp \
+      src/core/model_terms.cpp \
+      src/core/plot_coordinator.cpp \
+      src/core/plot_geometry.cpp \
+      src/core/provenance_model.cpp \
+      src/core/recording_model.cpp \
+      src/core/scatter_matrix_model.cpp \
+      src/core/scatterplot_model.cpp \
+      src/core/selection_model.cpp \
+      src/core/session_controller.cpp \
+      src/core/snapshot_album_model.cpp \
+      src/core/statistics_model.cpp \
+      src/core/string_utils.cpp \
+      src/core/svg_writer.cpp \
+      src/core/table1_model.cpp \
+      src/core/welcome_model.cpp \
+      src/core/window_note_model.cpp \
+      -x objective-c++ \
+      src/platform/macos/macos_posix_io.cpp \
+      src/platform/macos/binary_regression_pdf_macos.mm \
+      src/platform/macos/linkeda_macos_app.mm \
+      src/native/backend_macos.mm \
+      -framework Cocoa \
+      -framework ImageIO \
+      -framework UniformTypeIdentifiers \
+      -o inst/bin/LinkEDA
+    chmod +x inst/bin/LinkEDA
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    : "${CXX:=g++}"
+    rm -f inst/bin/LinkEDA_backend.exe inst/bin/rlispstat_backend.exe
+    $CXX -std=c++17 \
+      src/core/backend_runtime.cpp \
+      src/core/analysis_initialization.cpp \
+      src/core/binary_regression_export.cpp \
+      src/core/analysis_scope.cpp \
+      src/core/application_state.cpp \
+      src/core/barplot_model.cpp \
+      src/core/boxplot_model.cpp \
+      src/core/command_dispatcher.cpp \
+      src/core/command_model.cpp \
+      src/core/correlation_model.cpp \
+      src/core/dataset_model.cpp \
+      src/core/linkeda_document.cpp \
+      src/core/dataset_protocol.cpp \
+      src/core/dendrogram_model.cpp \
+      src/core/dimensionality_model.cpp \
+      src/core/scale_analysis_model.cpp \
+      src/core/export_model.cpp \
+      src/core/trellis_scatterplot_model.cpp \
+      src/core/format_model.cpp \
+      src/core/glm_model.cpp \
+      src/core/histogram_model.cpp \
+      src/core/main_r_task_model.cpp \
+      src/core/mean_comparison_model.cpp \
+      src/core/mixed_model.cpp \
+      src/core/model_trellis_model.cpp \
+      src/core/model_terms.cpp \
+      src/core/plot_coordinator.cpp \
+      src/core/plot_geometry.cpp \
+      src/core/provenance_model.cpp \
+      src/core/recording_model.cpp \
+      src/core/scatter_matrix_model.cpp \
+      src/core/scatterplot_model.cpp \
+      src/core/selection_model.cpp \
+      src/core/session_controller.cpp \
+      src/core/snapshot_album_model.cpp \
+      src/core/statistics_model.cpp \
+      src/core/string_utils.cpp \
+      src/core/svg_writer.cpp \
+      src/core/table1_model.cpp \
+      src/core/welcome_model.cpp \
+      src/core/window_note_model.cpp \
+      src/platform/windows/linkeda_windows_backend.cpp \
+      src/platform/windows/windows_emf_export.cpp \
+      src/native/backend_windows.cpp \
+      -lws2_32 -lgdi32 -luser32 \
+      -o inst/bin/LinkEDA_backend.exe
+    ;;
+  *)
+    echo "LinkEDA: no native backend is implemented for this platform yet." >&2
+    echo "LinkEDA: the R package will install, but interactive plotting will fail." >&2
+    ;;
+esac

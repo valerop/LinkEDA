@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="LinkEDA exploratory data analysis through linked views">
+  <rect width="1200" height="630" fill="#fbfbf8"/>
+  <rect x="70" y="82" width="10" height="466" fill="#0e6673"/>
+  <text x="120" y="195" fill="#0e6673" font-family="Arial, sans-serif" font-size="24" font-weight="700" letter-spacing="4">LINKEDA</text>
+  <text x="120" y="295" fill="#142b36" font-family="Georgia, serif" font-size="72">Exploratory data analysis</text>
+  <text x="120" y="375" fill="#142b36" font-family="Georgia, serif" font-size="72">through linked views</text>
+  <circle cx="930" cy="220" r="75" fill="#e6f0ee"/><circle cx="1050" cy="310" r="80" fill="#eff4f3"/><circle cx="902" cy="420" r="70" fill="#e6f0ee"/>
+  <path d="M930 220 L1050 310 L902 420 Z" fill="none" stroke="#0e6673" stroke-width="4"/>
+  <circle cx="930" cy="220" r="10" fill="#c85b45"/><circle cx="1050" cy="310" r="10" fill="#c85b45"/><circle cx="902" cy="420" r="10" fill="#c85b45"/>
+</svg>

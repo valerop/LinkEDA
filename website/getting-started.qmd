@@ -1,0 +1,87 @@
+---
+title: "Getting started"
+description: "Download, install and start the public LinkEDA release on Windows."
+---
+
+<p class="eyebrow">Public release v0.0.113R</p>
+
+# Download LinkEDA
+
+The current public release contains LinkEDA 0.0.113 for **64 bit Windows 11**.
+It is experimental software and should be used with copies of important data.
+
+## Choose an installer {#download}
+
+::: {.download-card}
+<img src="assets/LinkEDA.png" alt="LinkEDA application icon.">
+<div>
+<p class="eyebrow">Recommended · Windows x64 · about 196 MB</p>
+<h3>Complete installer</h3>
+<p>Includes a private copy of R 4.4.2. Choose this edition if you want the
+fewest installation decisions or if R is not already installed.</p>
+<p><a class="button button-primary" href="https://github.com/valerop/LinkEDA/releases/download/v0.0.113R/Instalar-LinkEDA-0.0.113-Windows-Completo.exe">Download complete installer</a></p>
+</div>
+:::
+
+::: {.download-card}
+<img src="assets/LinkEDA.png" alt="LinkEDA application icon.">
+<div>
+<p class="eyebrow">Windows x64 · about 53 MB</p>
+<h3>Standard installer</h3>
+<p>Uses an existing installation of R 4.1 or newer and installs LinkEDA in that
+R version's personal library.</p>
+<p><a class="button button-primary" href="https://github.com/valerop/LinkEDA/releases/download/v0.0.113R/Instalar-LinkEDA-0.0.113-Windows.exe">Download standard installer</a></p>
+</div>
+:::
+
+Both installers create a **LinkEDA** shortcut on the desktop. Neither requires
+Rtools, Visual Studio or Windows Developer Mode. Internet access is required
+while the required R packages are installed.
+
+### File checksums
+
+| File | SHA-256 |
+|---|---|
+| Complete installer | `9427D998EEFB6028B9B671CF6C6DC5564F77856F8753A2DFA4622FEEF9591516` |
+| Standard installer | `55AA9C5BD2019589ADE97863CF73FECEC784BCF8ECBA2CA10AF351E0F1301832` |
+
+## Install and start
+
+1. Close LinkEDA if an older version is running.
+2. Double-click the downloaded installer.
+3. Wait while it installs LinkEDA and the required R packages.
+4. Open **LinkEDA** from the desktop shortcut.
+
+Running the newer installer also updates an existing installation; uninstalling
+the previous version is not required.
+
+According to the Windows security configuration, the first run may show a
+reputation warning because this experimental build is not code signed. Check
+that the filename and SHA-256 value match this page before running it.
+
+## Start with data
+
+The Welcome window can import a supported data file or open an example. Users
+of the standard edition can also start from an R data frame:
+
+```r
+library(LinkEDA)
+LinkEDA(mtcars)
+```
+
+The complete edition runs its own private R session behind the desktop
+application.
+
+## macOS
+
+The macOS application is being synchronized with the same LinkEDA 0.0.113
+source release. A current macOS binary is not included in v0.0.113R. The
+repository contains the source and a detailed macOS continuation document for
+building and validating the matching native application.
+
+## Report a problem
+
+Include the public release tag (`v0.0.113R`), the LinkEDA version shown by the
+application (`0.0.113`), Windows version, installer edition and the steps that
+triggered the problem. Unexpected native interface errors are recorded in
+`%LOCALAPPDATA%\LinkEDA\logs\LinkEDA.log`.

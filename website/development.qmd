@@ -1,0 +1,38 @@
+---
+title: "Development"
+description: "Current architecture, project status and authorship of LinkEDA."
+---
+
+<p class="eyebrow">Architecture and status</p>
+
+# Development
+
+LinkEDA is experimental software authored by **Pedro Valero-Mora** at the **Universitat de València**. Its public application, R package and source repository are named LinkEDA. Some internal source-code identifiers retain earlier technical names for compatibility; changing those identifiers is outside the scope of the website and could break existing build or installation paths.
+
+## Architecture
+
+::: {.architecture}
+<div><span class="arch-label">R session</span><strong>Registered data, import helpers, statistical fitting, smoothing, pooling and the public launcher</strong></div>
+<span class="arch-arrow" aria-hidden="true">↓ local session protocol</span>
+<div><span class="arch-label">Portable C++ core</span><strong>Commands, plot models, panel layout, coordinate transforms, case identity and hit testing</strong></div>
+<span class="arch-arrow" aria-hidden="true">↓ platform adapter</span>
+<div><span class="arch-label">Native interface</span><strong>Windows and macOS windows, dialogs, menus, events and native drawing</strong></div>
+:::
+
+The R call starts a separate native process. This prevents the application event loop from replacing the role of R and keeps the statistical engine explicit. Requests and results cross a local protocol; the core remains portable, while WinUI and Cocoa/AppKit behaviour stays in the corresponding platform layer.
+
+## Current status
+
+The current public release is `v0.0.113R`, containing LinkEDA `0.0.113`. Windows 11 x64 is the validated binary platform. The matching macOS application is being compiled and validated from the same shared source version. Some commands are more mature than others, optional analyses require additional R packages, and multiple-imputation coverage differs by analysis. The Windows installers are not code signed.
+
+Interface names, result layouts, file compatibility and model options can change without a migration period. Keep original data and analysis scripts outside the application, and verify important results directly in R.
+
+## Source and feedback
+
+The current code is available in the [project repository](https://github.com/valerop/LinkEDA), and reports can be filed through the [issue tracker](https://github.com/valerop/LinkEDA/issues). Useful reports include the release tag, LinkEDA version, operating-system and R versions, installer edition, data format or a minimal reproducible data set, and the precise steps that led to the problem.
+
+## Author
+
+**Pedro Valero-Mora**, **Universitat de València**
+
+No additional biographical or institutional claims are implied by this site.

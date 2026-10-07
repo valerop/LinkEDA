@@ -1,0 +1,97 @@
+---
+title: "LinkEDA"
+description: "Interactive exploratory data analysis with linked graphics and R."
+page-layout: full
+toc: false
+title-block: false
+---
+
+::::: {.hero}
+:::: {.hero-copy}
+<p class="eyebrow">Linked exploratory data analysis</p>
+
+# See a case once. Follow it everywhere.
+
+LinkEDA is a native desktop application for exploratory data analysis. Data sheets, interactive plots and statistical analyses remain connected while R performs the statistical computation. The current public release is available for 64 bit Windows.
+
+::: {.hero-actions}
+[Download v0.0.113R](getting-started.qmd#download){.button .button-primary}
+[Explore the plots](plots.qmd){.button .button-quiet}
+:::
+
+<p class="hero-note">Experimental software by Pedro Valero-Mora, Universitat de València.</p>
+::::
+
+:::: {.hero-visual}
+<img class="app-icon-hero" src="assets/LinkEDA.png" alt="LinkEDA application icon showing a data table connected to a graph.">
+::::
+:::::
+
+::: {.experimental-banner}
+**Public experimental release.** Windows release `v0.0.113R` contains LinkEDA `0.0.113`. The interface, analyses, file formats and R integration may change in future versions. Keep copies of important data and verify consequential analyses from the exported R recipe.
+:::
+
+::: {.section-intro}
+## Exploration as a connected activity
+
+A row selected in one view is the same observation everywhere else. LinkEDA preserves that identity across compatible plots and the data sheet, making it possible to move from a pattern to the cases behind it and then to a statistical summary.
+:::
+
+:::: {.feature-grid}
+::: {.feature-card}
+<p class="card-index">01</p>
+### Inspect
+
+Import a supported file or pass a data frame from R. Inspect values and variable metadata in a native data sheet.
+:::
+
+::: {.feature-card}
+<p class="card-index">02</p>
+### Link
+
+Select or brush observations in a plot. Other linked views update using the shared row identities rather than a separate copy of the data.
+:::
+
+::: {.feature-card}
+<p class="card-index">03</p>
+### Analyse
+
+Move from descriptive summaries and tests to regression, generalized and mixed models. Statistical fitting is delegated to R.
+:::
+::::
+
+:::: {.showcase-two}
+::: {.showcase-copy}
+<p class="eyebrow">A real application window</p>
+## Start with a file, an R object or an example
+
+The Welcome Window is the entry point when LinkEDA starts without a data set. It can open a supported file, list suitable objects from the connected R session, or load the included `mtcars` and Alien examples.
+
+[Installation and first launch](getting-started.qmd)
+:::
+
+::: {.showcase-image}
+<img src="assets/screenshots/linkeda-welcome.png" alt="The real LinkEDA Welcome Window with commands to choose an R data frame, open a data file, or load example data.">
+:::
+::::
+
+:::: {.showcase-two .reverse}
+::: {.showcase-image}
+<img src="assets/screenshots/scatterplot.png" alt="A real LinkEDA scatterplot of fuel economy against vehicle weight from mtcars.">
+:::
+
+::: {.showcase-copy}
+<p class="eyebrow">Native, direct and contextual</p>
+## The graph is the interface
+
+Plot menus expose selection, analysis, export and display actions in context. Variable names and conditioning strips can also act as controls in plots that support replacement.
+
+[See every implemented plot](plots.qmd)
+:::
+::::
+
+::: {.project-credit}
+### Project
+
+LinkEDA is authored by **Pedro Valero-Mora** at the **Universitat de València**. The public interface, package and source repository are called LinkEDA.
+:::

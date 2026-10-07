@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 340" role="img" aria-label="Conceptual data table with selected rows">
+  <rect width="560" height="340" fill="#f0f5f4"/><rect x="45" y="52" width="470" height="241" fill="#fff" stroke="#b7cbc7"/>
+  <text x="67" y="82" fill="#142b36" font-family="Arial" font-size="14" font-weight="700">CASE</text><text x="180" y="82" fill="#142b36" font-family="Arial" font-size="14" font-weight="700">WEIGHT</text><text x="315" y="82" fill="#142b36" font-family="Arial" font-size="14" font-weight="700">MPG</text><text x="421" y="82" fill="#142b36" font-family="Arial" font-size="14" font-weight="700">GROUP</text>
+  <path d="M45 96H515M45 128H515M45 160H515M45 192H515M45 224H515M45 256H515M142 52V293M276 52V293M395 52V293" stroke="#d7e0df"/>
+  <rect x="46" y="129" width="468" height="31" fill="#d9ece9"/><rect x="46" y="193" width="468" height="31" fill="#d9ece9"/>
+  <g fill="#60717a" font-family="Arial" font-size="13"><text x="67" y="118">01</text><text x="67" y="150">07</text><text x="67" y="182">12</text><text x="67" y="214">19</text><text x="67" y="246">24</text><text x="67" y="278">31</text><text x="180" y="118">2.62</text><text x="180" y="150">3.44</text><text x="180" y="182">2.18</text><text x="180" y="214">3.12</text><text x="180" y="246">2.75</text><text x="180" y="278">3.88</text><text x="315" y="118">21.0</text><text x="315" y="150">17.8</text><text x="315" y="182">26.0</text><text x="315" y="214">15.5</text><text x="315" y="246">19.2</text><text x="315" y="278">14.7</text></g>
+  <text x="45" y="30" fill="#0e6673" font-family="Arial" font-size="14" font-weight="700" letter-spacing="1">CONCEPTUAL DATA SHEET</text>
+</svg>

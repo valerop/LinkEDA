@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <Platform Name="ARM64" />
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="LinkEDA.vcxproj" Id="c79b7057-953f-46f7-9463-6b3237c6c277">
+    <Deploy />
+  </Project>
+</Solution>

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 340" role="img" aria-label="Conceptual scatterplot with selected points">
+  <rect width="560" height="340" fill="#f0f5f4"/><path d="M71 275H510M71 275V47" stroke="#60717a" stroke-width="2"/>
+  <rect x="224" y="101" width="164" height="114" fill="#d9ece9" opacity=".8" stroke="#0e6673" stroke-dasharray="7 5"/>
+  <g fill="#79a5a0"><circle cx="112" cy="238" r="6"/><circle cx="151" cy="221" r="6"/><circle cx="184" cy="199" r="6"/><circle cx="206" cy="166" r="6"/><circle cx="414" cy="116" r="6"/><circle cx="452" cy="95" r="6"/><circle cx="481" cy="74" r="6"/><circle cx="324" cy="88" r="6"/></g>
+  <g fill="#c85b45"><circle cx="251" cy="181" r="8"/><circle cx="277" cy="154" r="8"/><circle cx="305" cy="174" r="8"/><circle cx="333" cy="131" r="8"/><circle cx="362" cy="144" r="8"/></g>
+  <text x="71" y="28" fill="#0e6673" font-family="Arial" font-size="14" font-weight="700" letter-spacing="1">CONCEPTUAL SCATTERPLOT</text><text x="290" y="316" fill="#60717a" font-family="Arial" font-size="13" text-anchor="middle">Selected cases are highlighted in context</text>
+</svg>

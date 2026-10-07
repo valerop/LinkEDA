@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="LinkEDA mark">
+  <rect width="64" height="64" rx="10" fill="#0e6673"/>
+  <path d="M17 45V18h6v21h20v6H17zm10-8 6-8 5 5 10-13 4 3-13 17-6-6-3 4-3-2z" fill="#fff"/>
+</svg>

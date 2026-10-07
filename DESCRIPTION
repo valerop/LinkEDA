@@ -1,0 +1,57 @@
+Package: LinkEDA
+Title: Native Interactive Statistical Graphics and Analyses
+Version: 0.0.113
+Authors@R: person("Pedro", "Valero-Mora", role = c("aut", "cre"), email = "valerop@uv.es")
+Author: Pedro Valero-Mora [aut, cre]
+Maintainer: Pedro Valero-Mora <valerop@uv.es>
+Description: A native desktop environment for exploratory data analysis and
+    statistical modelling from R. It provides linked statistical graphics,
+    editable data sheets, shared selections and analysis scopes, model
+    diagnostics, multiple-imputation analyses, publication exports, and
+    executable R verification recipes.
+License: GPL (>= 3)
+Encoding: UTF-8
+Depends:
+    R (>= 4.1.0)
+Roxygen: list(markdown = TRUE)
+SystemRequirements: macOS with clang and Cocoa/AppKit frameworks; Windows 11
+    with Rtools for the TCP backend, and Visual Studio with the Windows App SDK
+    for the optional native WinUI desktop application.
+Imports:
+    digest,
+    effectsize,
+    statmod,
+    withr,
+    janitor,
+    later,
+    mice,
+    miceadds,
+    parallel,
+    psych
+Suggests:
+    GPArotation,
+    naniar,
+    MASS,
+    betareg,
+    coda,
+    emmeans,
+    gamlss,
+    gamlss.dist,
+    ggplot2,
+    gtsummary,
+    glmmTMB,
+    haven,
+    lme4,
+    lmerTest,
+    mitml,
+    knitr,
+    readxl,
+    rstatix,
+    svglite,
+    testthat (>= 3.0.0),
+    tinytable,
+    tibble,
+    tidyselect,
+    xml2,
+    writexl
+Config/testthat/edition: 3
