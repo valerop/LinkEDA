@@ -56,7 +56,8 @@ Select or brush observations in a plot. Other linked views update using the shar
 <p class="card-index">03</p>
 ### Analyse
 
-Move from descriptive summaries and tests to regression, generalized and mixed models. Statistical fitting is delegated to R.
+Move from descriptive summaries and tests to linear, binary, count,
+positive-continuous and proportion models. Statistical fitting is delegated to R.
 :::
 ::::
 

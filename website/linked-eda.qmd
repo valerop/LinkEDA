@@ -57,7 +57,13 @@ The same operations are available to point selection and brushing where the plot
 
 ## From selection to analysis
 
-A transient selection can be given a name and retained as an analysis scope. The named scope then appears in the scope menu and can be reused after the on-screen selection changes. This distinction matters for reproducibility: result windows can state which named set of rows was analysed instead of ambiguously referring to “the selected cases”. Saved scopes can also be combined or used to create a subset through the **Data** menu.
+A transient selection can be given a name and retained as an analysis scope. The
+named scope then appears in the scope panel and can be reused after the on-screen
+selection changes. Explicit case exclusion is a separate, persistent filter: it
+removes a case from the effective included, live-selection, unselected and saved
+scopes until **Include all** restores it. This distinction lets result windows
+identify the scope used instead of ambiguously referring to “the selected
+cases”.
 
 ::: {.callout-note}
 Linked highlighting is exploratory evidence, not an inferential test. If an apparent subgroup matters, define an appropriate analysis scope and fit a model or test that addresses the question explicitly.

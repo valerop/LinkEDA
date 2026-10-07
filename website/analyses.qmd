@@ -1,6 +1,6 @@
 ---
 title: "Analyses"
-description: "Native LinkEDA analysis windows and the commands represented by each family."
+description: "Analysis windows and commands available in the public LinkEDA release."
 toc-depth: 2
 ---
 
@@ -8,7 +8,8 @@ toc-depth: 2
 
 # Analysis windows
 
-All images on this page are real LinkEDA windows or real LinkEDA result views. No substitute statistical graphics are used here.
+The window captures on this page come from LinkEDA. The command names match the
+public **Analyze** menu in release `v0.0.113R`.
 
 ## Descriptives
 
@@ -29,31 +30,26 @@ All images on this page are real LinkEDA windows or real LinkEDA result views. N
 
 ## Test
 
-::: {.analysis-window .result-detail}
-<img src="assets/analysis-windows/linear-model-trellis.png" alt="Real LinkEDA statistical result view showing panel-specific estimates and confidence intervals.">
-<div class="analysis-window-meta"><h3>Inferential result table</h3><div class="menu-tags"><span>One-Sample t Test…</span><span>Independent-Samples t Test…</span><span>Paired-Samples t Test…</span><span>One-Way ANOVA…</span></div></div>
+::: {.menu-family}
+<strong>Commands in Test</strong>
+<div class="menu-tags"><span>One-Sample Tests…</span><span>Two-Sample Tests…</span><span>Paired-Samples Tests…</span><span>One-Way ANOVA…</span></div>
 :::
 
-## Regression
+## Modeling
 
 ::: {.analysis-window}
 <img src="assets/analysis-windows/binary-regression.png" alt="Native LinkEDA Binary Regression window fitted to the mtcars data.">
-<div class="analysis-window-meta"><h3>Binary Regression</h3><div class="menu-tags"><span>Binary Regression…</span><span>Logit link</span><span>R fit</span></div></div>
-:::
-
-::: {.analysis-window .wide-window}
-<img src="assets/analysis-windows/linear-model-trellis-window.png" alt="Native LinkEDA Linear Model Trellis window with one model panel for each cylinder category.">
-<div class="analysis-window-meta"><h3>Linear Model Trellis</h3><div class="menu-tags"><span>Linear Model Trellis…</span><span>Add predictor to every panel</span></div></div>
+<div class="analysis-window-meta"><h3>Binary Regression</h3><div class="menu-tags"><span>Binary › Fit Model…</span><span>Logit link</span><span>R fit</span></div></div>
 :::
 
 ::: {.menu-family}
-<strong>Other commands in Regression</strong>
-<div class="menu-tags"><span>Linear Model…</span><span>Compare Linear Models…</span><span>Compare Binary Regression Models…</span><span>Generalized Linear Model…</span><span>Compare Generalized Linear Models…</span></div>
+<strong>Model families in the public menu</strong>
+<div class="menu-tags"><span>Linear</span><span>Binary</span><span>Count</span><span>Positive Continuous</span><span>Proportion</span></div>
+<p>Each family provides <strong>Fit Model…</strong> and <strong>Compare Models…</strong>.</p>
 :::
 
-## Mixed Models
+## Additional analysis
 
-::: {.menu-family .experimental-family}
-<strong>Experimental windows</strong>
-<div class="menu-tags"><span>Linear Mixed Model…</span><span>Generalized Linear Mixed Model…</span></div>
+::: {.menu-family}
+<div class="menu-tags"><span>Scale Analysis…</span></div>
 :::

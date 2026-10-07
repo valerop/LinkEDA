@@ -51,7 +51,13 @@ LinkEDA(mtcars)    # register and open a data frame immediately
 
 ## Selections and analysis scopes
 
-Selections are row identities, not a new copy of the data. The current selection can be named and retained as an analysis scope. Saved selections appear alongside **Selected**, **Panel**, **Plot** and **All** scopes, and may be combined or used to make a subset. An analysis output should therefore identify the named selection it used rather than merely saying “selected observations”.
+Selections are row identities, not a new copy of the data. The floating scope
+panel offers **Included cases**, **Current selection (live)**, **Unselected
+included cases** and any named scopes saved from an earlier selection. A saved
+scope retains its original membership, while cases explicitly excluded later
+remain outside the effective scope used by an analysis. **Include all** restores
+explicitly excluded cases. An analysis output should therefore identify the
+scope it used rather than merely saying “selected observations”.
 
 [How linked selection works across plots](linked-eda.qmd#selection-across-views)
 

@@ -60,8 +60,8 @@ publication export:
 - highlighted selected points;
 - linked brushing for plots that share a `group`;
 - R functions to query and clear the current selection;
-- linear, generalized, count, binary, mixed, scale, dimensionality and
-  missing-data analyses;
+- linear, binary, count, positive-continuous, proportion, scale,
+  dimensionality and missing-data analyses;
 - linked diagnostics and immutable analysis scopes;
 - vector/raster export, publication tables, and executable R verification
   recipes.

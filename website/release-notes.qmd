@@ -19,8 +19,8 @@ marker for the build made available to other users.
   immutable analysis scopes.
 - Saved selections continue to identify their original cases while later
   exclusions are respected by active analyses.
-- Linear, generalized, count, scale, dimensionality, missing-data and
-  multiple-imputation workflows calculated in R.
+- Linear, binary, count, positive-continuous, proportion, scale,
+  dimensionality, missing-data and multiple-imputation workflows calculated in R.
 - Shared R verification recipes and publication exports.
 - GPL version 3 or later for the software and CC BY-NC-ND 4.0 for original
   published documentation.
