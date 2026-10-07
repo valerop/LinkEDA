@@ -236,8 +236,9 @@ a:hover { color: var(--sea-dark); }
 .analysis-window-meta h3 { font-family: "Avenir Next", Avenir, sans-serif; font-size: 1.08rem; font-weight: 700; margin: 0; }
 .menu-family { background: #eef4f4; margin: 1.5rem 0 3.5rem; padding: 1.2rem; }
 .experimental-family { border-left: 4px solid #d29a24; }
-.menu-tags { display: flex; flex-wrap: wrap; gap: .45rem; }
-.menu-tags span { background: #e5ecef; border: 1px solid #cfdbdf; color: #314650; font-size: .78rem; padding: .28rem .55rem; }
+.menu-tags { color: #314650; display: flex; flex-wrap: wrap; font-size: .86rem; gap: .3rem .65rem; }
+.menu-tags span { display: inline; }
+.menu-tags span + span::before { color: #8ba0a8; content: "·"; margin-right: .65rem; }
 .menu-family .menu-tags { margin-top: .75rem; }
 
 .architecture { background: #eff4f3; margin: 2rem 0 3.5rem; padding: 2rem; }
