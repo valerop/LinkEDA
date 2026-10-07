@@ -81,6 +81,11 @@ building and validating the matching native application.
 
 ## Report a problem
 
+Report bugs through the [LinkEDA issue tracker on
+GitHub](https://github.com/valerop/LinkEDA/issues). Open a new issue and include
+the information below. Do not attach confidential data; use a small anonymous
+example when data are needed to reproduce the problem.
+
 Include the public release tag (`v0.0.113R`), the LinkEDA version shown by the
 application (`0.0.113`), Windows version, installer edition and the steps that
 triggered the problem. Unexpected native interface errors are recorded in
