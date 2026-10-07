@@ -65,6 +65,27 @@ scope it used rather than merely saying “selected observations”.
 
 Multiple imputation is an experimental workflow built around `mice`. LinkEDA can configure imputation methods, construct a predictor matrix and retain multiple completed versions of a data set. Available methods depend on variable type; current choices include predictive mean matching, normal regression, logistic or polytomous regression, proportional odds, CART and random forest where supported by `mice`.
 
+### Import an existing `mice` imputation
+
+LinkEDA can import and analyse an existing **`mice::mids` object** saved as an
+`.rds` file. A `mids` object is the object returned directly by `mice()`:
+
+```r
+imp <- mice::mice(data, m = 20)
+saveRDS(imp, "my-imputation.rds")
+```
+
+Choose **File > Import Data…** in LinkEDA and select the `.rds` file. LinkEDA
+recognises the `mids` object, retains the original incomplete data and the
+separate completed data sets, and enables the compatible multiple-imputation
+analyses, pooling and diagnostics. The same object can be imported from R with
+`ls_import_mice(imp)` or `ls_import_mice("my-imputation.rds")`.
+
+The file must contain the original `mids` object. A data frame produced by
+`mice::complete()`, a list of completed data sets, or a fitted or pooled
+`mira`/`mipo` result does not retain all the information LinkEDA requires for
+its multiple-imputation workflow.
+
 Some analyses can pool estimates over the completed data sets, including selected descriptive, mean-comparison, linear-model and generalized-model workflows. Coverage is not uniform: non-parametric mean tests and contingency tables are currently excluded from the multiple-imputation path, and individual analysis windows may impose additional restrictions. Treat pooled output as experimental and check the method reported in the result window.
 
 ::: {.callout-note}
