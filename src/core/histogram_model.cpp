@@ -76,8 +76,9 @@ std::vector<Rect> HistogramBinRects(const HistogramLayout &layout)
         return rects;
     }
     const std::size_t n = !layout.values.empty() ? layout.values.size() : layout.counts.size();
+    const Rect contentRect = ZeroBaselineContentRect(layout.plotRect);
     rects.reserve(n);
-    const double slotWidth = layout.plotRect.width / static_cast<double>(std::max<std::size_t>(1, n));
+    const double slotWidth = contentRect.width / static_cast<double>(std::max<std::size_t>(1, n));
     const double gap = std::max(0.0, layout.gap);
     for (std::size_t i = 0; i < n; ++i) {
         const double value = !layout.values.empty()
@@ -85,10 +86,10 @@ std::vector<Rect> HistogramBinRects(const HistogramLayout &layout)
             : static_cast<double>(std::max(0, layout.counts[i]));
         const double maximum = !layout.values.empty()
             ? layout.maxValue : static_cast<double>(std::max(1, layout.maxCount));
-        const double h = layout.plotRect.height * value / maximum;
+        const double h = contentRect.height * value / maximum;
         rects.push_back({
-            layout.plotRect.x + slotWidth * static_cast<double>(i) + gap / 2.0,
-            layout.plotRect.y + layout.plotRect.height - h,
+            contentRect.x + slotWidth * static_cast<double>(i) + gap / 2.0,
+            contentRect.y + contentRect.height - h,
             std::max(1.0, slotWidth - gap),
             h
         });
@@ -115,8 +116,11 @@ std::optional<std::size_t> HistogramBinIndexAtPoint(const HistogramLayout &layou
         return std::nullopt;
     }
     const std::size_t n = !layout.values.empty() ? layout.values.size() : layout.counts.size();
-    const double slotWidth = layout.plotRect.width / static_cast<double>(std::max<std::size_t>(1, n));
-    std::size_t index = static_cast<std::size_t>(std::floor((point.x - layout.plotRect.x) / slotWidth));
+    const Rect contentRect = ZeroBaselineContentRect(layout.plotRect);
+    if (point.x < contentRect.x || point.x > contentRect.x + contentRect.width)
+        return std::nullopt;
+    const double slotWidth = contentRect.width / static_cast<double>(std::max<std::size_t>(1, n));
+    std::size_t index = static_cast<std::size_t>(std::floor((point.x - contentRect.x) / slotWidth));
     index = std::min(index, n - 1);
     return index;
 }
@@ -340,39 +344,54 @@ std::vector<HistogramBarRenderItem> BuildHistogramBarRenderPlan(
             item.countLabel = std::to_string(rows.size());
         }
 
-        if (showColorSegments) {
-            std::map<std::string, int> colorCounts;
-            int selectedCount = 0;
+        if (showColorSegments && !rows.empty()) {
+            struct ColorCounts {
+                int unselected = 0;
+                int selected = 0;
+            };
+            // std::map gives every bin the same stable colour order.  The
+            // empty key represents LinkEDA's default case colour and sorts
+            // before named/manual colours.
+            std::map<std::string, ColorCounts> countsByColor;
             for (CaseId row : rows) {
                 auto colorIt = rowColors.find(row);
-                if (colorIt != rowColors.end() && !colorIt->second.empty()) {
-                    colorCounts[colorIt->second] += 1;
-                }
-                if (selection.find(row) != selection.end()) {
-                    selectedCount += 1;
-                }
+                const std::string colorKey = colorIt != rowColors.end()
+                    ? colorIt->second : std::string();
+                ColorCounts &counts = countsByColor[colorKey];
+                if (selection.find(row) != selection.end()) ++counts.selected;
+                else ++counts.unselected;
             }
-            const double maximum = !layout.values.empty()
-                ? std::max(1.0, layout.maxValue)
-                : static_cast<double>(std::max(1, layout.maxCount));
-            const double baseline = layout.plotRect.y + layout.plotRect.height;
-            auto subsetRect = [&](int count) {
-                const double height = layout.plotRect.height * static_cast<double>(count) / maximum;
-                return Rect{item.rect.x, baseline - height, item.rect.width, height};
+
+            // Segment heights partition the already computed bin geometry.
+            // Consequently the sum remains the bin height for count, percent,
+            // density, trellis, scoped, and imputed displays alike.
+            const double unitHeight = item.rect.height /
+                static_cast<double>(rows.size());
+            double cursor = item.rect.y + item.rect.height;
+            auto appendSegment = [&](const std::string &colorKey, int count,
+                                     bool selected) {
+                if (count <= 0) return;
+                const double height = unitHeight * static_cast<double>(count);
+                Rect segmentRect{item.rect.x, cursor - height,
+                                 item.rect.width, height};
+                cursor -= height;
+                if (!IsValidRect(segmentRect) || !(segmentRect.height > 0.0)) return;
+                const bool defaultColor = colorKey.empty();
+                HistogramBarSegment segment{
+                    segmentRect, colorKey,
+                    selected && defaultColor ? 0.30 : 1.0,
+                    defaultColor
+                };
+                if (selected) item.selectedSegments.push_back(std::move(segment));
+                else item.colorSegments.push_back(std::move(segment));
             };
-            for (const auto &entry : colorCounts) {
-                Rect overlay = subsetRect(entry.second);
-                if (IsValidRect(overlay) && overlay.height > 0.0) {
-                    item.colorSegments.push_back(
-                        HistogramBarSegment{overlay, entry.first, 0.18, false});
-                }
-            }
-            if (selectedCount > 0) {
-                Rect overlay = subsetRect(selectedCount);
-                if (IsValidRect(overlay) && overlay.height > 0.0) {
-                    item.selectedSegments.push_back(
-                        HistogramBarSegment{overlay, std::string(), 0.30, true});
-                }
+            for (const auto &entry : countsByColor) {
+                // Keep both intensities of one hue adjacent: intense selected
+                // cases at the bottom and pale unselected
+                // cases above, matching LinkEDA bar-chart semantics. Selection
+                // is not a separate colour stack.
+                appendSegment(entry.first, entry.second.selected, true);
+                appendSegment(entry.first, entry.second.unselected, false);
             }
         }
 
@@ -397,7 +416,7 @@ std::vector<HistogramRugRenderItem> BuildHistogramRugRenderPlan(
     }
 
     plan.reserve(cases.size());
-    const double baseline = layout.plotRect.y + layout.plotRect.height;
+    const double baseline = ZeroBaselineY(layout.plotRect, 0.0);
     for (const HistogramRugCase &rugCase : cases) {
         if (rugCase.caseId <= 0 || rugCase.binIndex >= rects.size()) {
             continue;
@@ -529,7 +548,7 @@ HistogramRenderPlan BuildHistogramRenderPlan(const HistogramRenderInput &input)
         plan.rugs = BuildHistogramRugRenderPlan(input.layout, input.rugCases);
     }
     plan.density = BuildHistogramDensityRenderPlan(
-        input.layout.plotRect,
+        ZeroBaselineContentRect(input.layout.plotRect),
         input.densityCurves,
         input.densityXMinimum,
         input.densityXMaximum,
@@ -569,8 +588,47 @@ std::vector<HistogramMenuOption> HistogramDensityModeMenuOptions()
     };
 }
 
+std::vector<HistogramMenuOption> HistogramBinningRuleMenuOptions()
+{
+    return {{"Sturges", "sturges", "HIST_SET_BINNING_RULE|sturges"},
+            {"Freedman–Diaconis", "fd", "HIST_SET_BINNING_RULE|fd"},
+            {"Scott", "scott", "HIST_SET_BINNING_RULE|scott"},
+            {"Square root", "sqrt", "HIST_SET_BINNING_RULE|sqrt"}};
+}
+
+std::vector<HistogramMenuOption> HistogramBinCountMenuOptions(std::size_t currentCount)
+{
+    std::vector<HistogramMenuOption> options;
+    for (int count : {5, 10, 15, 20, 30, 40}) {
+        const std::string value = std::to_string(count);
+        options.push_back({value, value, "HIST_SET_BINS|" + value,
+                           true, currentCount == static_cast<std::size_t>(count)});
+    }
+    return options;
+}
+
+std::optional<int> HistogramBinCountForChoice(const PlotModel &plot, const std::string &choice)
+{
+    const auto rules = HistogramBinningRuleMenuOptions();
+    if (std::any_of(rules.begin(), rules.end(), [&](const auto &rule) { return rule.value == choice; })) {
+        std::vector<double> values;
+        if (plot.kind == "histogram") {
+            for (const auto &point : plot.histogramPoints) values.push_back(point.x);
+        } else {
+            for (const auto &point : plot.points) values.push_back(point.x);
+        }
+        return HistogramBinCountForRule(values, choice);
+    }
+    if (choice.empty() || choice.find_first_not_of("0123456789") != std::string::npos) return std::nullopt;
+    const double count = std::strtod(choice.c_str(), nullptr);
+    if (count < 1 || count > 200) return std::nullopt;
+    return static_cast<int>(count);
+}
+
 HistogramMenuState BuildHistogramMenuState(const std::string &xLabel,
                                            bool showCounts,
+                                           bool showTickMarks,
+                                           bool showTickLabels,
                                            bool showRug,
                                            bool showDensity,
                                            const std::string &densityMode)
@@ -580,6 +638,20 @@ HistogramMenuState BuildHistogramMenuState(const std::string &xLabel,
         showCounts ? "Hide Counts" : "Show Counts",
         showCounts ? "hide_counts" : "show_counts",
         "HIST_TOGGLE_COUNTS"
+    };
+    state.tickMarks = {
+        showTickMarks ? "Hide Tick Marks" : "Show Tick Marks",
+        showTickMarks ? "hide_tick_marks" : "show_tick_marks",
+        "HIST_TOGGLE_TICK_MARKS",
+        true,
+        showTickMarks
+    };
+    state.tickLabels = {
+        showTickLabels ? "Hide Tick Labels" : "Show Tick Labels",
+        showTickLabels ? "hide_tick_labels" : "show_tick_labels",
+        "HIST_TOGGLE_TICK_LABELS",
+        true,
+        showTickLabels
     };
     state.rug = {
         showRug ? "Hide Rug" : "Show Rug",

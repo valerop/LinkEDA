@@ -4,19 +4,25 @@
     <ApplicationDefinition Include="App.xaml" />
   </ItemGroup>
   <ItemGroup>
-    <Page Include="MainWindow.xaml" />
-  </ItemGroup>
-  <ItemGroup>
-    <Midl Include="MainWindow.idl" />
-  </ItemGroup>
-  <ItemGroup>
     <ClCompile Include="pch.cpp" />
+    <ClCompile Include="ApplicationMenu.cpp" />
+    <ClCompile Include="DataSheetView.cpp" />
     <ClCompile Include="ScatterPlotView.cpp" />
+    <ClCompile Include="WindowBranding.cpp" />
+    <ClCompile Include="WelcomeWindow.cpp" />
+    <ClCompile Include="TableExportService.cpp" />
+    <ClCompile Include="WorkflowWindows.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="pch.h" />
+    <ClInclude Include="ApplicationMenu.h" />
+    <ClInclude Include="DataSheetView.h" />
     <ClInclude Include="ScatterPlotView.h" />
+    <ClInclude Include="WindowBranding.h" />
+    <ClInclude Include="WelcomeWindow.h" />
+    <ClInclude Include="TableExportService.h" />
+    <ClInclude Include="WorkflowWindows.h" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="Assets\Wide310x150Logo.scale-200.png">
@@ -28,7 +34,7 @@
     <Image Include="Assets\Square150x150Logo.scale-200.png">
       <Filter>Assets</Filter>
     </Image>
-    <Image Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png">
+    <Image Include="Assets\Target24.png">
       <Filter>Assets</Filter>
     </Image>
     <Image Include="Assets\Square44x44Logo.scale-200.png">
@@ -40,6 +46,32 @@
     <Image Include="Assets\LockScreenLogo.scale-200.png">
       <Filter>Assets</Filter>
     </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Assets\LinkEDA.ico">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\Inter-Variable.ttf">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\SourceSans3-Variable.ttf">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\IBMPlexSans-Variable.ttf">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\OFL-Inter.txt">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\OFL-SourceSans3.txt">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\OFL-IBMPlexSans.txt">
+      <Filter>Assets</Filter>
+    </Content>
+    <Content Include="Assets\Fonts\README.txt">
+      <Filter>Assets</Filter>
+    </Content>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="Assets">

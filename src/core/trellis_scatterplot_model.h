@@ -9,6 +9,7 @@
 #include "scatterplot_model.h"
 #include "selection_model.h"
 
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -125,6 +126,70 @@ struct TrellisTimeSeriesLine {
     std::vector<CaseId> caseIds;
 };
 
+// Platform-neutral statistical meaning of the variables participating in a
+// Trellis plot.  Frontends use this context to populate the existing analysis
+// workflows; drawing-only quantities such as bar counts and percentages never
+// enter this model.
+enum class PlotAnalysisVariableRole {
+    X,
+    Y,
+    Split,
+    Grouping,
+    ConditioningRow,
+    ConditioningColumn,
+    ConditioningNested
+};
+
+enum class PlotAnalysisEffectiveType {
+    Numeric,
+    Factor,
+    OrderedFactor
+};
+
+enum class PlotAnalysisModelKind {
+    None,
+    Linear,
+    Binomial
+};
+
+struct PlotAnalysisVariable {
+    std::string variableId;
+    std::string variableLabel;
+    PlotAnalysisVariableRole role = PlotAnalysisVariableRole::X;
+    PlotAnalysisEffectiveType effectiveType = PlotAnalysisEffectiveType::Numeric;
+    bool binary = false;
+};
+
+struct PlotAnalysisContext {
+    std::vector<PlotAnalysisVariable> variables;
+    std::string dependentVariable;
+    std::vector<std::string> predictors;
+    std::vector<std::string> numericVariables;
+    std::vector<std::string> categoricalVariables;
+    std::vector<std::string> groupingVariables;
+    PlotAnalysisModelKind modelKind = PlotAnalysisModelKind::None;
+    bool offersModel = false;
+    bool offersCorrelations = false;
+    bool offersContingencyTables = false;
+    bool offersDescriptives = false;
+};
+
+struct PlotAnalysisMenuOption {
+    std::string title;
+    std::string command;
+};
+
+PlotAnalysisContext BuildTrellisPlotAnalysisContext(
+    const PlotModel &plot,
+    const DataFrameModel &df);
+PlotAnalysisContext BuildPlotAnalysisContext(
+    const PlotModel &plot,
+    const DataFrameModel &df);
+std::map<std::string, std::string> PlotAnalysisTermTypes(
+    const PlotAnalysisContext &context);
+std::vector<PlotAnalysisMenuOption> PlotAnalysisMenuOptions(
+    const PlotAnalysisContext &context);
+
 struct TrellisPanelRenderPlan {
     std::size_t panelIndex = 0;
     PlotPanelContext context;
@@ -188,8 +253,21 @@ bool RebuildTrellisPlotFromDataFrame(PlotModel &plot,
                                      const DataFrameModel &df,
                                      std::string *error = nullptr);
 
+// The dataset metadata is authoritative for whether a conditioning variable
+// represents levels or a continuous quantity that must be binned.  Keep this
+// decision in shared core code so creation and later metadata changes cannot
+// diverge between macOS and Windows.
+TrellisConditioningVariableKind TrellisConditioningKindForColumn(
+    const DataColumn &column);
+bool SynchronizeTrellisConditioningVariableType(
+    PlotModel &plot,
+    const DataFrameModel &df,
+    const std::string &variable,
+    bool *changed = nullptr,
+    std::string *error = nullptr);
+
 // A trellis smooth is derived from both the displayed variables and the panel
-// membership. Preserve which scopes the user enabled, but discard every
+// membership. Preserve each enabled scope and fit method, but discard every
 // panel curve when either input changes so curves in obsolete coordinates can
 // never be drawn while R refits the panels.
 bool InvalidateTrellisSmoothCurvesForDataChange(PlotModel &plot);
@@ -199,12 +277,41 @@ bool AddTrellisConditioningVariable(PlotModel &plot,
                                     const std::string &variable,
                                     TrellisConditioningVariableKind kind,
                                     TrellisContinuousBinningMethod method,
-                                    std::string *error = nullptr);
+                                    std::string *error = nullptr,
+                                    bool orderedCategories = false);
+bool SetTrellisConditioningInterpretation(
+    PlotModel &plot,
+    const DataFrameModel &df,
+    const std::string &variable,
+    TrellisConditioningVariableKind kind,
+    TrellisContinuousBinningMethod method,
+    bool orderedCategories,
+    std::string *error = nullptr);
 bool ReplaceTrellisConditioningVariable(PlotModel &plot,
                                         const DataFrameModel &df,
                                         const std::string &currentVariable,
                                         const std::string &replacementVariable,
                                         std::string *error = nullptr);
+
+// Sets a plot-local categorical split for observation-based plots.  The
+// resulting row-colour map is deliberately stored on the plot so snapshots
+// and exports preserve the grouping without changing linked dataset colours.
+bool SetPlotColorByVariable(PlotModel &plot,
+                            const DataFrameModel &df,
+                            const std::string &variable,
+                            std::string *error = nullptr);
+
+bool SetPlotColorLegendPosition(PlotModel &plot,
+                                const std::string &position);
+
+bool ConvertPlotToTrellisWithCondition(
+    PlotModel &plot,
+    const DataFrameModel &df,
+    const std::string &variable,
+    TrellisConditioningVariableKind kind,
+    TrellisContinuousBinningMethod method = TrellisContinuousBinningMethod::EqualWidth,
+    bool orderedCategories = false,
+    std::string *error = nullptr);
 bool RemoveTrellisConditioningVariable(PlotModel &plot,
                                        const DataFrameModel &df,
                                        const std::string &variable,

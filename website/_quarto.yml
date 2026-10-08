@@ -9,8 +9,8 @@ project:
     - plots.qmd
     - linked-eda.qmd
     - development.qmd
+    - release-notes.qmd
   resources:
-    - downloads/LinkEDA_0.0.1.tgz
     - assets/LinkEDA.png
     - assets/screenshots/**
     - assets/plot-examples/**
@@ -20,7 +20,7 @@ project:
 website:
   title: "LinkEDA"
   description: "Experimental exploratory data analysis with native, interactive, linked graphics and R."
-  site-url: "https://valerop.github.io/LinkEDA/"
+  site-url: "https://www.uv.es/valerop/LinkEDA/"
   repo-url: "https://github.com/valerop/LinkEDA"
   open-graph: true
   favicon: assets/LinkEDA.png
@@ -42,6 +42,8 @@ website:
         text: Linked EDA
       - href: development.qmd
         text: Development
+      - href: release-notes.qmd
+        text: Releases
   page-footer:
     left: "LinkEDA — experimental software"
     center: "Pedro Valero-Mora · Universitat de València"

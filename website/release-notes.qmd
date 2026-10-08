@@ -1,0 +1,88 @@
+---
+title: "Releases"
+description: "Release notes and download verification for LinkEDA."
+---
+
+<p class="eyebrow">Experimental releases</p>
+
+# LinkEDA releases
+
+## macOS 0.0.120
+
+LinkEDA 0.0.120 consolidates the recent macOS work on shared analysis scopes,
+linked selections, model refitting, statistical interpretation, export and
+plot interaction. It is available for Apple Silicon Macs running macOS 14 or
+later.
+
+### Highlights
+
+- Analysis scopes, saved selections and exclusions update compatible plots and
+  analyses consistently, with controls for keeping a particular view frozen.
+- Model diagnostics and post-hoc analyses remain linked to their source model
+  and active scope.
+- Plot, table and model exports use a common Copy, Save and R Code structure,
+  with improved PDF and APA-style output.
+- Plot annotations and stickers retain their placement in snapshots and
+  exported files.
+- Clustering adds distance choices and access to the distance matrix.
+- The macOS point-size control is available again for scatterplots, trellis
+  plots, scatterplot matrices and PCA plots.
+- Three macOS downloads are provided: a standalone application, an application
+  using an installed R, and a binary R package for current R users.
+
+The application installers are ad-hoc signed for internal integrity but are
+not yet signed with an Apple Developer ID or notarised by Apple. Their
+installation cards explain the one-time approval through **System Settings >
+Privacy & Security**. The R binary package is installed from R or RStudio and
+does not require that approval.
+
+[Download LinkEDA 0.0.120 for macOS](getting-started.qmd#download){.button .button-primary}
+
+## macOS 0.0.119
+
+LinkEDA 0.0.119 is the first downloadable native macOS installer build. It is
+available for Apple Silicon Macs running macOS 14 or later.
+
+### Highlights
+
+- A standalone installer with a private R 4.6 runtime.
+- A smaller installer that uses an existing Apple Silicon R 4.6 installation.
+- A precompiled R package for users who prefer to start LinkEDA from R or
+  RStudio.
+- Both editions include the R packages used by the application, exact LinkEDA
+  source archives and third-party notices.
+- Native linked data sheets, plots, scopes, model windows, export and example
+  data in a normal Applications-folder installation.
+
+The application is ad-hoc signed for internal integrity. The two application
+installers are not yet signed with an Apple Developer ID or notarised by Apple.
+The download page explains their one-time approval through **System Settings >
+Privacy & Security**. The R binary package is installed from R or RStudio and
+does not require that approval.
+
+[Download the macOS installers](getting-started.qmd#download){.button .button-primary}
+
+## Windows v0.0.113R
+
+`v0.0.113R` identifies the first public Windows release. The R package and
+application use the numeric functional version `0.0.113`; the final `R` is the
+publication marker for the build made available to other users.
+
+### Highlights
+
+- Two double-click Windows installers: a complete edition with a private R
+  runtime and a smaller edition for users who already have R.
+- Native linked data sheets, plots, selections, explicit case exclusions and
+  immutable analysis scopes.
+- Linear, binary, count, positive-continuous, proportion, scale,
+  dimensionality, missing-data and multiple-imputation workflows calculated in R.
+- Shared R verification recipes and publication exports.
+
+[Download the Windows installers](getting-started.qmd#windows){.button .button-primary}
+
+## Licensing and verification
+
+Binary installers are attached to GitHub Releases instead of being committed
+to the source repository. Checksums are published on the download page. The
+software is distributed under GPL version 3 or later; original published
+documentation uses CC BY-NC-ND 4.0.

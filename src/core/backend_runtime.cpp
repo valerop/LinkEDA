@@ -8,7 +8,7 @@ namespace core {
 
 const char *BackendLaunchUsage()
 {
-    return "usage: rlispstat_backend --fifo PATH [--rscript PATH] [--notify-fifo PATH] "
+    return "usage: LinkEDA_backend --fifo PATH [--rscript PATH] [--notify-fifo PATH] "
            "[--parent-pid PID] | --port PORT [--rscript PATH] [--notify-fifo PATH] "
            "[--parent-pid PID]";
 }
@@ -51,7 +51,7 @@ int RunBackendApplication(int argc, char **argv,
     if (!services.configure || !services.initializeApplication ||
         !services.startCommandServer || !services.runEventLoop ||
         !services.stopCommandServer) {
-        std::fprintf(stderr, "rlispstat_backend: incomplete platform services\n");
+        std::fprintf(stderr, "LinkEDA_backend: incomplete platform services\n");
         return 2;
     }
 

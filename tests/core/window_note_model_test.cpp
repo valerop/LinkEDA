@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <string>
 
 using namespace rlispstat::core;
@@ -94,10 +95,45 @@ int main()
     assert(sticky.x == 120.0 && sticky.y == 80.0);
     assert(sticky.width == 280.0 && sticky.height == 190.0);
     assert(sticky.anchor_x == 32.0 && sticky.anchor_y == 250.0);
+    SetWindowStickyNoteReferenceSize(sticky, 800.0, 600.0);
+    WindowStickyNote scaled = WindowStickyNoteForCanvas(sticky, 400.0, 300.0);
+    assert(scaled.x == 60.0 && scaled.y == 40.0);
+    assert(scaled.width == 140.0 && scaled.height == 95.0);
+    assert(scaled.anchor_x == 16.0 && scaled.anchor_y == 125.0);
+    SetWindowStickyNoteAnchorReferenceRect(sticky, 0.0, 0.0, 400.0, 300.0);
+    WindowStickyNote plotScaled = WindowStickyNoteForCanvas(
+        sticky, 400.0, 300.0, 50.0, 30.0, 300.0, 220.0);
+    assert(std::abs(plotScaled.anchor_x - 74.0) < 1e-9);
+    assert(std::abs(plotScaled.anchor_y - 213.33333333333333) < 1e-9);
+    SetWindowStickyNoteCollapsed(sticky, true);
+    assert(sticky.collapsed);
+    RelayoutWindowStickyNoteForCanvasResize(sticky, 800.0, 600.0, 1200.0, 900.0);
+    assert(sticky.x == 250.0 && sticky.y == 167.5);
+    assert(sticky.anchor_x == 48.0 && sticky.anchor_y == 375.0);
+    RelayoutWindowStickyNoteForCanvasResize(sticky, 1200.0, 900.0, 240.0, 180.0);
+    assert(sticky.x == 0.0 && sticky.y == 0.0);
+    assert(std::abs(sticky.anchor_x - 9.6) < 1e-9 && sticky.anchor_y == 75.0);
+    const std::string collapsedSvg = ComposeSvgDocumentWithWindowStickyNotes(svg, {sticky});
+    assert(collapsedSvg.find("text-anchor='middle'") != std::string::npos);
+    assert(collapsedSvg.find("Revisar este punto") == std::string::npos);
+    SetWindowStickyNoteCollapsed(sticky, false);
     const std::string stickySvg = ComposeSvgDocumentWithWindowStickyNotes(svg, {sticky});
     assert(stickySvg.find("linkeda-snapshot-stickers") != std::string::npos);
     assert(stickySvg.find("#ffb8d6") != std::string::npos);
     assert(stickySvg.find("Revisar este punto") != std::string::npos);
-    assert(stickySvg.find("x2='32'") != std::string::npos);
+    assert(stickySvg.find(">Sticker</text>") == std::string::npos);
+    assert(stickySvg.find("x2='16'") != std::string::npos);
+    WindowStickyNote anchored = MakeWindowStickyNote("plot-anchor");
+    SetWindowStickyNoteText(anchored, "Same data point");
+    MoveWindowStickyNoteAnchor(anchored, 500.0, 305.0);
+    SetWindowStickyNoteReferenceSize(anchored, 1000.0, 600.0);
+    SetWindowStickyNoteAnchorReferenceRect(anchored, 100.0, 80.0, 800.0, 450.0);
+    const std::string plotSvg =
+        "<svg viewBox=\"0 0 500 300\"><rect x=\"0\" y=\"0\" width=\"500\" height=\"300\"/>"
+        "<rect x=\"70\" y=\"52\" width=\"400\" height=\"200\"/></svg>";
+    const std::string anchoredSvg = ComposeSvgDocumentWithWindowStickyNotes(
+        plotSvg, {anchored});
+    assert(anchoredSvg.find("x2='270'") != std::string::npos);
+    assert(anchoredSvg.find("y2='152'") != std::string::npos);
     return 0;
 }

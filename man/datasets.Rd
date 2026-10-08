@@ -30,3 +30,13 @@ registered plotting workflows.
 returns the active data frame. Other functions invisibly return the affected
 dataset name, \code{TRUE}, or the refreshed registry.
 }
+
+\details{
+File import recognizes short, repeated text labels as categorical metadata when
+there are at least four nonblank observations, at most 20 distinct labels, and
+no more than half as many labels as observations. Identifier, name, comment,
+address and similar fields remain Text, as do long or multiline values and
+mostly numeric text with incompatible entries. This inference preserves the
+original values and R storage class; variable types can be changed explicitly.
+Numeric columns retain Numeric unless they carry explicit value labels.
+}

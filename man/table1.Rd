@@ -11,6 +11,7 @@ ls_new_table1(data = NULL, variables = NULL, group = NULL,
   numeric_stats = c("mean_sd", "median_iqr"),
   categorical_stats = c("n_percent"),
   ordinal_stats = c("n_percent", "median_iqr"), name = NULL,
+  native = isTRUE(.rls_state$process_started),
   .selected_rows = NULL, .scope_description = NULL)
 
 ls_table1_table(table)
@@ -28,11 +29,12 @@ ls_export_table1(table, path, format = c("pdf", "txt", "md", "csv"))
 \item{show_p}{Logical. Show p-values for grouped tables.}
 \item{show_test}{Logical. Show the test used for grouped comparisons.}
 \item{show_n}{Logical. Show the top N row.}
-\item{ordinal_as}{How ordered factors are treated by default.}
+\item{ordinal_as}{How Ordinal variables are treated by default.}
 \item{numeric_stats}{Numeric summaries to include.}
 \item{categorical_stats}{Categorical summaries to include.}
 \item{ordinal_stats}{Ordinal summaries to include.}
 \item{name}{Optional Table 1 id.}
+\item{native}{Logical. Open or update the native Table 1 result window.}
 \item{.selected_rows}{Internal explicit original-row IDs supplied by the native
 analysis-scope bridge.}
 \item{.scope_description}{Internal human-readable description for the captured

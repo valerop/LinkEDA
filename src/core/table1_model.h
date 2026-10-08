@@ -77,6 +77,27 @@ struct Table1DisplayRow {
     // keeps the formatted strings in `values`, while exports can retain the
     // full precision received from R.
     std::vector<std::string> rawValues;
+    // Optional semantic components for numeric summaries.  Each entry is
+    // aligned with `values` and may contain mean, sd, se, ci95, median, q1,
+    // and q3.  Keeping these separate lets the native views change the
+    // displayed statistics without re-running the analysis or MI pooling.
+    std::vector<std::map<std::string, std::string>> statisticValues;
+    // Full-precision values supplied by R. Publication code must use these,
+    // never the locale-formatted strings displayed by the native table.
+    std::vector<std::map<std::string, double>> rawStatisticValues;
+};
+
+struct Table1DisplayPreferences {
+    bool showMean = true;
+    bool showSD = true;
+    bool showSE = true;
+    bool showCI95 = false;
+    bool showMedian = true;
+    bool showQuartiles = true;
+    bool showMissing = true;
+    bool showOverall = true;
+    bool showP = true;
+    bool showTest = true;
 };
 
 struct Table1DisplayState {
@@ -104,7 +125,14 @@ struct Table1DisplayState {
     bool showP = false;
     bool showTest = false;
     bool nativeGenerated = false;
+    bool needsRFit = false;
     std::string nestedDisplayMode = "count_percent";
+    OutputCodeReference codeReference;
+    // Editing control for diagnostics of one explicitly linked model.
+    std::string missingnessSource;
+    std::map<std::string, std::vector<int>> missingnessPatternRows;
+    std::string linkedModelOutputId;
+    std::vector<std::string> addVariableOptions;
 };
 
 struct Table1ReportLayout {
@@ -118,6 +146,7 @@ struct Table1ReportLayout {
     double stubArea = 200.0;
     double valueArea = 0.0;
     double columnWidth = 78.0;
+    std::vector<double> valueColumnWidths;
     double headerOffset = 66.0;
     int valueColumnCount = 1;
     int stubColumnCount = 1;
@@ -141,13 +170,25 @@ struct Table1ContextMenuTitles {
     std::string clearGroupingVariable;
 };
 
+struct Table1PlotMenuOption {
+    std::string command;
+    std::string title;
+};
+
 Table1ContextMenuTitles DefaultTable1ContextMenuTitles();
 std::string Table1RemoveVariableTitle(const std::string &variable);
+std::string Table1ReplaceVariableTitle(const std::string &variable);
 std::string Table1TypeMenuTitle(const std::string &type);
 std::string Table1HistogramMenuTitle(const std::string &variable);
 std::string Table1BarChartMenuTitle(const std::string &variable);
 std::string Table1BoxplotMenuTitle(const std::string &variable,
                                    const std::string &groupVariable);
+std::string Table1VariableAnalysisType(const Table1DisplayState &state,
+                                       const std::string &variable);
+std::vector<Table1PlotMenuOption> Table1PlotMenuOptions(
+    const std::string &variable,
+    const std::string &analysisType,
+    const std::string &groupVariable);
 std::string Table1Subtitle(const Table1DisplayState &state,
                            bool includeUngroupedN = false);
 bool Table1RowIsIndented(const Table1DisplayRow &row);
@@ -157,6 +198,10 @@ bool Table1RowHasValues(const Table1DisplayRow &row);
 std::string Table1DisplayLabelText(const Table1DisplayRow &row);
 Table1ReportLayout BuildTable1ReportLayout(const Table1DisplayState &state,
                                            double width);
+double Table1NaturalWidth(const Table1DisplayState &state);
+Table1DisplayState Table1ApplyDisplayPreferences(
+    const Table1DisplayState &source,
+    const Table1DisplayPreferences &preferences);
 double Table1PreferredHeight(const Table1DisplayState &state);
 int Table1ReportRowAtPoint(const Table1DisplayState &state,
                            const Table1ReportLayout &layout,
@@ -183,6 +228,14 @@ std::vector<std::string> Table1Levels(const DataColumn &col,
 std::string Table1CountPercent(const DataColumn &col,
                                const std::vector<int> &rows,
                                const std::string &level);
+Table1DisplayState Table1PendingStateForDataFrame(
+    const DataFrameModel &df,
+    const std::string &id,
+    std::vector<std::string> variables,
+    const std::string &groupVariable,
+    const std::map<std::string, std::string> &types,
+    const AnalysisScope *dataScope = nullptr);
+
 Table1DisplayState Table1StateForDataFrame(
     const DataFrameModel &df,
     const std::string &id,
@@ -198,6 +251,11 @@ Table1DisplayState NestedContingencyTableStateForDataFrame(
     const std::string &splitVariable,
     const std::string &displayMode = "count_percent",
     const AnalysisScope *dataScope = nullptr);
+// Move a row variable to the column split in one specification change. If a
+// split already exists, it takes the moved variable's former row position.
+bool MoveContingencyRowToColumn(std::vector<std::string> &rowVariables,
+                                std::string &columnVariable,
+                                const std::string &rowVariable);
 std::set<int> ContingencyRowsForSelection(const Table1DisplayState &state,
                                           const ContingencySelection &selection);
 std::set<int> ContingencyRowsForRowPrefix(const Table1DisplayState &state,

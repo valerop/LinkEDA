@@ -8,7 +8,7 @@ test_that("Model Trellis fits each mtcars panel with the ordinary R lm", {
       rows = which(mtcars$am == am & mtcars$cyl == cyl)
     )
   }
-  result <- rlispstat:::.rls_model_trellis_fit(
+  result <- LinkEDA:::.rls_model_trellis_fit(
     mtcars, "wt", "mpg", list(mpg = "numeric"), panels, 0.95, "holm"
   )
   expect_length(result, 6L)
@@ -43,7 +43,7 @@ test_that("A newly created Model Trellis supports the intercept-only starting mo
     column_level_id = as.character(mtcars$am[rows[[1L]]]),
     column_level_label = as.character(mtcars$am[rows[[1L]]]), rows = rows
   ))
-  result <- rlispstat:::.rls_model_trellis_fit(
+  result <- LinkEDA:::.rls_model_trellis_fit(
     mtcars, "wt", character(), list(), panels, 0.95, "holm"
   )
   expect_length(result, 2L)
@@ -62,7 +62,7 @@ test_that("Model Trellis p adjustments are R p.adjust families by coefficient id
     row_level_label = "", column_level_id = as.character(mtcars$cyl[rows[[1L]]]),
     column_level_label = as.character(mtcars$cyl[rows[[1L]]]), rows = rows
   ))
-  result <- rlispstat:::.rls_model_trellis_fit(
+  result <- LinkEDA:::.rls_model_trellis_fit(
     mtcars, "wt", "mpg", list(mpg = "numeric"), panels, 0.95, "holm"
   )
   rows <- lapply(result, function(x) x$coefficient_results[x$coefficient_results$coefficient_id == "mpg", ])
@@ -77,7 +77,7 @@ test_that("Model Trellis retains global factor levels and term tests", {
     row_level_label = as.character(mtcars$am[rows[[1L]]]), column_level_id = "",
     column_level_label = "", rows = rows
   ))
-  result <- rlispstat:::.rls_model_trellis_fit(
+  result <- LinkEDA:::.rls_model_trellis_fit(
     mtcars, "wt", c("mpg", "gear"), list(mpg = "numeric", gear = "factor"), panels, 0.95, "holm"
   )
   expect_true(all(vapply(result, function(x) any(x$term_tests$term_id == "gear"), logical(1L))))

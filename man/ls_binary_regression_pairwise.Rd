@@ -12,7 +12,8 @@ ls_binary_regression_pairwise(model, term, scale = NULL, adjust = "tukey")
 \item{term}{Simple categorical term.}
 
 \item{scale}{For logit, \code{"odds_ratio"}, \code{"link"}, or \code{"probability"}; for
-probit, \code{"probability"} or \code{"link"}.}
+log, \code{"risk_ratio"}, \code{"link"}, or \code{"probability"}; for the
+other links, \code{"probability"} or \code{"link"}.}
 
 \item{adjust}{Multiplicity adjustment passed to \code{emmeans}.}
 }

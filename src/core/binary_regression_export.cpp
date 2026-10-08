@@ -26,16 +26,33 @@ BinaryAPAReportModel BuildBinaryAPAReportModel(const GeneralizedGLMState &state)
                                                 : "Binary Probit Regression Predicting ") + state.response;
     model.warnings = state.warnings;
     for (const GeneralizedGLMRow &row : state.rows) {
-        if (row.rowType == "factor_parent" || row.rowType == "term_parent" || row.rowType == "reference") continue;
         BinaryAPACoefficientRow output;
-        output.predictor = BinaryAPAPredictorLabel(row);
+        output.parent = row.rowType == "factor_parent" || row.rowType == "term_parent";
+        output.reference = row.rowType == "reference";
+        if (output.parent) {
+            output.predictor = !row.displayLabel.empty() ? row.displayLabel
+                : (row.sourceTerm.empty() ? row.term : row.sourceTerm);
+        } else if (output.reference) {
+            const std::string level = !row.factorLevel.empty() ? row.factorLevel
+                : (!row.displayLabel.empty() ? row.displayLabel : row.term);
+            output.predictor = "  " + level + " (reference)";
+        } else if (!row.factorLevel.empty()) {
+            output.predictor = "  " + row.factorLevel;
+            if (!row.referenceLevel.empty()) output.predictor += " (vs " + row.referenceLevel + ")";
+        } else {
+            output.predictor = BinaryAPAPredictorLabel(row);
+        }
         output.sourceTerm = row.sourceTerm.empty() ? row.term : row.sourceTerm;
         output.factorLevel = row.factorLevel;
         output.referenceLevel = row.referenceLevel;
-        output.estimate = row.estimate;
-        output.stdError = row.stdError;
-        output.statistic = row.statistic;
-        output.pValue = row.pValue;
+        const GlobalTermTestRow *termTest =
+            GeneralizedGlobalTermTestForPresentationRow(state, row);
+        output.estimate = output.parent || output.reference ? NAN : row.estimate;
+        output.stdError = output.parent || output.reference ? NAN : row.stdError;
+        output.statistic = output.parent && termTest ? termTest->statistic
+            : (output.reference ? NAN : row.statistic);
+        output.pValue = output.parent && termTest ? termTest->pValue
+            : (output.reference ? NAN : row.pValue);
         output.ciLower = row.ciLower;
         output.ciUpper = row.ciUpper;
         output.oddsRatio = row.oddsRatio;
@@ -88,21 +105,37 @@ std::string BinaryRegressionCoefficientCSV(const GeneralizedGLMState &state)
     const bool logit = state.binaryLink == BinaryLink::Logit;
     std::ostringstream csv;
     csv << (logit
-        ? "Predictor,Estimate,SE,z,p,Odds_Ratio,OR_CI_Lower,OR_CI_Upper,Reference\n"
-        : "Predictor,Estimate,SE,z,p,CI_Lower,CI_Upper,Reference\n");
+        ? "Predictor,Type,Estimate,SE,z,p,Odds_Ratio,OR_CI_Lower,OR_CI_Upper,Reference\n"
+        : "Predictor,Type,Estimate,SE,z,p,CI_Lower,CI_Upper,Reference\n");
     for (const GeneralizedGLMRow &row : state.rows) {
-        if (row.rowType == "factor_parent" || row.rowType == "term_parent") continue;
+        const bool parent = row.rowType == "factor_parent" || row.rowType == "term_parent";
         const bool reference = row.rowType == "reference";
+        const GlobalTermTestRow *termTest =
+            GeneralizedGlobalTermTestForPresentationRow(state, row);
         std::string predictor;
-        if (reference) {
+        if (parent) {
+            predictor = !row.displayLabel.empty() ? row.displayLabel
+                : (row.sourceTerm.empty() ? row.term : row.sourceTerm);
+        } else if (reference) {
             const std::string level = !row.factorLevel.empty() ? row.factorLevel
                 : (!row.displayLabel.empty() ? row.displayLabel : row.term);
             predictor = (row.sourceTerm.empty() ? row.term : row.sourceTerm) + ": " + level + " (reference)";
         } else {
             predictor = BinaryAPAPredictorLabel(row);
         }
-        csv << CSVQuoted(predictor) << ',';
-        if (!reference) {
+        const bool interactionChild = ModelTermTypeIsInteraction(row.termType) &&
+            row.rowType == "coefficient" && !row.sourceTerm.empty() &&
+            row.sourceTerm != row.term;
+        const bool intercept = row.term == "(Intercept)" || row.sourceTerm == "(Intercept)";
+        const std::string type = intercept ? "" :
+            (reference || row.rowType == "factor_level" || interactionChild ? "" :
+             (row.termType.empty() ? "" : ModelTermTypeDisplayName(row.termType)));
+        csv << CSVQuoted(predictor) << ',' << CSVQuoted(type) << ',';
+        if (parent) {
+            csv << ",," << CSVNumber(termTest ? termTest->statistic : NAN) << ','
+                << CSVNumber(termTest ? termTest->pValue : NAN) << ','
+                << (logit ? ",,," : ",,");
+        } else if (!reference) {
             csv << CSVNumber(row.estimate) << ',' << CSVNumber(row.stdError) << ','
                 << CSVNumber(row.statistic) << ',' << CSVNumber(row.pValue) << ',';
             if (logit) {
@@ -122,11 +155,12 @@ std::string BinaryRegressionCoefficientCSV(const GeneralizedGLMState &state)
 std::string BinaryRegressionTermTestsCSV(const GeneralizedGLMState &state)
 {
     std::ostringstream csv;
-    csv << "Term,LR_Chisq,df,p\n";
-    for (const BinaryTermTestRow &row : state.termTests) {
+    csv << "Term,Method,Statistic,df,df2,p\n";
+    for (const GlobalTermTestRow &row : state.termTests) {
         if (row.term.empty() || row.term == "(Intercept)") continue;
-        csv << CSVQuoted(row.term) << ',' << CSVNumber(row.statistic) << ',' << row.df << ','
-            << CSVNumber(row.pValue) << "\n";
+        csv << CSVQuoted(row.term) << ',' << CSVQuoted(GlobalTermTestMethodLabel(row.method))
+            << ',' << CSVNumber(row.statistic) << ',' << CSVNumber(row.df) << ','
+            << CSVNumber(row.df2) << ',' << CSVNumber(row.pValue) << "\n";
     }
     return csv.str();
 }

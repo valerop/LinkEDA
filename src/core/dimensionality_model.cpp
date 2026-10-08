@@ -1,4 +1,6 @@
 #include "dimensionality_model.h"
+#include "analysis_initialization.h"
+#include "scale_analysis_model.h"
 
 #include <algorithm>
 #include <cmath>
@@ -71,6 +73,11 @@ std::string DimensionalityComponentAxisLabel(const std::vector<DimensionalityFit
 
 } // namespace
 
+std::vector<std::string> EligibleDimensionalityVariables(const DataFrameModel &dataframe)
+{
+    return EligibleScaleVariables(dataframe, {});
+}
+
 std::string DimensionalityComponentPrefix(const std::string &method)
 {
     return method == "factor" ? "F" : "PC";
@@ -78,7 +85,7 @@ std::string DimensionalityComponentPrefix(const std::string &method)
 
 std::string DimensionalityVariableUnavailableStatus(const std::string &name)
 {
-    return "Status: `" + name + "` is not available as a numeric variable.";
+    return "Status: `" + name + "` is not available as a numeric, ordinal, or binary variable.";
 }
 
 std::string DimensionalityVariableAlreadyIncludedStatus(const std::string &name)
@@ -104,7 +111,7 @@ std::string DimensionalityVariableRemovedStatus(const std::string &name)
 
 std::string DimensionalityNoMoreNumericVariablesTitle()
 {
-    return "No more numeric variables";
+    return "No more eligible variables";
 }
 
 std::string DimensionalityNoReplacementVariablesTitle()
@@ -200,15 +207,17 @@ std::string DimensionalityScreePlotTitle(const std::string &method,
 std::string DimensionalityFitSignature(const std::string &method,
                                        const std::string &missingMode,
                                        const std::string &rotation,
+                                       const std::string &extraction,
                                        const std::string &scope,
                                        bool scale,
                                        int componentCount,
+                                       int displayedImputation,
                                        const std::vector<std::string> &variables)
 {
     std::ostringstream out;
-    out << method << "|" << missingMode << "|" << rotation << "|"
+    out << method << "|" << missingMode << "|" << rotation << "|" << extraction << "|"
         << scope << "|" << (scale ? "1" : "0") << "|"
-        << componentCount;
+        << componentCount << "|imputation=" << std::max(1, displayedImputation);
     for (const std::string &variable : variables) {
         out << "|" << variable;
     }
@@ -291,6 +300,16 @@ DimensionalityScreePlotState BuildDimensionalityScreePlotState(
     return state;
 }
 
+int DimensionalityBiplotAvailableComponentCount(
+    const std::vector<DimensionalityFitComponent> &components,
+    const std::vector<DimensionalityFitScore> &scores)
+{
+    std::size_t scoreColumns = 0;
+    for (const auto &score : scores)
+        scoreColumns = std::max(scoreColumns, score.values.size());
+    return static_cast<int>(std::min(components.size(), scoreColumns));
+}
+
 DimensionalityBiplotPlotState BuildDimensionalityBiplotPlotState(
     const std::vector<DimensionalityFitComponent> &components,
     const std::vector<DimensionalityFitLoading> &loadings,
@@ -300,10 +319,11 @@ DimensionalityBiplotPlotState BuildDimensionalityBiplotPlotState(
     int requestedYComponent)
 {
     DimensionalityBiplotPlotState state;
-    if (components.size() < 2 || scores.empty()) {
+    const int maxDim = DimensionalityBiplotAvailableComponentCount(
+        components, scores);
+    if (maxDim < 2) {
         return state;
     }
-    const int maxDim = static_cast<int>(components.size());
     state.xComponent = std::max(1, std::min(requestedXComponent, maxDim));
     state.yComponent = std::max(1, std::min(requestedYComponent, maxDim));
     if (state.xComponent == state.yComponent) {
@@ -524,7 +544,14 @@ DimensionalityReportState BuildDimensionalityReportState(
     const std::string &status,
     int focusedComponent,
     const std::string &focusedVariable,
-    std::size_t maxShownComponents)
+    std::size_t maxShownComponents,
+    const std::string &missingMode,
+    const std::string &rotation,
+    bool scale,
+    bool multipleImputation,
+    int displayedImputation,
+    int imputationCount,
+    const std::string &calculationMethod)
 {
     DimensionalityReportState report;
     report.componentPrefix = DimensionalityComponentPrefix(method);
@@ -535,7 +562,29 @@ DimensionalityReportState BuildDimensionalityReportState(
     report.hasLoadings = !loadings.empty();
     std::ostringstream summary;
     summary << rowsUsed << " complete rows, " << rowsExcluded << " excluded";
-    report.summary = summary.str();
+    report.summary = calculationMethod.empty() ? summary.str()
+        : std::to_string(rowsUsed) + " cases in analysis; " + std::to_string(rowsExcluded) +
+          " excluded. Scores use complete cases.";
+    std::ostringstream calculation;
+    calculation << "Calculated in R with "
+                << (method == "factor" ? "stats::factanal (maximum likelihood)" : "stats::prcomp")
+                << "; " << (scale ? "standardized variables" : "unstandardized variables");
+    if (missingMode == "pairwise") {
+        calculation << "; listwise complete-row decomposition"
+                    << " (the pairwise option currently falls back to listwise for this table)";
+    } else {
+        calculation << "; listwise complete-row input";
+    }
+    if (!rotation.empty() && rotation != "none") calculation << "; " << rotation << " rotation";
+    calculation << ". Parallel reference: 95th percentile from 100 simulated normal data sets.";
+    report.calculationMethod = calculationMethod.empty() ? calculation.str() : calculationMethod;
+    if (multipleImputation) {
+        std::ostringstream imputation;
+        imputation << "Multiple imputation: showing completed imputation "
+                   << std::max(1, displayedImputation) << " of " << std::max(1, imputationCount)
+                   << "; eigenvalues and loading matrices are not Rubin-pooled.";
+        report.calculationImputation = imputation.str();
+    }
 
     const std::size_t shownComponents = std::min(components.size(), maxShownComponents);
     report.hasAdditionalComponents = components.size() > shownComponents;
@@ -598,7 +647,6 @@ DimensionalityReportLayout BuildDimensionalityReportLayout(
 {
     constexpr double left = 18.0;
     constexpr double summaryY = 14.0;
-    constexpr double summaryStep = 28.0;
     constexpr double sectionStep = 24.0;
     constexpr double rowStep = 24.0;
     constexpr double rowHeight = 22.0;
@@ -610,7 +658,11 @@ DimensionalityReportLayout BuildDimensionalityReportLayout(
 
     DimensionalityReportLayout layout;
     layout.summaryRect = Rect{left, summaryY, 520.0, 18.0};
-    layout.componentsTitleRect = Rect{left, summaryY + summaryStep, 160.0, 20.0};
+    const double extraLines = 18.0 * std::count(report.calculationMethod.begin(), report.calculationMethod.end(), '\n');
+    layout.calculationMethodRect = Rect{left, summaryY + 22.0, 700.0, 18.0 + extraLines};
+    layout.calculationImputationRect = Rect{left, summaryY + 42.0 + extraLines, 700.0, 18.0};
+    const double calculationHeight = (report.calculationImputation.empty() ? 42.0 : 62.0) + extraLines;
+    layout.componentsTitleRect = Rect{left, summaryY + calculationHeight, 160.0, 20.0};
     const double componentHeaderY = layout.componentsTitleRect.y + sectionStep;
     layout.componentHeaderRects = {
         Rect{left, componentHeaderY, 120.0, 18.0},
@@ -620,7 +672,7 @@ DimensionalityReportLayout BuildDimensionalityReportLayout(
         Rect{left + 506.0, componentHeaderY, 92.0, 18.0}
     };
     layout.componentRuleEndX = left + componentWidth;
-    layout.componentRowsY = summaryY + summaryStep + sectionStep + sectionStep;
+    layout.componentRowsY = layout.componentsTitleRect.y + sectionStep + sectionStep;
     layout.componentRects.reserve(report.componentRows.size());
     layout.componentCellRects.reserve(report.componentRows.size());
     for (std::size_t i = 0; i < report.componentRows.size(); ++i) {
@@ -699,11 +751,11 @@ DimensionalityReportLayout BuildDimensionalityReportLayout(
     layout.emptyStatusRect = Rect{loadingsLeft, layout.addVariableRect.y, 520.0, 18.0};
     const double loadingWidth = 420.0 + loadingColumnStep * static_cast<double>(std::max(2, report.componentCount));
     layout.preferredWidth = std::max(740.0, loadingWidth);
+    const AnalysisVariableListLayout variableList = BuildAnalysisVariableListLayout(
+        report.loadingRows.size(), true, 10, rowStep, 0.0);
     layout.preferredHeight = std::max(
-        380.0,
-        layout.loadingsRowsY +
-            rowStep * static_cast<double>(std::max<std::size_t>(1, report.loadingRows.size() + 1)) +
-            48.0);
+        250.0,
+        layout.loadingsRowsY + std::max(rowStep, variableList.contentHeight) + 48.0);
     return layout;
 }
 
@@ -781,6 +833,16 @@ DimensionalityReportRenderPlan BuildDimensionalityReportRenderPlan(
 
     DimensionalityReportRenderPlan plan;
     addText(plan, report.summary, textRect(layout.summaryRect), DimensionalityReportTextRole::Muted);
+    std::istringstream methodLines(report.calculationMethod);
+    std::string methodLine; double methodY = layout.calculationMethodRect.y;
+    while (std::getline(methodLines, methodLine)) {
+        auto rect = layout.calculationMethodRect; rect.y = methodY; rect.height = 18;
+        addText(plan, methodLine, textRect(rect), DimensionalityReportTextRole::Muted);
+        methodY += 18;
+    }
+    if (!report.calculationImputation.empty()) {
+        addText(plan, report.calculationImputation, textRect(layout.calculationImputationRect), DimensionalityReportTextRole::Muted);
+    }
     addText(plan, "Components", layout.componentsTitleRect, DimensionalityReportTextRole::Section);
     const std::vector<std::string> componentHeaders = {
         "Component", "Eigenvalue", "Parallel", "Variance", "Cumulative"
@@ -910,7 +972,14 @@ DimensionalityReportViewModel BuildDimensionalityReportViewModel(
     const std::string &status,
     int focusedComponent,
     const std::string &focusedVariable,
-    std::size_t maxShownComponents)
+    std::size_t maxShownComponents,
+    const std::string &missingMode,
+    const std::string &rotation,
+    bool scale,
+    bool multipleImputation,
+    int displayedImputation,
+    int imputationCount,
+    const std::string &calculationMethod)
 {
     DimensionalityReportViewModel model;
     model.report = BuildDimensionalityReportState(
@@ -924,7 +993,13 @@ DimensionalityReportViewModel BuildDimensionalityReportViewModel(
         status,
         focusedComponent,
         focusedVariable,
-        maxShownComponents);
+        maxShownComponents,
+        missingMode,
+        rotation,
+        scale,
+        multipleImputation,
+        displayedImputation,
+        imputationCount, calculationMethod);
     model.layout = BuildDimensionalityReportLayout(model.report);
     model.renderPlan = BuildDimensionalityReportRenderPlan(model.report, model.layout);
     return model;
@@ -1037,6 +1112,10 @@ DimensionalityReportAction DimensionalityReportContextActionForHit(
         action.focusVariable = false;
         return action;
     }
+    if (hit.kind == DimensionalityReportHitKind::AddVariable) {
+        action.kind = DimensionalityReportActionKind::OpenAddVariableMenu;
+        return action;
+    }
     action.kind = DimensionalityReportActionKind::OpenAnalysisMenu;
     return action;
 }
@@ -1051,7 +1130,7 @@ DimensionalityWindowLayout BuildDimensionalityWindowLayout(
     layout.maxWidth = std::max(720.0, visibleWidth * 0.92);
     layout.maxHeight = std::max(430.0, visibleHeight * 0.86);
     layout.targetWidth = std::min(layout.maxWidth, std::max(760.0, reportWidth + 24.0));
-    layout.targetHeight = std::min(layout.maxHeight, std::max(520.0, reportHeight + 142.0));
+    layout.targetHeight = std::min(layout.maxHeight, std::max(390.0, reportHeight + 142.0));
 
     const double w = layout.targetWidth;
     const double h = layout.targetHeight;
@@ -1064,6 +1143,7 @@ DimensionalityWindowLayout BuildDimensionalityWindowLayout(
     layout.scopeLabelRect = Rect{570.0, h - 70.0, 46.0, 22.0};
     layout.scopePopupRect = Rect{616.0, h - 74.0, 138.0, 28.0};
     layout.scaleButtonRect = Rect{16.0, h - 102.0, 120.0, 22.0};
+    layout.autoFitButtonRect = Rect{148.0, h - 102.0, 100.0, 22.0};
     layout.selectedRowsRect = Rect{w - 180.0, h - 100.0, 164.0, 20.0};
     layout.scrollViewRect = Rect{
         12.0,
@@ -1209,12 +1289,13 @@ DimensionalityVariableUpdateResult DimensionalityVariablesAfterRemove(
 {
     DimensionalityVariableUpdateResult result;
     result.variables = currentVariables;
-    if (currentVariables.size() <= minimumVariables) {
-        result.error = "principal components/factor analysis must keep at least two variables";
-        return result;
-    }
     if (index >= currentVariables.size()) {
         result.error = "variable index is out of range";
+        return result;
+    }
+    if (currentVariables.size() <= minimumVariables) {
+        result.error = "the analysis must keep at least " +
+            std::to_string(minimumVariables) + " variables";
         return result;
     }
     result.variables.erase(result.variables.begin() + static_cast<std::ptrdiff_t>(index));
@@ -1225,7 +1306,8 @@ DimensionalityVariableUpdateResult DimensionalityVariablesAfterRemove(
 
 bool DimensionalityRotationIsValid(const std::string &rotation)
 {
-    return rotation == "none" || rotation == "varimax" || rotation == "quartimax";
+    return rotation == "none" || rotation == "varimax" || rotation == "quartimax" ||
+        rotation == "oblimin" || rotation == "promax";
 }
 
 bool DimensionalityScopeIsValid(const std::string &scope)
@@ -1254,6 +1336,8 @@ int DimensionalityRotationPopupIndex(const std::string &rotation)
 {
     if (rotation == "varimax") return 1;
     if (rotation == "quartimax") return 2;
+    if (rotation == "oblimin") return 3;
+    if (rotation == "promax") return 4;
     return 0;
 }
 
@@ -1499,6 +1583,14 @@ DimensionalityFitResult FitDimensionality(const DimensionalityFitInput &input)
     result.scale = input.scale;
     result.componentCount = input.componentCount;
     result.status = "Not fitted.";
+
+    // Oblique rotations are intentionally an R-only calculation.  The native
+    // routine is retained for legacy tests/offline fixtures, but must never
+    // approximate oblimin or promax with an orthogonal transform.
+    if (result.rotation == "oblimin" || result.rotation == "promax") {
+        result.status = "Oblique rotations must be fitted in R.";
+        return result;
+    }
 
     if (input.variables.size() < 2) {
         result.status = "At least two numeric variables are required.";

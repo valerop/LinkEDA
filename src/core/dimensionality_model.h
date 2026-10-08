@@ -2,6 +2,7 @@
 #define RLISPSTAT_CORE_DIMENSIONALITY_MODEL_H
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -27,6 +28,7 @@ std::string DimensionalityVariableReplacedStatus(const std::string &oldName,
                                                  const std::string &newName);
 std::string DimensionalityVariableRemovedStatus(const std::string &name);
 std::string DimensionalityNoMoreNumericVariablesTitle();
+std::vector<std::string> EligibleDimensionalityVariables(const DataFrameModel &dataframe);
 std::string DimensionalityNoReplacementVariablesTitle();
 std::string DimensionalityAddVariableMenuTitle();
 std::string DimensionalityVariableMenuTitle();
@@ -47,9 +49,11 @@ std::string DimensionalityScreePlotTitle(const std::string &method,
 std::string DimensionalityFitSignature(const std::string &method,
                                        const std::string &missingMode,
                                        const std::string &rotation,
+                                       const std::string &extraction,
                                        const std::string &scope,
                                        bool scale,
                                        int componentCount,
+                                       int displayedImputation,
                                        const std::vector<std::string> &variables);
 
 bool DimensionalityRotationIsValid(const std::string &rotation);
@@ -104,8 +108,10 @@ struct DimensionalityState {
     std::string method = "pca";
     std::string missingMode = "listwise";
     std::string rotation = "none";
+    std::string extraction = "minres";
     std::string scope = "all";
     bool scale = true;
+    bool autoFit = true;
     int componentCount = 2;
     std::vector<int> rowsUsed;
     std::vector<int> rowsExcluded;
@@ -113,13 +119,22 @@ struct DimensionalityState {
     std::vector<DimensionalityFitLoading> loadings;
     std::vector<DimensionalityFitScore> scores;
     std::string status = "Not fitted.";
+    std::string calculationMethod;
+    std::vector<std::string> eligibleVariables;
     int focusedComponent = 0;
     std::string focusedVariable;
     int modelVersion = 0;
     bool rFitPending = false;
     std::string lastRFitSignature;
+    std::uint64_t requestRevision = 0;
+    std::uint64_t sourceDataVersion = 0;
     PlotModel seed;
     bool hasSeed = false;
+    bool multipleImputation = false;
+    int imputationCount = 1;
+    int displayedImputation = 1;
+    int requestedImputation = 0; // Zero follows the dataset until chosen in this analysis.
+    AnalysisProvenance provenance;
 };
 
 struct DimensionalityScreePoint {
@@ -173,11 +188,14 @@ struct DimensionalityBiplotPlotState {
     double ymax = 1.0;
 };
 
+int DimensionalityBiplotAvailableComponentCount(
+    const std::vector<DimensionalityFitComponent> &components,
+    const std::vector<DimensionalityFitScore> &scores);
+
 struct DimensionalityScreeContextMenuState {
     std::string title = "Scree plot";
     std::string viewTitle = "View";
     std::string exportTitle = "Export";
-    std::string rescaleToDataTitle = "Rescale to data";
     std::string closePlotTitle = "Close plot";
 };
 
@@ -244,6 +262,8 @@ struct DimensionalityReportLoadingRow {
 
 struct DimensionalityReportState {
     std::string summary;
+    std::string calculationMethod;
+    std::string calculationImputation;
     std::string componentPrefix;
     int componentCount = 0;
     int focusedComponent = 0;
@@ -262,6 +282,8 @@ struct DimensionalityReportLayout {
     double componentRowsY = 90.0;
     double loadingsRowsY = 156.0;
     Rect summaryRect;
+    Rect calculationMethodRect;
+    Rect calculationImputationRect;
     Rect componentsTitleRect;
     std::vector<Rect> componentHeaderRects;
     std::vector<std::vector<Rect>> componentCellRects;
@@ -371,6 +393,7 @@ struct DimensionalityWindowLayout {
     Rect scopeLabelRect;
     Rect scopePopupRect;
     Rect scaleButtonRect;
+    Rect autoFitButtonRect;
     Rect selectedRowsRect;
     Rect scrollViewRect;
     Rect statusRect;
@@ -447,6 +470,7 @@ struct DimensionalityFitResult {
     std::vector<DimensionalityFitLoading> loadings;
     std::vector<DimensionalityFitScore> scores;
     std::string status = "Not fitted.";
+    std::string calculationMethod;
 };
 
 DimensionalityFitResult FitDimensionality(const DimensionalityFitInput &input);
@@ -492,7 +516,14 @@ DimensionalityReportState BuildDimensionalityReportState(
     const std::string &status,
     int focusedComponent = 0,
     const std::string &focusedVariable = "",
-    std::size_t maxShownComponents = 8);
+    std::size_t maxShownComponents = 8,
+    const std::string &missingMode = "listwise",
+    const std::string &rotation = "none",
+    bool scale = true,
+    bool multipleImputation = false,
+    int displayedImputation = 1,
+    int imputationCount = 1,
+    const std::string &calculationMethod = "");
 DimensionalityReportLayout BuildDimensionalityReportLayout(
     const DimensionalityReportState &report);
 Rect DimensionalityReportRectForComponent(
@@ -525,7 +556,14 @@ DimensionalityReportViewModel BuildDimensionalityReportViewModel(
     const std::string &status,
     int focusedComponent = 0,
     const std::string &focusedVariable = "",
-    std::size_t maxShownComponents = 8);
+    std::size_t maxShownComponents = 8,
+    const std::string &missingMode = "listwise",
+    const std::string &rotation = "none",
+    bool scale = true,
+    bool multipleImputation = false,
+    int displayedImputation = 1,
+    int imputationCount = 1,
+    const std::string &calculationMethod = "");
 DimensionalityReportHit HitTestDimensionalityReport(
     const DimensionalityReportState &report,
     const DimensionalityReportLayout &layout,
@@ -563,7 +601,7 @@ DimensionalityVariableMenuState BuildDimensionalityVariableMenuState(
     const std::vector<std::string> &currentVariables,
     const std::vector<std::string> &availableVariables,
     std::size_t index,
-    std::size_t minimumVariables = 2);
+    std::size_t minimumVariables = 0);
 DimensionalityAnalysisMenuState BuildDimensionalityAnalysisMenuState(
     std::size_t availableComponentCount,
     int retainedComponentCount,
@@ -580,7 +618,7 @@ DimensionalityVariableUpdateResult DimensionalityVariablesAfterReplace(
 DimensionalityVariableUpdateResult DimensionalityVariablesAfterRemove(
     const std::vector<std::string> &currentVariables,
     std::size_t index,
-    std::size_t minimumVariables = 2);
+    std::size_t minimumVariables = 0);
 
 } // namespace core
 } // namespace rlispstat

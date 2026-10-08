@@ -85,7 +85,6 @@ int main(int argc, char **argv)
     rlispstat::platform::macos::BinaryAPAExportOptions options;
     options.title = rlispstat::core::BuildBinaryAPAReportModel(state).defaultTitle;
     if (argc == 5 && std::string(argv[4]) == "all-options") {
-        options.includeTermTests = true;
         options.includeDetailedFit = true;
     }
     std::string message;
@@ -97,16 +96,16 @@ int main(int argc, char **argv)
     NSString *pdfText = [document string];
     if (!document || [document pageCount] == 0 || !pdfText || [pdfText length] == 0) return 6;
     auto contains = [&](NSString *needle) { return [pdfText rangeOfString:needle].location != NSNotFound; };
-    if (!contains(@"Predictor") || !contains(@"LR \u03c7\u00b2") || !contains(@"cyl: 6 vs. 4") ||
+    if (!contains(@"Predictor") || !contains(@"LR \u03c7\u00b2") || !contains(@"6 (vs 4)") ||
         contains(@"U00002014")) return 7;
     if (argc != 5) {
-        if (contains(@"Likelihood-Ratio Tests of Model Terms") || contains(@"Detailed Binary Regression Model Fit") ||
+        if (contains(@"Global Tests of Model Terms") || contains(@"Detailed Binary Model Fit") ||
             contains(@"AIC") || contains(@"BIC") || contains(@"Apparent AUC")) return 8;
         if (state.binaryLink == rlispstat::core::BinaryLink::Logit) {
             if (!contains(@"95% CI for OR") || !contains(@"OR = odds ratio")) return 9;
         } else if (contains(@"OR = odds ratio") || !contains(@"probit scale")) return 10;
-    } else if (!contains(@"Likelihood-Ratio Tests of Model Terms") ||
-               !contains(@"Detailed Binary Regression Model Fit") || !contains(@"Apparent AUC")) return 11;
+    } else if (contains(@"Global Tests of Model Terms") ||
+               !contains(@"Detailed Binary Model Fit") || !contains(@"Apparent AUC")) return 11;
     if (argc >= 4) {
         std::ofstream csv(argv[3]);
         csv << rlispstat::core::BinaryRegressionCoefficientCSV(state);

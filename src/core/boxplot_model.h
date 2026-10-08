@@ -29,6 +29,21 @@ struct BoxplotLayout {
     bool connectRows = false;
     double yPaddingFraction = 0.08;
     double jitterWidth = 34.0;
+    // One outer-to-inner level path per category. When present, category
+    // centres use progressively larger gaps at outer group boundaries.
+    std::vector<std::vector<std::string>> categoryLevels;
+};
+
+struct BoxplotGroupSpan {
+    std::size_t level = 0;
+    std::string label;
+    // Inclusive leaf-category range covered by this branch.  Keeping it in
+    // the geometry model lets every UI make hierarchical labels selectable.
+    std::size_t firstCategoryIndex = 0;
+    std::size_t lastCategoryIndex = 0;
+    double startX = 0.0;
+    double endX = 0.0;
+    double centerX = 0.0;
 };
 
 struct BoxplotDisplayRange {
@@ -212,6 +227,13 @@ std::vector<std::string> OrderedBoxplotCategories(
     const std::string &order);
 std::vector<BoxplotMenuOption> BoxplotGroupOrderMenuOptions(const std::string &currentOrder);
 double BoxplotCategoryCenter(const BoxplotLayout &layout, const std::string &category);
+std::string BoxplotInnermostCategoryLabel(const BoxplotLayout &layout,
+                                          const std::string &category);
+std::vector<BoxplotGroupSpan> BoxplotGroupSpans(const BoxplotLayout &layout);
+std::set<std::string> BoxplotCategoriesForLevelValue(
+    const BoxplotLayout &layout,
+    std::size_t level,
+    const std::string &value);
 double BoxplotH0SimulationCenterX(const BoxplotLayout &layout);
 std::vector<BoxplotValueInterval> BoxplotTailIntervalsForAlternative(
     double displayMinimum,
@@ -350,6 +372,12 @@ inline bool RebuildParallelBoxplotPoints(PlotModel *model, std::string *error = 
 }
 void RebuildGroupedBoxplotPointsFromDataFrame(PlotModel &model,
                                               const DataFrameModel &df);
+std::string BoxplotGroupingLabel(const std::vector<std::string> &variables);
+std::string BoxplotNestedCategoryLabel(const std::vector<std::string> &variables,
+                                       const std::vector<std::string> &levels);
+std::vector<std::vector<std::string>> BoxplotCategoryLevelsForCategories(
+    const PlotModel &model,
+    const std::vector<std::string> &categories);
 inline void RebuildGroupedBoxplotPointsFromDataFrame(PlotModel *model,
                                                      const DataFrameModel &df) {
     if (model) RebuildGroupedBoxplotPointsFromDataFrame(*model, df);

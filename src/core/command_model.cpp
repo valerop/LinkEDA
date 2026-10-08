@@ -1,6 +1,7 @@
 #include "command_model.h"
 
 #include "export_model.h"
+#include "glm_model.h"
 
 #include <algorithm>
 #include <cctype>
@@ -106,7 +107,7 @@ PlotContextMenuTitles DefaultPlotContextMenuTitles()
         "Theme",
         "Brush",
         "Imputation uncertainty",
-        "Overlays",
+        "Regression lines",
         "Analyze This Plot",
         "Analyze This Bar Chart",
         "Analyze This Histogram",
@@ -124,9 +125,9 @@ DataSheetContextMenuTitles DefaultDataSheetContextMenuTitles()
         "Clear Row Color",
         "Clear All Row Colors",
         "Variable View",
-        "Treat Column as Numeric",
-        "Treat Column as Factor",
-        "Treat Column as Text",
+        "Set variable type to Numeric",
+        "Set variable type to Categorical",
+        "Set variable type to Text",
         "Show Variable Information",
         "Imputed Data Display",
         "All imputed values separated by |",
@@ -143,7 +144,7 @@ VariableViewContextMenuTitles DefaultVariableViewContextMenuTitles()
 {
     return {
         "Variable",
-        "Role",
+        "Default role (Experimental)",
         "Type",
         "Edit Description...",
         "Show Variable Information"
@@ -182,21 +183,21 @@ ModelContextMenuTitles DefaultModelContextMenuTitles()
         "Add Term...",
         "Change Selected Term...",
         "Remove Selected Term",
-        "Treat as Numeric",
-        "Treat as Factor",
-        "Treat Selected Term as Numeric",
-        "Treat Selected Term as Factor",
+        "Treat predictor as continuous",
+        "Treat predictor as categorical",
+        "Treat selected predictor as numeric",
+        "Treat selected predictor as categorical",
         "Show Selected Term Information",
         "Add/Remove term in this model",
         "Add term to all models",
-        "Remove term from all models",
+        "Remove term from comparison",
         "Copy Regression Table",
         "Explain statistic",
         "Open diagnostic plot",
         "Open relevant diagnostic plot",
         "Compare with null model",
         "Interpret interaction...",
-        "Interaction plot",
+        "Effect plot",
         "Partial regression plot",
         "Drop coefficient",
         "No available interactions",
@@ -208,7 +209,8 @@ ModelContextMenuTitles DefaultModelContextMenuTitles()
         "Open this model as single GLM window",
         "Open as single GLM window",
         "Open this model as single generalized GLM window",
-        "Open as single generalized GLM window"
+        "Open as single generalized GLM window",
+        "Compare models..."
     };
 }
 
@@ -217,6 +219,8 @@ std::vector<ApplicationMenuCommandOption> FileCommandOptions()
     return {
         {"Import Data...", "import_data", "FILE_IMPORT_DATA", "o", true, false},
         {"Open Data from R...", "open_data_from_r", "FILE_OPEN_DATA_FROM_R", "", false, false},
+        {"Export Data...", "export_data", "FILE_EXPORT_DATA", "", false, false},
+        {"Close Data File and Analyses", "close_data_file", "FILE_CLOSE_DATASET", "W", true, true},
         {"Return Data to R...", "return_data_to_r", "FILE_RETURN_DATA_TO_R", "", false, false},
         {"Return Selected Rows to R...", "return_selected_rows_to_r", "FILE_RETURN_SELECTED_ROWS_TO_R", "", false, false},
         {"Cancel without Returning", "cancel_data_return", "FILE_CANCEL_DATA_RETURN", "", false, false}
@@ -227,8 +231,8 @@ std::vector<std::vector<ApplicationMenuCommandOption>> FileCommandOptionGroups()
 {
     std::vector<ApplicationMenuCommandOption> options = FileCommandOptions();
     return {
-        {options[0], options[1]},
-        {options[2], options[3], options[4]}
+        {options[0], options[1], options[2], options[3]},
+        {options[4], options[5], options[6]}
     };
 }
 
@@ -263,6 +267,51 @@ std::vector<std::vector<ApplicationMenuCommandOption>> RecordCommandOptionGroups
     };
 }
 
+std::vector<ApplicationMenuCommandOption> ModelingCommandOptions()
+{
+    struct Actions {
+        StatisticalModelType type;
+        const char *fit;
+        const char *compare;
+        const char *fitValue;
+        const char *compareValue;
+    };
+    const std::vector<Actions> actions = {
+        {StatisticalModelType::Linear, "ANALYZE_GLM",
+         "ANALYZE_REGRESSION_COMPARISON", "linear_model", "compare_linear_models"},
+        {StatisticalModelType::Binary, "ANALYZE_BINARY_REGRESSION",
+         "ANALYZE_BINARY_REGRESSION_COMPARISON", "binary_model", "compare_binary_models"},
+        {StatisticalModelType::Count, "ANALYZE_COUNT_REGRESSION",
+         "ANALYZE_COUNT_REGRESSION_COMPARISON", "count_model", "compare_count_models"},
+        {StatisticalModelType::PositiveContinuous, "ANALYZE_POSITIVE_CONTINUOUS_MODEL",
+         "ANALYZE_POSITIVE_CONTINUOUS_COMPARISON", "positive_continuous_model",
+         "compare_positive_continuous_models"},
+        {StatisticalModelType::Proportion, "ANALYZE_PROPORTION_MODEL",
+         "ANALYZE_PROPORTION_COMPARISON", "proportion_model", "compare_proportion_models"}
+    };
+    std::vector<ApplicationMenuCommandOption> options;
+    for (const auto &action : actions) {
+        std::string subgroup = StatisticalModelTypeLabel(action.type);
+        constexpr const char suffix[] = " Model";
+        if (subgroup.size() >= sizeof(suffix) - 1 &&
+            subgroup.compare(subgroup.size() - (sizeof(suffix) - 1),
+                             sizeof(suffix) - 1, suffix) == 0) {
+            subgroup.erase(subgroup.size() - (sizeof(suffix) - 1));
+        }
+        const bool linear = action.type == StatisticalModelType::Linear;
+        options.push_back({"Fit Model...", action.fitValue, action.fit,
+                           linear ? "g" : "", linear, false, false, subgroup});
+        options.push_back({"Compare Models...", action.compareValue, action.compare,
+                           linear ? "G" : "", linear, linear, false, subgroup});
+        if (linear) {
+            options.push_back({"Model Trellis...", "linear_model_trellis",
+                               "ANALYZE_LINEAR_MODEL_TRELLIS", "", false, false,
+                               true, subgroup});
+        }
+    }
+    return options;
+}
+
 std::vector<ApplicationMenuCommandGroup> AnalyzeCommandMenuGroups()
 {
     return {
@@ -279,39 +328,70 @@ std::vector<ApplicationMenuCommandGroup> AnalyzeCommandMenuGroups()
         {
             "Test",
             {
-                {"One-Sample t Test...", "one_sample_t", "ANALYZE_ONE_SAMPLE_T", "", false, false},
-                {"Independent-Samples t Test...", "independent_t", "ANALYZE_INDEPENDENT_T", "", false, false},
-                {"Paired-Samples t Test...", "paired_t", "ANALYZE_PAIRED_T", "", false, false},
+                {"One-Sample Tests...", "one_sample_t", "ANALYZE_ONE_SAMPLE_T", "", false, false},
+                {"Two-Sample Tests...", "independent_t", "ANALYZE_INDEPENDENT_T", "", false, false},
+                {"Paired-Samples Tests...", "paired_t", "ANALYZE_PAIRED_T", "", false, false},
                 {"One-Way ANOVA...", "oneway_anova", "ANALYZE_ONEWAY_ANOVA", "", false, false}
             }
         },
         {
-            "Regression",
+            "",
             {
-                {"Linear Model...", "linear_model", "ANALYZE_GLM", "g", true, false},
-                {"Linear Model Trellis...", "linear_model_trellis", "ANALYZE_LINEAR_MODEL_TRELLIS", "", false, false},
-                {"Compare Linear Models...", "compare_linear_models", "ANALYZE_REGRESSION_COMPARISON", "G", true, true},
-                {"Binary Regression...", "binary_regression", "ANALYZE_BINARY_REGRESSION", "", false, false},
-                {"Compare Binary Regression Models...", "compare_binary_regression_models", "ANALYZE_BINARY_REGRESSION_COMPARISON", "", false, false},
-                {"Generalized Linear Model...", "generalized_linear_model", "ANALYZE_GENERALIZED_GLM", "", false, false},
-                {"Compare Generalized Linear Models...", "compare_generalized_linear_models", "ANALYZE_GENERALIZED_COMPARISON", "", false, false}
+                {"Scale Analysis...", "scale_analysis", "ANALYZE_SCALE_ANALYSIS", "", false, false}
             }
         },
         {
+            "Modeling",
+            ModelingCommandOptions()
+        },
+        {
+            // Preserve the implementation for possible future recovery, but
+            // keep both entry points outside the normal Analyze menu.
             "Mixed Models",
             {
-                {"Linear Mixed Model...", "linear_mixed_model", "ANALYZE_LINEAR_MIXED_MODEL", "", false, false},
+                {"Linear Mixed Model...", "linear_mixed_model", "ANALYZE_LINEAR_MIXED_MODEL", "", false, false, true},
                 {"Generalized Linear Mixed Model...", "generalized_linear_mixed_model", "ANALYZE_GENERALIZED_MIXED_MODEL", "", false, false, true}
             }
         }
     };
 }
 
+std::vector<ApplicationMenuCommandGroup> VisibleAnalyzeCommandMenuGroups(
+    bool includeExperimental)
+{
+    std::vector<ApplicationMenuCommandGroup> visible;
+    for (const auto &group : AnalyzeCommandMenuGroups()) {
+        ApplicationMenuCommandGroup visibleGroup;
+        visibleGroup.title = group.title;
+        for (const auto &option : group.options) {
+            if (includeExperimental || !option.experimental) {
+                visibleGroup.options.push_back(option);
+            }
+        }
+        if (!visibleGroup.options.empty()) {
+            visible.push_back(std::move(visibleGroup));
+        }
+    }
+    return visible;
+}
+
+std::string GlobalAnalysisScopeMenuTitle()
+{
+    return std::string("Analysis Scope") + "\xE2\x80\xA6";
+}
+
+std::string PlotAnalysisScopeMenuTitle()
+{
+    return std::string("Global Analysis Scope") + "\xE2\x80\xA6";
+}
+
 std::vector<ApplicationMenuCommandOption> AnalysisScopeCommandOptions()
 {
     return {
-        {"Use current selection", "selection", "SET_ANALYSIS_SCOPE_FROM_SELECTION", "", false, false},
-        {"Use all observations", "all", "SET_ANALYSIS_SCOPE_ALL", "", false, false}
+        {"Use Current Selection", "selection", "SET_ANALYSIS_SCOPE_FROM_SELECTION", "", false, false},
+        {"Use Unselected Observations", "unselected", "SET_ANALYSIS_SCOPE_UNSELECTED", "", false, false},
+        {"Save Current Selection as Scope...", "save-selection", "SAVE_ANALYSIS_SCOPE_FROM_SELECTION", "", false, false},
+        {"Use All Observations", "all", "SET_ANALYSIS_SCOPE_ALL", "", false, false}
     };
 }
 
@@ -434,8 +514,8 @@ std::vector<LinkedPlotCommandOption> DataColumnCommandOptions(const std::string 
 std::vector<LinkedPlotCommandOption> DataVariableTypeCommandOptions()
 {
     return {
-        {"Treat active X variable as Numeric", "numeric", "DATA_VARIABLE_TYPE_NUMERIC"},
-        {"Treat active X variable as Factor", "factor", "DATA_VARIABLE_TYPE_FACTOR"}
+        {"Set active X variable type to Numeric", "numeric", "DATA_VARIABLE_TYPE_NUMERIC"},
+        {"Set active X variable type to Categorical", "factor", "DATA_VARIABLE_TYPE_FACTOR"}
     };
 }
 
@@ -452,8 +532,8 @@ std::vector<LinkedPlotCommandOption> VariableViewTypeOptions()
 {
     return {
         {"Numeric", "numeric", ""},
-        {"Factor", "factor", ""},
-        {"Ordered factor", "ordered", ""},
+        {"Categorical", "factor", ""},
+        {"Ordinal", "ordered", ""},
         {"Text", "character", ""}
     };
 }
@@ -462,24 +542,25 @@ std::vector<LinkedPlotCommandOption> ModelTermTypeOptions()
 {
     return {
         {"Numeric", "numeric", ""},
-        {"Factor", "factor", ""}
+        {"Categorical", "factor", ""}
     };
 }
 
 std::vector<LinkedPlotCommandOption> ModelDiagnosticPlotOptions(bool includeExtended)
 {
-    std::vector<LinkedPlotCommandOption> options = {
+    // All regression surfaces share the same diagnostic contract.  The
+    // argument remains for source compatibility with older platform code,
+    // but a caller can no longer accidentally request a reduced menu.
+    (void)includeExtended;
+    return {
         {"Observed vs fitted", "observed_fitted", ""},
-        {"Residuals vs fitted", "residuals_fitted", ""}
+        {"Residuals vs fitted", "residuals_fitted", ""},
+        {"Residual histogram", "residual_histogram", ""},
+        {"Normal Q-Q of residuals", "normal_qq", ""},
+        {"Scale-location", "scale_location", ""},
+        {"Residuals vs leverage", "residuals_leverage", ""},
+        {"Cook's distance", "cooks_distance", ""}
     };
-    if (includeExtended) {
-        options.push_back({"Residual histogram", "residual_histogram", ""});
-        options.push_back({"Normal Q-Q of residuals", "normal_qq", ""});
-        options.push_back({"Scale-location", "scale_location", ""});
-        options.push_back({"Residuals vs leverage", "residuals_leverage", ""});
-        options.push_back({"Cook's distance", "cooks_distance", ""});
-    }
-    return options;
 }
 
 std::string PredictorTypeMenuTitle()
@@ -537,8 +618,10 @@ bool IsDataColumnCommandName(const std::string &commandName)
 
 bool IsNativeUiDispatchCommandName(const std::string &commandName)
 {
-    if (commandName == "DATA_CLOSE_DATA_SHEET" ||
+    if (commandName == "DATA_MISSING_DATA_OVERVIEW" || commandName == "DATA_MISSINGNESS_MODELS" || commandName == "DATA_IMPUTATION_DIAGNOSTICS" ||
+        commandName == "DATA_CLOSE_DATA_SHEET" ||
         commandName == "FILE_IMPORT_DATA" ||
+        commandName == "FILE_EXPORT_DATA" ||
         commandName == "FILE_OPEN_DATA_FROM_R" ||
         commandName == "FILE_RETURN_DATA_TO_R" ||
         commandName == "FILE_RETURN_SELECTED_ROWS_TO_R" ||
@@ -549,6 +632,12 @@ bool IsNativeUiDispatchCommandName(const std::string &commandName)
         commandName == "DATA_CHOOSE_LABEL_COLUMN" ||
         commandName == "DATA_VARIABLE_VIEW" ||
         commandName == "DATA_POINTS_COLOR" ||
+        // The generic generalized-model entries are intentionally absent from
+        // the user-facing Models menu.  Keep their legacy dispatch names
+        // registered so older .linkeda documents and integrations continue to
+        // resolve to the shared generalized-model infrastructure.
+        commandName == "ANALYZE_GENERALIZED_GLM" ||
+        commandName == "ANALYZE_GENERALIZED_COMPARISON" ||
         commandName == "OPEN_DENDROGRAM") {
         return true;
     }
@@ -602,7 +691,7 @@ std::vector<std::string> SplitMenuArgs(const std::string &command)
 CommandCategory Categorize(const std::string &name)
 {
     if (name == "PING" || name == "LIST_PLOTS" || name == "PLOT_INFO" ||
-        name == "GROUPS" || name == "GROUP_INFO" || name == "VARIABLES" ||
+        name == "GROUPS" || name == "GROUP_INFO" || name == "DATASET_SYNC_STATUS" || name == "VARIABLES" ||
         name == "GET_XVAR" || name == "GET_YVAR" || name == "DIAGNOSTIC_INFO" ||
         name == "GET_ANALYSIS_SCOPE" || name == "GET_SAVED_ANALYSIS_SCOPES") {
         return CommandCategory::Protocol;
@@ -622,6 +711,10 @@ CommandCategory Categorize(const std::string &name)
     if (name == "REGISTER_DATASET" || name == "REGISTER_DATASET_SILENT" ||
         name == "SET_ACTIVE_DATASET" || name == "NATIVE_IMPORT_FILE" ||
         name == "OPEN_VARIABLES_WINDOW" || name == "SET_VARIABLE_TYPE" ||
+        name == "SET_DEFAULT_VARIABLE_ROLE" ||
+        name == "SET_DATA_CELL" || name == "RENAME_VARIABLE" ||
+        name == "SET_VARIABLE_DESCRIPTION" || name == "SET_VARIABLE_DECIMALS" ||
+        name == "SET_LABEL_COLUMN" ||
         StartsWith(name, "DATA_") || StartsWith(name, "VARIABLE_")) {
         return CommandCategory::Dataset;
     }
@@ -632,7 +725,9 @@ CommandCategory Categorize(const std::string &name)
         name == "RESET_SELECTED_COLOR" || name == "GET_SELECTED_COLOR" ||
         name == "SET_POINT_COLOR" || name == "CLEAR_ROW_COLORS" ||
         StartsWith(name, "SELECTION_") || StartsWith(name, "SET_ANALYSIS_SCOPE_") ||
-        name == "USE_SAVED_ANALYSIS_SCOPE" || name == "ADD_SAVED_ANALYSIS_SCOPE") {
+        name == "SAVE_ANALYSIS_SCOPE_FROM_SELECTION" ||
+        name == "USE_SAVED_ANALYSIS_SCOPE" || name == "ADD_SAVED_ANALYSIS_SCOPE" ||
+        name == "TOGGLE_CASE_INCLUDED") {
         return CommandCategory::Selection;
     }
     if (StartsWith(name, "MODEL_") || StartsWith(name, "REGCMP_") ||
@@ -652,7 +747,8 @@ CommandCategory Categorize(const std::string &name)
         StartsWith(name, "ADD_BOXPLOT") || StartsWith(name, "ADD_HISTOGRAM") ||
         StartsWith(name, "ADD_BARPLOT") || StartsWith(name, "BOXPLOT_") ||
         StartsWith(name, "HIST_") || StartsWith(name, "BARPLOT_") ||
-        StartsWith(name, "PCA_BIPLOT_") || StartsWith(name, "SET_IMPUTATION_UNCERTAINTY") ||
+        StartsWith(name, "PCA_BIPLOT_") || StartsWith(name, "SET_IMPUTATION_DISPLAY") ||
+        StartsWith(name, "SET_IMPUTATION_UNCERTAINTY") ||
         StartsWith(name, "SCATTER_MATRIX_") || StartsWith(name, "TRELLIS_SCATTERPLOT_") || StartsWith(name, "SET_MODE_") ||
         StartsWith(name, "SET_SELECTION_") || name == "MODE" ||
         name == "SELECTION_OPERATION" || name == "RESET_ZOOM" ||
@@ -685,19 +781,28 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "DIAGNOSTIC_INFO") return CommandAction::DiagnosticInfo;
     if (name == "GROUPS") return CommandAction::Groups;
     if (name == "GROUP_INFO") return CommandAction::GroupInfo;
+    if (name == "DATASET_SYNC_STATUS") return CommandAction::DatasetSyncStatus;
     if (name == "VARIABLES") return CommandAction::Variables;
     if (name == "GET_XVAR") return CommandAction::GetXVariable;
     if (name == "GET_YVAR") return CommandAction::GetYVariable;
     if (name == "GET_ANALYSIS_SCOPE") return CommandAction::GetAnalysisScope;
     if (name == "GET_SAVED_ANALYSIS_SCOPES") return CommandAction::GetSavedAnalysisScopes;
+    if (name == "GET_EXCLUDED_ROWS") return CommandAction::GetExcludedRows;
+    if (name == "EXCLUDE_SELECTED_CASES") return CommandAction::ExcludeSelectedCases;
+    if (name == "INCLUDE_SELECTED_CASES") return CommandAction::IncludeSelectedCases;
+    if (name == "INCLUDE_ALL_CASES") return CommandAction::IncludeAllCases;
+    if (name == "TOGGLE_CASE_INCLUDED") return CommandAction::ToggleCaseIncluded;
     if (name == "SET_ANALYSIS_SCOPE_ALL") return CommandAction::SetAnalysisScopeAll;
-    if (name == "SET_ANALYSIS_SCOPE_FROM_SELECTION") return CommandAction::SetAnalysisScopeFromSelection;
+    if (name == "SET_ANALYSIS_SCOPE_FROM_SELECTION" || name == "SET_ANALYSIS_SCOPE_UNSELECTED") return CommandAction::SetAnalysisScopeFromSelection;
     if (name == "SET_ANALYSIS_SCOPE_FROM_ROWS") return CommandAction::SetAnalysisScopeFromRows;
+    if (name == "SAVE_ANALYSIS_SCOPE_FROM_SELECTION") return CommandAction::SaveAnalysisScopeFromSelection;
     if (name == "USE_SAVED_ANALYSIS_SCOPE") return CommandAction::UseSavedAnalysisScope;
     if (name == "ADD_SAVED_ANALYSIS_SCOPE") return CommandAction::AddSavedAnalysisScope;
+    if (name == "PLOT_TOGGLE_SCOPE_FREEZE") return CommandAction::TogglePlotScopeFreeze;
     if (name == "OPEN_EQUIVALENT_WITH_ACTIVE_SCOPE") return CommandAction::OpenEquivalentWithActiveScope;
     if (name == "OPEN_EQUIVALENT_WITH_ALL_ROWS") return CommandAction::OpenEquivalentWithAllRows;
     if (name == "FILE_IMPORT_DATA") return CommandAction::FileImportData;
+    if (name == "FILE_EXPORT_DATA") return CommandAction::FileExportData;
     if (name == "FILE_OPEN_DATA_FROM_R") return CommandAction::FileOpenDataFromR;
     if (name == "FILE_RETURN_DATA_TO_R") return CommandAction::FileReturnDataToR;
     if (name == "FILE_RETURN_SELECTED_ROWS_TO_R") return CommandAction::FileReturnSelectedRowsToR;
@@ -722,14 +827,24 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "DATA_VARIABLE_TYPE_NUMERIC") return CommandAction::SetVariableTypeNumeric;
     if (name == "DATA_VARIABLE_TYPE_FACTOR") return CommandAction::SetVariableTypeFactor;
     if (name == "SET_VARIABLE_TYPE") return CommandAction::SetVariableType;
+    if (name == "SET_DEFAULT_VARIABLE_ROLE") return CommandAction::SetDefaultVariableRole;
+    if (name == "SET_DATA_CELL") return CommandAction::SetDataCell;
+    if (name == "RENAME_VARIABLE") return CommandAction::RenameVariable;
+    if (name == "SET_VARIABLE_DESCRIPTION") return CommandAction::SetVariableDescription;
+    if (name == "SET_VARIABLE_DECIMALS") return CommandAction::SetVariableDecimals;
+    if (name == "SET_LABEL_COLUMN") return CommandAction::SetLabelColumn;
     if (name == "DATA_SHOW_VARIABLE_INFORMATION" || name == "VARIABLE_INFO") {
         return CommandAction::ShowVariableInformation;
     }
+    if (name == "SHOW_R_CODE") return CommandAction::ShowRCode;
+    if (name == "SHOW_R_PUBLICATION_CODE") return CommandAction::ShowRPublicationCode;
     if (name == "DATA_MAKE_SUBSET_FROM_SELECTION") return CommandAction::MakeSubsetFromSelection;
     if (name == "DATA_MAKE_SUBSET_FROM_SAVED_SELECTION") return CommandAction::MakeSubsetFromSavedSelection;
+    if (name == "DATA_MAKE_SUBSET_FROM_VARIABLES") return CommandAction::MakeSubsetFromVariables;
     if (name == "MODEL_INFO") return CommandAction::ModelInfo;
     if (name == "MODEL_SET_Y") return CommandAction::ModelSetY;
     if (name == "MODEL_ADD_TERM") return CommandAction::ModelAddTerm;
+    if (name == "MODEL_REPLACE_TERM") return CommandAction::ModelReplaceTerm;
     if (name == "MODEL_REMOVE_TERM") return CommandAction::ModelRemoveTerm;
     if (name == "MODEL_CLEAR_ROLE") return CommandAction::ModelClearRole;
     if (name == "MODEL_SCOPE") return CommandAction::ModelScope;
@@ -776,9 +891,20 @@ CommandAction ResolveAction(const std::string &name)
     }
     if (name == "TRELLIS_SCATTERPLOT_SET_TYPE") return CommandAction::SetTrellisPlotType;
     if (name == "TRELLIS_SCATTERPLOT_SET_TYPE_WITH_X") return CommandAction::SetTrellisPlotTypeWithX;
+    if (name == "TRELLIS_SCATTERPLOT_SET_BOXPLOT_GROUPS") return CommandAction::SetTrellisBoxplotGroupingVariables;
+    if (name == "TRELLIS_SCATTERPLOT_BOXPLOT_ADD_GROUP") return CommandAction::AddTrellisBoxplotGroupingVariable;
+    if (name == "TRELLIS_SCATTERPLOT_BOXPLOT_REPLACE_GROUP") return CommandAction::ReplaceTrellisBoxplotGroupingVariable;
+    if (name == "TRELLIS_SCATTERPLOT_BOXPLOT_REMOVE_GROUP") return CommandAction::RemoveTrellisBoxplotGroupingVariable;
+    if (name == "TRELLIS_SCATTERPLOT_BOXPLOT_MOVE_GROUP_EARLIER") return CommandAction::MoveTrellisBoxplotGroupingVariableEarlier;
+    if (name == "TRELLIS_SCATTERPLOT_BOXPLOT_MOVE_GROUP_LATER") return CommandAction::MoveTrellisBoxplotGroupingVariableLater;
     if (name == "TRELLIS_SCATTERPLOT_ADD_CONDITION_CATEGORICAL") return CommandAction::AddTrellisConditionCategorical;
+    if (name == "TRELLIS_SCATTERPLOT_ADD_CONDITION_ORDERED") return CommandAction::AddTrellisConditionOrdered;
     if (name == "TRELLIS_SCATTERPLOT_ADD_CONDITION_EQUAL_WIDTH") return CommandAction::AddTrellisConditionEqualWidth;
     if (name == "TRELLIS_SCATTERPLOT_ADD_CONDITION_EQUAL_COUNT") return CommandAction::AddTrellisConditionEqualCount;
+    if (name == "TRELLIS_SCATTERPLOT_SET_CONDITION_FACTOR") return CommandAction::SetTrellisConditionFactor;
+    if (name == "TRELLIS_SCATTERPLOT_SET_CONDITION_ORDERED") return CommandAction::SetTrellisConditionOrdered;
+    if (name == "TRELLIS_SCATTERPLOT_SET_CONDITION_EQUAL_WIDTH") return CommandAction::SetTrellisConditionEqualWidth;
+    if (name == "TRELLIS_SCATTERPLOT_SET_CONDITION_EQUAL_COUNT") return CommandAction::SetTrellisConditionEqualCount;
     if (name == "TRELLIS_SCATTERPLOT_REMOVE_CONDITION") return CommandAction::RemoveTrellisCondition;
     if (name == "TRELLIS_SCATTERPLOT_MOVE_CONDITION_EARLIER") return CommandAction::MoveTrellisConditionEarlier;
     if (name == "TRELLIS_SCATTERPLOT_MOVE_CONDITION_LATER") return CommandAction::MoveTrellisConditionLater;
@@ -789,6 +915,7 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "TRELLIS_SCATTERPLOT_DIMENSION_COLUMNS") return CommandAction::SetTrellisConditionDimensionColumns;
     if (name == "TRELLIS_SCATTERPLOT_DIMENSION_NESTED") return CommandAction::SetTrellisConditionDimensionNested;
     if (name == "TRELLIS_SCATTERPLOT_SWAP_DIMENSIONS") return CommandAction::SwapTrellisRowsAndColumns;
+    if (name == "TRELLIS_SCATTERPLOT_TOGGLE_Y_AXIS_SIDE") return CommandAction::ToggleTrellisYAxisSide;
     if (name == "TRELLIS_SCATTERPLOT_SET_SPLIT") return CommandAction::SetTrellisSplitVariable;
     if (name == "TRELLIS_SCATTERPLOT_SET_SCALE") return CommandAction::SetTrellisScaleMode;
     if (name == "TRELLIS_SCATTERPLOT_SET_BAR_MEASURE") return CommandAction::SetTrellisBarMeasure;
@@ -806,6 +933,36 @@ CommandAction ResolveAction(const std::string &name)
     }
     if (name == "TIME_SERIES_SET_LEGEND_POSITION") {
         return CommandAction::SetTimeSeriesLegendPosition;
+    }
+    if (name == "PLOT_INTERACTION_SET_LEGEND_POSITION") {
+        return CommandAction::SetInteractionLegendPosition;
+    }
+    if (name == "PLOT_REGRESSION_TOGGLE_CONNECTING_LINE") {
+        return CommandAction::ToggleRegressionConnectingLine;
+    }
+    if (name == "PLOT_REGRESSION_TOGGLE_CONFIDENCE_INTERVALS") {
+        return CommandAction::ToggleRegressionConfidenceIntervals;
+    }
+    if (name == "PLOT_SMOOTH_TOGGLE_CONFIDENCE_INTERVALS") {
+        return CommandAction::ToggleSmoothConfidenceIntervals;
+    }
+    if (name == "PLOT_REGRESSION_TOGGLE_CONFIDENCE_LEVEL") {
+        return CommandAction::ToggleRegressionConfidenceLevel;
+    }
+    if (name == "PLOT_REGRESSION_SET_EFFECT_X") {
+        return CommandAction::SetRegressionEffectXAxis;
+    }
+    if (name == "PLOT_REGRESSION_SET_EFFECT_QUANTITY") {
+        return CommandAction::SetRegressionEffectQuantity;
+    }
+    if (name == "PLOT_REGRESSION_SET_EFFECT_ADJUSTMENT") {
+        return CommandAction::SetRegressionEffectAdjustment;
+    }
+    if (name == "PLOT_REGRESSION_SET_EFFECT_PRESENTATION") {
+        return CommandAction::SetRegressionEffectPresentation;
+    }
+    if (name == "PLOT_REGRESSION_SET_EFFECT_CONFIDENCE") {
+        return CommandAction::SetRegressionEffectConfidence;
     }
     if (name == "PLOT_NEW_LINKED_SCATTER_MATRIX") {
         return CommandAction::NewScatterMatrix;
@@ -865,12 +1022,20 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "CONTEXT_CORRELATION_XY") return CommandAction::ContextCorrelationXY;
     if (name == "CONTEXT_DESCRIPTIVES_XY") return CommandAction::ContextDescriptivesXY;
     if (name == "CONTEXT_LINEAR_MODEL_XY") return CommandAction::ContextLinearModelXY;
+    if (name == "PLOT_ANALYZE_MODEL") return CommandAction::PlotAnalyzeModel;
+    if (name == "PLOT_ANALYZE_CORRELATIONS") return CommandAction::PlotAnalyzeCorrelations;
+    if (name == "PLOT_ANALYZE_CONTINGENCY") return CommandAction::PlotAnalyzeContingency;
+    if (name == "PLOT_ANALYZE_DESCRIPTIVES") return CommandAction::PlotAnalyzeDescriptives;
     if (name == "CONTEXT_HISTOGRAM_FREQUENCY") return CommandAction::ContextHistogramFrequency;
     if (name == "CONTEXT_HISTOGRAM_DESCRIPTIVES") return CommandAction::ContextHistogramDescriptives;
     if (name == "CONTEXT_BARCHART_TABLE") return CommandAction::ContextBarchartTable;
     if (name == "CONTEXT_BARCHART_NESTED_TABLE") return CommandAction::ContextBarchartNestedTable;
     if (name == "CONTEXT_BOXPLOT_DESCRIPTIVES") return CommandAction::ContextBoxplotDescriptives;
     if (name == "ANALYZE_CONTINGENCY_TABLE") return CommandAction::AnalyzeContingencyTable;
+    if (name == "CORR_SET_PART") return CommandAction::CorrelationSetPart;
+    if (name == "CORR_TOGGLE_DISPLAY") return CommandAction::CorrelationToggleDisplay;
+    if (name == "CORR_SET_MISSING") return CommandAction::CorrelationSetMissing;
+    if (name == "CORR_UPDATE") return CommandAction::CorrelationUpdate;
     if (name == "CORR_OPEN_STRUCTURED") return CommandAction::CorrelationOpenStructured;
     if (name == "CORR_OPEN") return CommandAction::CorrelationOpen;
     if (name == "CORR_SET_VARIABLES") return CommandAction::CorrelationSetVariables;
@@ -881,12 +1046,23 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "PCAFA_OPEN") return CommandAction::DimensionalityOpen;
     if (name == "PCAFA_UPDATE") return CommandAction::DimensionalityUpdate;
     if (name == "PCAFA_SET_VARIABLES") return CommandAction::DimensionalitySetVariables;
+    if (name == "PCAFA_SET_IMPUTATION") return CommandAction::DimensionalitySetImputation;
     if (name == "PCAFA_INFO") return CommandAction::DimensionalityInfo;
+    if (name == "SCALE_ANALYSIS_OPEN") return CommandAction::ScaleAnalysisOpen;
+    if (name == "SCALE_ANALYSIS_UPDATE") return CommandAction::ScaleAnalysisUpdate;
+    if (name == "SCALE_ANALYSIS_SET_ITEMS") return CommandAction::ScaleAnalysisSetItems;
+    if (name == "SCALE_ANALYSIS_INFO") return CommandAction::ScaleAnalysisInfo;
+    if (name == "DENDRO_UPDATE") return CommandAction::DendrogramUpdate;
     if (name == "DENDRO_OPEN") return CommandAction::DendrogramOpen;
     if (name == "DENDRO_SET_VARIABLES") return CommandAction::DendrogramSetVariables;
+    if (name == "DENDRO_SET_DISTANCE") return CommandAction::DendrogramSetDistance;
     if (name == "DENDRO_INFO") return CommandAction::DendrogramInfo;
-    if (name == "OPEN_DIMENSIONALITY" || name == "ANALYZE_DIMENSIONALITY") {
+    if (name == "OPEN_DIMENSIONALITY" || name == "ANALYZE_DIMENSIONALITY" ||
+        name == "ANALYZE_FACTOR_ANALYSIS") {
         return CommandAction::OpenDimensionality;
+    }
+    if (name == "OPEN_SCALE_ANALYSIS" || name == "ANALYZE_SCALE_ANALYSIS") {
+        return CommandAction::OpenScaleAnalysis;
     }
     if (name == "OPEN_DENDROGRAM" || name == "ANALYZE_QUICK_CLUSTER") {
         return CommandAction::OpenDendrogram;
@@ -903,10 +1079,14 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "ANALYZE_INDEPENDENT_T") return CommandAction::AnalyzeIndependentT;
     if (name == "ANALYZE_PAIRED_T") return CommandAction::AnalyzePairedT;
     if (name == "ANALYZE_ONEWAY_ANOVA") return CommandAction::AnalyzeOneWayAnova;
+    if (name == "DATA_IMPUTATION_DIAGNOSTICS") return CommandAction::OpenImputationDiagnostics;
+    if (name == "SHOW_MISSING_INFORMATION") return CommandAction::ShowMissingInformation;
+    if (name == "MI_ADD_VARIABLE") return CommandAction::MissingInformationAddVariable;
+    if (name == "SET_DIAGNOSTIC_PLOT_PROVENANCE") return CommandAction::SetDiagnosticPlotProvenance;
     if (name == "ANALYZE_MISSING_DATA_IMPUTATION") {
         return CommandAction::AnalyzeMissingDataImputation;
     }
-    if (name == "DATA_MISSING_DATA_PATTERNS") {
+    if (name == "DATA_MISSING_DATA_PATTERNS" || name == "DATA_MISSING_DATA_OVERVIEW" || name == "DATA_MISSINGNESS_MODELS") {
         return CommandAction::DataMissingDataPatterns;
     }
     if (name == "GLM" || name == "OPEN_GLM" || name == "ANALYZE_GLM") return CommandAction::OpenGLM;
@@ -922,14 +1102,42 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "OPEN_GENERALIZED_GLM" || name == "ANALYZE_GENERALIZED_GLM") {
         return CommandAction::OpenGeneralizedGLM;
     }
+    if (name == "OPEN_POSITIVE_CONTINUOUS_MODEL" ||
+        name == "ANALYZE_POSITIVE_CONTINUOUS_MODEL") {
+        return CommandAction::OpenPositiveContinuousModel;
+    }
+    if (name == "OPEN_PROPORTION_MODEL" || name == "ANALYZE_PROPORTION_MODEL") {
+        return CommandAction::OpenProportionModel;
+    }
+    if (name == "OPEN_COUNT_REGRESSION" || name == "ANALYZE_COUNT_REGRESSION") {
+        return CommandAction::OpenCountRegression;
+    }
+    if (name == "OPEN_COUNT_REGRESSION_COMPARISON" ||
+        name == "ANALYZE_COUNT_REGRESSION_COMPARISON") {
+        return CommandAction::OpenCountRegressionComparison;
+    }
     if (name == "OPEN_BINARY_REGRESSION" || name == "ANALYZE_BINARY_REGRESSION") {
         return CommandAction::OpenBinaryRegression;
     }
     if (name == "OPEN_GENERALIZED_COMPARISON" || name == "ANALYZE_GENERALIZED_COMPARISON") {
         return CommandAction::OpenGeneralizedComparison;
     }
+    if (name == "OPEN_POSITIVE_CONTINUOUS_COMPARISON" ||
+        name == "ANALYZE_POSITIVE_CONTINUOUS_COMPARISON") {
+        return CommandAction::OpenPositiveContinuousComparison;
+    }
+    if (name == "OPEN_PROPORTION_COMPARISON" ||
+        name == "ANALYZE_PROPORTION_COMPARISON") {
+        return CommandAction::OpenProportionComparison;
+    }
     if (name == "OPEN_BINARY_REGRESSION_COMPARISON" || name == "ANALYZE_BINARY_REGRESSION_COMPARISON") {
         return CommandAction::OpenBinaryRegressionComparison;
+    }
+    if (name == "GENERALIZED_COMPARISON_UPDATE_ERROR") {
+        return CommandAction::GeneralizedComparisonUpdateError;
+    }
+    if (name == "GENERALIZED_COMPARISON_OPEN_STRUCTURED") {
+        return CommandAction::GeneralizedComparisonOpenStructured;
     }
     if (name == "ANALYZE_LINEAR_MIXED_MODEL") return CommandAction::AnalyzeLinearMixedModel;
     if (name == "ANALYZE_GENERALIZED_MIXED_MODEL") return CommandAction::AnalyzeGeneralizedMixedModel;
@@ -961,6 +1169,11 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "BOXPLOT_ADD_VARIABLE") return CommandAction::BoxplotAddVariable;
     if (name == "BOXPLOT_REMOVE_VARIABLE") return CommandAction::BoxplotRemoveVariable;
     if (name == "BOXPLOT_REPLACE_VARIABLE") return CommandAction::BoxplotReplaceVariable;
+    if (name == "BOXPLOT_ADD_GROUPING_VARIABLE") return CommandAction::BoxplotAddGroupingVariable;
+    if (name == "BOXPLOT_REPLACE_GROUPING_VARIABLE") return CommandAction::BoxplotReplaceGroupingVariable;
+    if (name == "BOXPLOT_REMOVE_GROUPING_VARIABLE") return CommandAction::BoxplotRemoveGroupingVariable;
+    if (name == "BOXPLOT_MOVE_GROUPING_VARIABLE_EARLIER") return CommandAction::BoxplotMoveGroupingVariableEarlier;
+    if (name == "BOXPLOT_MOVE_GROUPING_VARIABLE_LATER") return CommandAction::BoxplotMoveGroupingVariableLater;
     if (name == "BOXPLOT_SPLIT_VIOLIN") return CommandAction::BoxplotSplitViolin;
     if (name == "BOXPLOT_H0_SIMULATION") return CommandAction::BoxplotH0Simulation;
     if (name == "BOXPLOT_OPTION") return CommandAction::BoxplotOption;
@@ -971,7 +1184,11 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "BOXPLOT_HIDE_BOX") return CommandAction::BoxplotHideBox;
     if (name == "BOXPLOT_SHOW_WHISKERS") return CommandAction::BoxplotShowWhiskers;
     if (name == "BOXPLOT_HIDE_WHISKERS") return CommandAction::BoxplotHideWhiskers;
+    if (name == "SCATTER_TOGGLE_OVERLAP_SIZE") return CommandAction::ScatterToggleOverlapSize;
+    if (name == "SCATTER_TOGGLE_OVERLAP_SHADING") return CommandAction::ScatterToggleOverlapShading;
     if (name == "HIST_TOGGLE_COUNTS") return CommandAction::HistogramToggleCounts;
+    if (name == "HIST_TOGGLE_TICK_MARKS") return CommandAction::HistogramToggleTickMarks;
+    if (name == "HIST_TOGGLE_TICK_LABELS") return CommandAction::HistogramToggleTickLabels;
     if (name == "HIST_TOGGLE_RUG") return CommandAction::HistogramToggleRug;
     if (name == "HIST_TOGGLE_DENSITY") return CommandAction::HistogramToggleDensity;
     if (name == "HIST_BREAKS") return CommandAction::HistogramBreaks;
@@ -984,9 +1201,19 @@ CommandAction ResolveAction(const std::string &name)
     if (name == "HIST_SET_DENSITY_ADJUST") return CommandAction::HistogramSetDensityAdjust;
     if (name == "PCA_BIPLOT_SET_X") return CommandAction::BiplotSetX;
     if (name == "PCA_BIPLOT_SET_Y") return CommandAction::BiplotSetY;
+    if (name == "SET_IMPUTATION_DISPLAY") return CommandAction::SetImputationDisplay;
     if (name == "SET_IMPUTATION_UNCERTAINTY") return CommandAction::SetImputationUncertainty;
     if (name == "CHANGE_X_VARIABLE" || name == "SET_XVAR") return CommandAction::ChangeXVariable;
     if (name == "CHANGE_Y_VARIABLE" || name == "SET_YVAR") return CommandAction::ChangeYVariable;
+    if (name == "PLOT_COLOR_BY") return CommandAction::SetPlotColorBy;
+    if (name == "SAVE_COLOR_SCHEME") return CommandAction::SaveColorScheme;
+    if (name == "APPLY_COLOR_SCHEME") return CommandAction::ApplyColorScheme;
+    if (name == "PLOT_COLOR_LEGEND_VISIBLE") return CommandAction::SetPlotColorLegendVisible;
+    if (name == "PLOT_COLOR_LEGEND_POSITION") return CommandAction::SetPlotColorLegendPosition;
+    if (name == "PLOT_CONDITION_CATEGORICAL") return CommandAction::ConditionPlotCategorical;
+    if (name == "PLOT_CONDITION_ORDERED") return CommandAction::ConditionPlotOrdered;
+    if (name == "PLOT_CONDITION_EQUAL_WIDTH") return CommandAction::ConditionPlotEqualWidth;
+    if (name == "PLOT_CONDITION_EQUAL_COUNT") return CommandAction::ConditionPlotEqualCount;
     if (name == "SET_MODE_NONE") return CommandAction::SetModeNone;
     if (name == "SET_MODE_SELECT") return CommandAction::SetModeSelect;
     if (name == "SET_MODE_BRUSH") return CommandAction::SetModeBrush;
@@ -1118,19 +1345,28 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::DiagnosticInfo: return "diagnostic_info";
     case CommandAction::Groups: return "groups";
     case CommandAction::GroupInfo: return "group_info";
+    case CommandAction::DatasetSyncStatus: return "dataset_sync_status";
     case CommandAction::Variables: return "variables";
     case CommandAction::GetXVariable: return "get_x_variable";
     case CommandAction::GetYVariable: return "get_y_variable";
     case CommandAction::GetAnalysisScope: return "get_analysis_scope";
     case CommandAction::GetSavedAnalysisScopes: return "get_saved_analysis_scopes";
+    case CommandAction::GetExcludedRows: return "get_excluded_rows";
+    case CommandAction::ExcludeSelectedCases: return "exclude_selected_cases";
+    case CommandAction::IncludeSelectedCases: return "include_selected_cases";
+    case CommandAction::IncludeAllCases: return "include_all_cases";
+    case CommandAction::ToggleCaseIncluded: return "toggle_case_included";
     case CommandAction::SetAnalysisScopeAll: return "set_analysis_scope_all";
     case CommandAction::SetAnalysisScopeFromSelection: return "set_analysis_scope_from_selection";
     case CommandAction::SetAnalysisScopeFromRows: return "set_analysis_scope_from_rows";
+    case CommandAction::SaveAnalysisScopeFromSelection: return "save_analysis_scope_from_selection";
     case CommandAction::UseSavedAnalysisScope: return "use_saved_analysis_scope";
     case CommandAction::AddSavedAnalysisScope: return "add_saved_analysis_scope";
+    case CommandAction::TogglePlotScopeFreeze: return "toggle_plot_scope_freeze";
     case CommandAction::OpenEquivalentWithActiveScope: return "open_equivalent_with_active_scope";
     case CommandAction::OpenEquivalentWithAllRows: return "open_equivalent_with_all_rows";
     case CommandAction::FileImportData: return "file_import_data";
+    case CommandAction::FileExportData: return "file_export_data";
     case CommandAction::FileOpenDataFromR: return "file_open_data_from_r";
     case CommandAction::OpenDataSheet: return "open_data_sheet";
     case CommandAction::RegisterDataset: return "register_dataset";
@@ -1145,12 +1381,22 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::SetVariableTypeNumeric: return "set_variable_type_numeric";
     case CommandAction::SetVariableTypeFactor: return "set_variable_type_factor";
     case CommandAction::SetVariableType: return "set_variable_type";
+    case CommandAction::SetDefaultVariableRole: return "set_default_variable_role";
+    case CommandAction::SetDataCell: return "set_data_cell";
+    case CommandAction::RenameVariable: return "rename_variable";
+    case CommandAction::SetVariableDescription: return "set_variable_description";
+    case CommandAction::SetVariableDecimals: return "set_variable_decimals";
+    case CommandAction::SetLabelColumn: return "set_label_column";
     case CommandAction::ShowVariableInformation: return "show_variable_information";
+    case CommandAction::ShowRCode: return "show_r_code";
+    case CommandAction::ShowRPublicationCode: return "show_r_publication_code";
     case CommandAction::MakeSubsetFromSelection: return "make_subset_from_selection";
     case CommandAction::MakeSubsetFromSavedSelection: return "make_subset_from_saved_selection";
+    case CommandAction::MakeSubsetFromVariables: return "make_subset_from_variables";
     case CommandAction::ModelInfo: return "model_info";
     case CommandAction::ModelSetY: return "model_set_y";
     case CommandAction::ModelAddTerm: return "model_add_term";
+    case CommandAction::ModelReplaceTerm: return "model_replace_term";
     case CommandAction::ModelRemoveTerm: return "model_remove_term";
     case CommandAction::ModelClearRole: return "model_clear_role";
     case CommandAction::ModelScope: return "model_scope";
@@ -1211,12 +1457,20 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::BarplotLevelResetColor: return "barplot_level_reset_color";
     case CommandAction::BarplotSegmentDetails: return "barplot_segment_details";
     case CommandAction::ContextCorrelationXY: return "context_correlation_xy";
+    case CommandAction::CorrelationSetPart: return "correlation_set_part";
+    case CommandAction::CorrelationToggleDisplay: return "correlation_toggle_display";
+    case CommandAction::CorrelationSetMissing: return "correlation_set_missing";
+    case CommandAction::CorrelationUpdate: return "correlation_update";
     case CommandAction::CorrelationOpenStructured: return "correlation_open_structured";
     case CommandAction::CorrelationOpen: return "correlation_open";
     case CommandAction::CorrelationSetVariables: return "correlation_set_variables";
     case CommandAction::CorrelationInfo: return "correlation_info";
     case CommandAction::ContextDescriptivesXY: return "context_descriptives_xy";
     case CommandAction::ContextLinearModelXY: return "context_linear_model_xy";
+    case CommandAction::PlotAnalyzeModel: return "plot_analyze_model";
+    case CommandAction::PlotAnalyzeCorrelations: return "plot_analyze_correlations";
+    case CommandAction::PlotAnalyzeContingency: return "plot_analyze_contingency";
+    case CommandAction::PlotAnalyzeDescriptives: return "plot_analyze_descriptives";
     case CommandAction::ContextHistogramFrequency: return "context_histogram_frequency";
     case CommandAction::ContextHistogramDescriptives: return "context_histogram_descriptives";
     case CommandAction::ContextBarchartTable: return "context_barchart_table";
@@ -1227,11 +1481,18 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::DimensionalityOpen: return "dimensionality_open";
     case CommandAction::DimensionalityUpdate: return "dimensionality_update";
     case CommandAction::DimensionalitySetVariables: return "dimensionality_set_variables";
+    case CommandAction::DimensionalitySetImputation: return "dimensionality_set_imputation";
     case CommandAction::DimensionalityInfo: return "dimensionality_info";
+    case CommandAction::ScaleAnalysisOpen: return "scale_analysis_open";
+    case CommandAction::ScaleAnalysisUpdate: return "scale_analysis_update";
+    case CommandAction::ScaleAnalysisSetItems: return "scale_analysis_set_items";
+    case CommandAction::ScaleAnalysisInfo: return "scale_analysis_info";
     case CommandAction::DendrogramOpen: return "dendrogram_open";
     case CommandAction::DendrogramSetVariables: return "dendrogram_set_variables";
+    case CommandAction::DendrogramSetDistance: return "dendrogram_set_distance";
     case CommandAction::DendrogramInfo: return "dendrogram_info";
     case CommandAction::OpenDimensionality: return "open_dimensionality";
+    case CommandAction::OpenScaleAnalysis: return "open_scale_analysis";
     case CommandAction::OpenDendrogram: return "open_dendrogram";
     case CommandAction::Table1OpenStructured: return "table1_open_structured";
     case CommandAction::Table1OpenText: return "table1_open_text";
@@ -1248,12 +1509,20 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::OpenLinearModelTrellis: return "open_linear_model_trellis";
     case CommandAction::OpenRegressionComparison: return "open_regression_comparison";
     case CommandAction::OpenGeneralizedGLM: return "open_generalized_glm";
+    case CommandAction::OpenPositiveContinuousModel: return "open_positive_continuous_model";
+    case CommandAction::OpenProportionModel: return "open_proportion_model";
+    case CommandAction::OpenCountRegression: return "open_count_regression";
+    case CommandAction::OpenCountRegressionComparison: return "open_count_regression_comparison";
     case CommandAction::OpenBinaryRegression: return "open_binary_regression";
     case CommandAction::GeneralizedGLMOpen: return "generalized_glm_open";
     case CommandAction::GeneralizedGLMOpenPooled: return "generalized_glm_open_pooled";
     case CommandAction::GeneralizedGLMOpenDiagnostic: return "generalized_glm_open_diagnostic";
     case CommandAction::OpenGeneralizedComparison: return "open_generalized_comparison";
+    case CommandAction::OpenPositiveContinuousComparison: return "open_positive_continuous_comparison";
+    case CommandAction::OpenProportionComparison: return "open_proportion_comparison";
     case CommandAction::OpenBinaryRegressionComparison: return "open_binary_regression_comparison";
+    case CommandAction::GeneralizedComparisonUpdateError: return "generalized_comparison_update_error";
+    case CommandAction::GeneralizedComparisonOpenStructured: return "generalized_comparison_open_structured";
     case CommandAction::AnalyzeLinearMixedModel: return "analyze_linear_mixed_model";
     case CommandAction::AnalyzeGeneralizedMixedModel: return "analyze_generalized_mixed_model";
     case CommandAction::MixedModelOpenStructured: return "mixed_model_open_structured";
@@ -1284,6 +1553,11 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::BoxplotAddVariable: return "boxplot_add_variable";
     case CommandAction::BoxplotRemoveVariable: return "boxplot_remove_variable";
     case CommandAction::BoxplotReplaceVariable: return "boxplot_replace_variable";
+    case CommandAction::BoxplotAddGroupingVariable: return "boxplot_add_grouping_variable";
+    case CommandAction::BoxplotReplaceGroupingVariable: return "boxplot_replace_grouping_variable";
+    case CommandAction::BoxplotRemoveGroupingVariable: return "boxplot_remove_grouping_variable";
+    case CommandAction::BoxplotMoveGroupingVariableEarlier: return "boxplot_move_grouping_variable_earlier";
+    case CommandAction::BoxplotMoveGroupingVariableLater: return "boxplot_move_grouping_variable_later";
     case CommandAction::BoxplotSplitViolin: return "boxplot_split_violin";
     case CommandAction::BoxplotH0Simulation: return "boxplot_h0_simulation";
     case CommandAction::BoxplotOption: return "boxplot_option";
@@ -1294,7 +1568,11 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::BoxplotHideBox: return "boxplot_hide_box";
     case CommandAction::BoxplotShowWhiskers: return "boxplot_show_whiskers";
     case CommandAction::BoxplotHideWhiskers: return "boxplot_hide_whiskers";
+    case CommandAction::ScatterToggleOverlapSize: return "scatter_toggle_overlap_size";
+    case CommandAction::ScatterToggleOverlapShading: return "scatter_toggle_overlap_shading";
     case CommandAction::HistogramToggleCounts: return "histogram_toggle_counts";
+    case CommandAction::HistogramToggleTickMarks: return "histogram_toggle_tick_marks";
+    case CommandAction::HistogramToggleTickLabels: return "histogram_toggle_tick_labels";
     case CommandAction::HistogramToggleRug: return "histogram_toggle_rug";
     case CommandAction::HistogramToggleDensity: return "histogram_toggle_density";
     case CommandAction::HistogramBreaks: return "histogram_breaks";
@@ -1307,9 +1585,19 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::HistogramSetDensityAdjust: return "histogram_set_density_adjust";
     case CommandAction::BiplotSetX: return "biplot_set_x";
     case CommandAction::BiplotSetY: return "biplot_set_y";
+    case CommandAction::SetImputationDisplay: return "set_imputation_display";
     case CommandAction::SetImputationUncertainty: return "set_imputation_uncertainty";
     case CommandAction::ChangeXVariable: return "change_x_variable";
     case CommandAction::ChangeYVariable: return "change_y_variable";
+    case CommandAction::SetPlotColorBy: return "set_plot_color_by";
+    case CommandAction::SaveColorScheme: return "save_color_scheme";
+    case CommandAction::ApplyColorScheme: return "apply_color_scheme";
+    case CommandAction::SetPlotColorLegendVisible: return "set_plot_color_legend_visible";
+    case CommandAction::SetPlotColorLegendPosition: return "set_plot_color_legend_position";
+    case CommandAction::ConditionPlotCategorical: return "condition_plot_categorical";
+    case CommandAction::ConditionPlotOrdered: return "condition_plot_ordered";
+    case CommandAction::ConditionPlotEqualWidth: return "condition_plot_equal_width";
+    case CommandAction::ConditionPlotEqualCount: return "condition_plot_equal_count";
     case CommandAction::SetTrellisScatterplotX: return "set_trellis_scatterplot_x";
     case CommandAction::SetTrellisScatterplotY: return "set_trellis_scatterplot_y";
     case CommandAction::SetTrellisScatterplotCondition: return "set_trellis_scatterplot_condition";
@@ -1317,9 +1605,20 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::SetTrellisScatterplotOrder: return "set_trellis_scatterplot_order";
     case CommandAction::SetTrellisPlotType: return "set_trellis_plot_type";
     case CommandAction::SetTrellisPlotTypeWithX: return "set_trellis_plot_type_with_x";
+    case CommandAction::SetTrellisBoxplotGroupingVariables: return "set_trellis_boxplot_grouping_variables";
+    case CommandAction::AddTrellisBoxplotGroupingVariable: return "add_trellis_boxplot_grouping_variable";
+    case CommandAction::ReplaceTrellisBoxplotGroupingVariable: return "replace_trellis_boxplot_grouping_variable";
+    case CommandAction::RemoveTrellisBoxplotGroupingVariable: return "remove_trellis_boxplot_grouping_variable";
+    case CommandAction::MoveTrellisBoxplotGroupingVariableEarlier: return "move_trellis_boxplot_grouping_variable_earlier";
+    case CommandAction::MoveTrellisBoxplotGroupingVariableLater: return "move_trellis_boxplot_grouping_variable_later";
     case CommandAction::AddTrellisConditionCategorical: return "add_trellis_condition_categorical";
+    case CommandAction::AddTrellisConditionOrdered: return "add_trellis_condition_ordered";
     case CommandAction::AddTrellisConditionEqualWidth: return "add_trellis_condition_equal_width";
     case CommandAction::AddTrellisConditionEqualCount: return "add_trellis_condition_equal_count";
+    case CommandAction::SetTrellisConditionFactor: return "set_trellis_condition_factor";
+    case CommandAction::SetTrellisConditionOrdered: return "set_trellis_condition_ordered";
+    case CommandAction::SetTrellisConditionEqualWidth: return "set_trellis_condition_equal_width";
+    case CommandAction::SetTrellisConditionEqualCount: return "set_trellis_condition_equal_count";
     case CommandAction::RemoveTrellisCondition: return "remove_trellis_condition";
     case CommandAction::MoveTrellisConditionEarlier: return "move_trellis_condition_earlier";
     case CommandAction::MoveTrellisConditionLater: return "move_trellis_condition_later";
@@ -1330,6 +1629,7 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::SetTrellisConditionDimensionColumns: return "set_trellis_condition_dimension_columns";
     case CommandAction::SetTrellisConditionDimensionNested: return "set_trellis_condition_dimension_nested";
     case CommandAction::SwapTrellisRowsAndColumns: return "swap_trellis_rows_and_columns";
+    case CommandAction::ToggleTrellisYAxisSide: return "toggle_trellis_y_axis_side";
     case CommandAction::SetTrellisSplitVariable: return "set_trellis_split_variable";
     case CommandAction::SetTrellisScaleMode: return "set_trellis_scale_mode";
     case CommandAction::SetTrellisBarMeasure: return "set_trellis_bar_measure";
@@ -1339,6 +1639,12 @@ std::string CommandActionName(CommandAction action)
     case CommandAction::SetTimeSeriesGroup: return "set_time_series_group";
     case CommandAction::SetTimeSeriesIdentification: return "set_time_series_identification";
     case CommandAction::SetTimeSeriesLegendPosition: return "set_time_series_legend_position";
+    case CommandAction::SetInteractionLegendPosition: return "set_interaction_legend_position";
+    case CommandAction::ToggleRegressionConnectingLine: return "toggle_regression_connecting_line";
+    case CommandAction::ToggleRegressionConfidenceIntervals: return "toggle_regression_confidence_intervals";
+    case CommandAction::ToggleSmoothConfidenceIntervals: return "toggle_smooth_confidence_intervals";
+    case CommandAction::ToggleRegressionConfidenceLevel: return "toggle_regression_confidence_level";
+    case CommandAction::SetRegressionEffectXAxis: return "set_regression_effect_x_axis";
     case CommandAction::SetModeNone: return "set_mode_none";
     case CommandAction::SetModeSelect: return "set_mode_select";
     case CommandAction::SetModeBrush: return "set_mode_brush";
@@ -1428,6 +1734,7 @@ bool CommandIsDatasetCommand(const CommandRequest &request)
     return request.category == CommandCategory::Dataset ||
         request.name == "GROUPS" ||
         request.name == "GROUP_INFO" ||
+        request.name == "DATASET_SYNC_STATUS" ||
         request.name == "VARIABLES";
 }
 

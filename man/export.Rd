@@ -43,7 +43,7 @@ ls_copy_histogram(plot, format = NULL, theme = NULL)
 \description{
 Builds structured regression tables for single linear models, model-comparison
 windows, and generalized linear models, renders them as plain text, Markdown,
-or PDF, and exports linked boxplots/histograms. Factor predictors are rendered
+or PDF, and exports linked boxplots/histograms. Categorical predictors are rendered
 as parent/level rows when structured coefficient rows are available. Plot
 export uses the native view when available and falls back to a base R rendering
 otherwise.

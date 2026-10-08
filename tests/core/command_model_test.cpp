@@ -13,6 +13,7 @@ using rlispstat::core::CommandIsDatasetCommand;
 using rlispstat::core::CommandModelSpec;
 using rlispstat::core::CommandRequiresPlot;
 using rlispstat::core::AnalyzeCommandMenuGroups;
+using rlispstat::core::VisibleAnalyzeCommandMenuGroups;
 using rlispstat::core::ActiveDatasetCommandOptions;
 using rlispstat::core::AutoRefitMenuTitle;
 using rlispstat::core::DataColumnCommandOptions;
@@ -33,6 +34,8 @@ using rlispstat::core::EncodeCommandField;
 using rlispstat::core::EncodeCommandModelSpecTable;
 using rlispstat::core::FileCommandOptionGroups;
 using rlispstat::core::FileCommandOptions;
+using rlispstat::core::GlobalAnalysisScopeMenuTitle;
+using rlispstat::core::PlotAnalysisScopeMenuTitle;
 using rlispstat::core::IsDataColumnCommandName;
 using rlispstat::core::IsLinkedPlotCommandName;
 using rlispstat::core::IsNativeUiDispatchCommandName;
@@ -70,6 +73,16 @@ int main()
     assert(menuTitles.activeDataset == "Active Dataset");
     assert(menuTitles.variableType == "Variable Type");
     assert(menuTitles.colorSelectedPoints == "Color Selected Points");
+    assert(GlobalAnalysisScopeMenuTitle() ==
+           std::string("Analysis Scope") + "\xE2\x80\xA6");
+    assert(PlotAnalysisScopeMenuTitle() ==
+           std::string("Global Analysis Scope") + "\xE2\x80\xA6");
+    const auto scopeCommands = rlispstat::core::AnalysisScopeCommandOptions();
+    assert(scopeCommands.size() == 4);
+    assert(scopeCommands[0].command == "SET_ANALYSIS_SCOPE_FROM_SELECTION");
+    assert(scopeCommands[1].command == "SET_ANALYSIS_SCOPE_UNSELECTED");
+    assert(scopeCommands[2].command == "SAVE_ANALYSIS_SCOPE_FROM_SELECTION");
+    assert(scopeCommands[3].command == "SET_ANALYSIS_SCOPE_ALL");
     auto plotContextTitles = DefaultPlotContextMenuTitles();
     assert(plotContextTitles.root == "LinkEDA");
     assert(plotContextTitles.variables == "Variables");
@@ -80,6 +93,7 @@ int main()
     assert(plotContextTitles.openColorPalette == "Open color palette");
     assert(plotContextTitles.addDataColumn == "Add Column to Data");
     assert(plotContextTitles.theme == "Theme");
+    assert(plotContextTitles.overlays == "Regression lines");
     assert(plotContextTitles.analyzeThisHistogram == "Analyze This Histogram");
     assert(plotContextTitles.plot == "Plot");
     assert(plotContextTitles.exportMenu == "Export");
@@ -89,7 +103,9 @@ int main()
     assert(dataSheetTitles.clearRowColor == "Clear Row Color");
     assert(dataSheetTitles.clearAllRowColors == "Clear All Row Colors");
     assert(dataSheetTitles.variableView == "Variable View");
-    assert(dataSheetTitles.treatColumnAsText == "Treat Column as Text");
+    assert(dataSheetTitles.treatColumnAsNumeric == "Set variable type to Numeric");
+    assert(dataSheetTitles.treatColumnAsFactor == "Set variable type to Categorical");
+    assert(dataSheetTitles.treatColumnAsText == "Set variable type to Text");
     assert(dataSheetTitles.showVariableInformation == "Show Variable Information");
     assert(dataSheetTitles.imputedDataDisplay == "Imputed Data Display");
     assert(dataSheetTitles.allImputedValuesDisplay == "All imputed values separated by |");
@@ -98,7 +114,7 @@ int main()
     assert(DataSheetImputationVersionTitle(0) == "Imputation 1");
     auto variableViewTitles = DefaultVariableViewContextMenuTitles();
     assert(variableViewTitles.root == "Variable");
-    assert(variableViewTitles.role == "Role");
+    assert(variableViewTitles.role == "Default role (Experimental)");
     assert(variableViewTitles.type == "Type");
     assert(variableViewTitles.editDescription == "Edit Description...");
     auto modelMenuTitles = DefaultModelContextMenuTitles();
@@ -111,8 +127,11 @@ int main()
     assert(modelMenuTitles.changeType == "Change type...");
     assert(modelMenuTitles.responseVariable == "Response Variable");
     assert(modelMenuTitles.predictorTerms == "Predictor Terms");
+    assert(modelMenuTitles.treatAsFactor == "Treat predictor as categorical");
+    assert(modelMenuTitles.treatSelectedTermAsFactor ==
+           "Treat selected predictor as categorical");
     assert(modelMenuTitles.addRemoveTermInModel == "Add/Remove term in this model");
-    assert(modelMenuTitles.removeTermFromAllModels == "Remove term from all models");
+    assert(modelMenuTitles.removeTermFromAllModels == "Remove term from comparison");
     assert(modelMenuTitles.copyRegressionTable == "Copy Regression Table");
     assert(modelMenuTitles.openDiagnosticPlot == "Open diagnostic plot");
     assert(modelMenuTitles.interpretInteraction == "Interpret interaction...");
@@ -131,39 +150,52 @@ int main()
     auto variableTypeOptions = VariableViewTypeOptions();
     assert(variableTypeOptions.size() == 4);
     assert(variableTypeOptions[0].value == "numeric");
-    assert(variableTypeOptions[2].title == "Ordered factor");
+    assert(variableTypeOptions[0].title == "Numeric");
+    assert(variableTypeOptions[1].title == "Categorical");
+    assert(variableTypeOptions[2].title == "Ordinal");
     assert(variableTypeOptions[3].value == "character");
     auto modelTermTypeOptions = ModelTermTypeOptions();
     assert(modelTermTypeOptions.size() == 2);
     assert(modelTermTypeOptions[0].title == "Numeric");
     assert(modelTermTypeOptions[0].value == "numeric");
-    assert(modelTermTypeOptions[1].title == "Factor");
+    assert(modelTermTypeOptions[1].title == "Categorical");
     assert(modelTermTypeOptions[1].value == "factor");
     auto basicDiagnosticOptions = ModelDiagnosticPlotOptions(false);
-    assert(basicDiagnosticOptions.size() == 2);
+    assert(basicDiagnosticOptions.size() == 7);
     assert(basicDiagnosticOptions[0].title == "Observed vs fitted");
     assert(basicDiagnosticOptions[0].value == "observed_fitted");
     assert(basicDiagnosticOptions[1].value == "residuals_fitted");
+    assert(basicDiagnosticOptions[2].value == "residual_histogram");
+    assert(basicDiagnosticOptions[3].title == "Normal Q-Q of residuals");
+    assert(basicDiagnosticOptions[6].value == "cooks_distance");
     auto fullDiagnosticOptions = ModelDiagnosticPlotOptions(true);
     assert(fullDiagnosticOptions.size() == 7);
     assert(fullDiagnosticOptions[2].value == "residual_histogram");
     assert(fullDiagnosticOptions[3].title == "Normal Q-Q of residuals");
     assert(fullDiagnosticOptions[6].value == "cooks_distance");
+    for (std::size_t i = 0; i < fullDiagnosticOptions.size(); ++i) {
+        assert(fullDiagnosticOptions[i].title == basicDiagnosticOptions[i].title);
+        assert(fullDiagnosticOptions[i].value == basicDiagnosticOptions[i].value);
+        assert(fullDiagnosticOptions[i].command == basicDiagnosticOptions[i].command);
+    }
     assert(PredictorTypeMenuTitle() == "Predictor type");
     assert(TermTypeMenuTitle() == "Term type");
     auto fileOptions = FileCommandOptions();
-    assert(fileOptions.size() == 5);
+    assert(fileOptions.size() == 7);
     assert(fileOptions[0].command == "FILE_IMPORT_DATA");
     assert(fileOptions[0].keyEquivalent == "o");
     assert(fileOptions[0].commandModifier);
     assert(!fileOptions[0].shiftModifier);
     assert(fileOptions[1].command == "FILE_OPEN_DATA_FROM_R");
-    assert(fileOptions[2].command == "FILE_RETURN_DATA_TO_R");
-    assert(fileOptions[3].command == "FILE_RETURN_SELECTED_ROWS_TO_R");
-    assert(fileOptions[4].command == "FILE_CANCEL_DATA_RETURN");
+    assert(fileOptions[2].command == "FILE_EXPORT_DATA");
+    assert(fileOptions[3].command == "FILE_CLOSE_DATASET");
+    assert(fileOptions[3].commandModifier && fileOptions[3].shiftModifier);
+    assert(fileOptions[4].command == "FILE_RETURN_DATA_TO_R");
+    assert(fileOptions[5].command == "FILE_RETURN_SELECTED_ROWS_TO_R");
+    assert(fileOptions[6].command == "FILE_CANCEL_DATA_RETURN");
     auto fileGroups = FileCommandOptionGroups();
     assert(fileGroups.size() == 2);
-    assert(fileGroups[0].size() == 2);
+    assert(fileGroups[0].size() == 4);
     assert(fileGroups[1].size() == 3);
     auto editOptions = EditCommandOptions();
     assert(editOptions.size() == 3);
@@ -178,23 +210,74 @@ int main()
     assert(recordGroups[2][2].title == "Copy Internal Commands");
     assert(recordGroups[3][0].command == "RECORD_CLEAR");
     auto analyzeGroups = AnalyzeCommandMenuGroups();
-    assert(analyzeGroups.size() == 4);
+    assert(analyzeGroups.size() == 5);
     assert(analyzeGroups[0].title == "Descriptives");
     assert(analyzeGroups[0].options[0].command == "ANALYZE_TABLE1");
     assert(analyzeGroups[0].options[1].command == "ANALYZE_CONTINGENCY_TABLE");
+    assert(analyzeGroups[0].options.size() == 5);
+    assert(analyzeGroups[0].options[3].title ==
+           "Principal Components / Factor Analysis...");
+    assert(analyzeGroups[0].options[3].command == "ANALYZE_DIMENSIONALITY");
     assert(analyzeGroups[1].options[3].command == "ANALYZE_ONEWAY_ANOVA");
     assert(analyzeGroups[1].title == "Test");
-    assert(analyzeGroups[2].title == "Regression");
-    assert(analyzeGroups[2].options[0].keyEquivalent == "g");
-    assert(analyzeGroups[2].options[0].commandModifier);
-    assert(analyzeGroups[2].options[1].title == "Linear Model Trellis...");
-    assert(analyzeGroups[2].options[1].command == "ANALYZE_LINEAR_MODEL_TRELLIS");
-    assert(analyzeGroups[2].options[2].shiftModifier);
-    assert(analyzeGroups[2].options[3].command == "ANALYZE_BINARY_REGRESSION");
-    assert(analyzeGroups[2].options[4].command == "ANALYZE_BINARY_REGRESSION_COMPARISON");
-    assert(analyzeGroups[3].options[1].command == "ANALYZE_GENERALIZED_MIXED_MODEL");
-    assert(!analyzeGroups[3].options[0].experimental);
-    assert(analyzeGroups[3].options[1].experimental);
+    assert(analyzeGroups[2].title.empty());
+    assert(analyzeGroups[2].options.size() == 1);
+    assert(analyzeGroups[2].options[0].title == "Scale Analysis...");
+    assert(analyzeGroups[2].options[0].command == "ANALYZE_SCALE_ANALYSIS");
+    assert(analyzeGroups[3].title == "Modeling");
+    assert(analyzeGroups[3].options[0].keyEquivalent == "g");
+    assert(analyzeGroups[3].options[0].commandModifier);
+    assert(analyzeGroups[3].options.size() == 11);
+    assert(analyzeGroups[3].options[0].title == "Fit Model...");
+    assert(analyzeGroups[3].options[0].subgroupTitle == "Linear");
+    assert(analyzeGroups[3].options[1].title == "Compare Models...");
+    assert(analyzeGroups[3].options[1].command == "ANALYZE_REGRESSION_COMPARISON");
+    assert(analyzeGroups[3].options[1].shiftModifier);
+    assert(analyzeGroups[3].options[2].command == "ANALYZE_LINEAR_MODEL_TRELLIS");
+    assert(analyzeGroups[3].options[2].experimental);
+    assert(analyzeGroups[3].options[3].command == "ANALYZE_BINARY_REGRESSION");
+    assert(analyzeGroups[3].options[4].command == "ANALYZE_BINARY_REGRESSION_COMPARISON");
+    assert(analyzeGroups[3].options[5].command == "ANALYZE_COUNT_REGRESSION");
+    assert(analyzeGroups[3].options[6].command == "ANALYZE_COUNT_REGRESSION_COMPARISON");
+    assert(analyzeGroups[3].options[7].command == "ANALYZE_POSITIVE_CONTINUOUS_MODEL");
+    assert(analyzeGroups[3].options[8].command == "ANALYZE_POSITIVE_CONTINUOUS_COMPARISON");
+    assert(analyzeGroups[3].options[9].command == "ANALYZE_PROPORTION_MODEL");
+    assert(analyzeGroups[3].options[10].command == "ANALYZE_PROPORTION_COMPARISON");
+    const std::vector<std::string> modelSubgroups = {
+        "Linear", "Binary", "Count", "Positive Continuous", "Proportion"};
+    for (const auto &subgroup : modelSubgroups) {
+        int fitCount = 0;
+        int compareCount = 0;
+        for (const auto &option : analyzeGroups[3].options) {
+            if (option.subgroupTitle != subgroup || option.experimental) continue;
+            fitCount += option.title == "Fit Model..." ? 1 : 0;
+            compareCount += option.title == "Compare Models..." ? 1 : 0;
+        }
+        assert(fitCount == 1);
+        assert(compareCount == 1);
+    }
+    for (const auto &option : analyzeGroups[3].options)
+        assert(option.command != "ANALYZE_GENERALIZED_GLM");
+    assert(analyzeGroups[4].options[1].command == "ANALYZE_GENERALIZED_MIXED_MODEL");
+    assert(analyzeGroups[4].options[0].experimental);
+    assert(analyzeGroups[4].options[1].experimental);
+    auto visibleAnalyzeGroups = VisibleAnalyzeCommandMenuGroups();
+    assert(visibleAnalyzeGroups.size() == 4);
+    assert(visibleAnalyzeGroups[2].title.empty());
+    assert(visibleAnalyzeGroups[2].options[0].command == "ANALYZE_SCALE_ANALYSIS");
+    assert(visibleAnalyzeGroups[3].title == "Modeling");
+    assert(visibleAnalyzeGroups[3].options.size() == 10);
+    for (const auto &group : visibleAnalyzeGroups) {
+        assert(group.title != "Mixed Models");
+        for (const auto &option : group.options) {
+            assert(!option.experimental);
+            assert(option.command != "ANALYZE_LINEAR_MODEL_TRELLIS");
+            assert(option.command != "ANALYZE_LINEAR_MIXED_MODEL");
+            assert(option.command != "ANALYZE_GENERALIZED_MIXED_MODEL");
+        }
+    }
+    auto experimentalAnalyzeGroups = VisibleAnalyzeCommandMenuGroups(true);
+    assert(experimentalAnalyzeGroups.size() == analyzeGroups.size());
     auto plotMenuOptions = PlotCommandOptions();
     assert(plotMenuOptions.size() == 8);
     assert(plotMenuOptions[0].command == "PLOT_NEW_LINKED_SCATTERPLOT");
@@ -262,6 +345,7 @@ int main()
     assert(!IsDataColumnCommandName("DATA_POINTS_COLOR"));
     assert(IsNativeUiDispatchCommandName("DATA_CLOSE_DATA_SHEET"));
     assert(IsNativeUiDispatchCommandName("FILE_IMPORT_DATA"));
+    assert(IsNativeUiDispatchCommandName("FILE_EXPORT_DATA"));
     assert(IsNativeUiDispatchCommandName("FILE_RETURN_DATA_TO_R"));
     assert(IsNativeUiDispatchCommandName("FILE_OPEN_DATA_FROM_R"));
     assert(IsNativeUiDispatchCommandName("FILE_RETURN_SELECTED_ROWS_TO_R"));
@@ -289,7 +373,7 @@ int main()
     auto dataVariableTypeOptions = DataVariableTypeCommandOptions();
     assert(dataVariableTypeOptions.size() == 2);
     assert(dataVariableTypeOptions[0].value == "numeric");
-    assert(dataVariableTypeOptions[1].title == "Treat active X variable as Factor");
+    assert(dataVariableTypeOptions[1].title == "Set active X variable type to Categorical");
     assert(DataPointsColorPaletteCommandOption().command == "DATA_POINTS_COLOR");
     assert(DataPointsColorPaletteCommandOption().title == "Open Data Points Color Palette...");
     assert(DataVariableInformationCommandOption().command == "DATA_SHOW_VARIABLE_INFORMATION");
@@ -345,11 +429,21 @@ int main()
     auto setVariableType = ParseCommandRequest({"SET_VARIABLE_TYPE", "cars", "cyl", "factor"});
     assert(setVariableType.category == CommandCategory::Dataset);
     assert(setVariableType.action == CommandAction::SetVariableType);
+    auto setDefaultRole = ParseCommandRequest(
+        {"SET_DEFAULT_VARIABLE_ROLE", "cars", "mpg", "dependent"});
+    assert(setDefaultRole.category == CommandCategory::Dataset);
+    assert(setDefaultRole.action == CommandAction::SetDefaultVariableRole);
+    assert(CommandActionName(setDefaultRole.action) == "set_default_variable_role");
 
     auto useSavedScope = ParseMenuCommand("USE_SAVED_ANALYSIS_SCOPE|cars|High mileage cars");
     assert(useSavedScope.category == CommandCategory::Selection);
     assert(useSavedScope.action == CommandAction::UseSavedAnalysisScope);
     assert(useSavedScope.args[1] == "High mileage cars");
+    auto saveScope = ParseMenuCommand(
+        "SAVE_ANALYSIS_SCOPE_FROM_SELECTION|cars|High mileage cars|data-sheet");
+    assert(saveScope.category == CommandCategory::Selection);
+    assert(saveScope.action == CommandAction::SaveAnalysisScopeFromSelection);
+    assert(CommandActionName(saveScope.action) == "save_analysis_scope_from_selection");
     auto addSavedScope = ParseMenuCommand("ADD_SAVED_ANALYSIS_SCOPE|cars|Odd cars");
     assert(addSavedScope.action == CommandAction::AddSavedAnalysisScope);
     auto subsetCurrent = ParseMenuCommand("DATA_MAKE_SUBSET_FROM_SELECTION|cars");
@@ -357,6 +451,9 @@ int main()
     assert(subsetCurrent.action == CommandAction::MakeSubsetFromSelection);
     auto subsetSaved = ParseMenuCommand("DATA_MAKE_SUBSET_FROM_SAVED_SELECTION|cars|Odd cars");
     assert(subsetSaved.action == CommandAction::MakeSubsetFromSavedSelection);
+    auto subsetVariables = ParseMenuCommand("DATA_MAKE_SUBSET_FROM_VARIABLES|cars");
+    assert(subsetVariables.action == CommandAction::MakeSubsetFromVariables);
+    assert(CommandActionName(subsetVariables.action) == "make_subset_from_variables");
     auto getSavedScopes = ParseCommandRequest({"GET_SAVED_ANALYSIS_SCOPES", "cars"});
     assert(getSavedScopes.category == CommandCategory::Protocol);
     assert(getSavedScopes.action == CommandAction::GetSavedAnalysisScopes);
@@ -368,6 +465,9 @@ int main()
 
     auto registerSilent = ParseCommandRequest({"REGISTER_DATASET_SILENT", "cars", "DATAFRAME", "0"});
     assert(registerSilent.action == CommandAction::RegisterDatasetSilent);
+    auto syncStatus = ParseCommandRequest({"DATASET_SYNC_STATUS", "cars"});
+    assert(syncStatus.category == CommandCategory::Protocol);
+    assert(syncStatus.action == CommandAction::DatasetSyncStatus);
 
     auto panel = ParseCommandRequest({"PANEL", "show"});
     assert(panel.category == CommandCategory::Window);
@@ -394,6 +494,15 @@ int main()
     auto modelAddTerm = ParseCommandRequest({"MODEL_ADD_TERM", "cars", "wt"});
     assert(modelAddTerm.action == CommandAction::ModelAddTerm);
 
+    auto modelReplaceTerm = ParseCommandRequest(
+        {"MODEL_REPLACE_TERM", "cars", "wt", "hp"});
+    assert(modelReplaceTerm.category == CommandCategory::Model);
+    assert(modelReplaceTerm.action == CommandAction::ModelReplaceTerm);
+    assert(modelReplaceTerm.args.size() == 3);
+    assert(modelReplaceTerm.args[1] == "wt");
+    assert(modelReplaceTerm.args[2] == "hp");
+    assert(CommandActionName(modelReplaceTerm.action) == "model_replace_term");
+
     auto modelDiagnostic = ParseCommandRequest({"MODEL_OPEN_DIAGNOSTIC", "cars", "residuals_fitted"});
     assert(modelDiagnostic.action == CommandAction::ModelOpenDiagnostic);
     assert(CommandActionName(modelDiagnostic.action) == "model_open_diagnostic");
@@ -409,6 +518,10 @@ int main()
 
     auto selectedRows = ParseCommandRequest({"SELECTED", "cars"});
     assert(selectedRows.action == CommandAction::SelectedRows);
+
+    auto toggleCase = ParseCommandRequest({"TOGGLE_CASE_INCLUDED", "cars", "3"});
+    assert(toggleCase.category == CommandCategory::Selection);
+    assert(toggleCase.action == CommandAction::ToggleCaseIncluded);
 
     auto selectAllRows = ParseCommandRequest({"SELECT_ALL", "cars"});
     assert(selectAllRows.action == CommandAction::SelectAllRows);
@@ -432,6 +545,21 @@ int main()
     assert(menu.args.size() == 1);
     assert(menu.args[0] == "wt");
     assert(menu.category == CommandCategory::Plot);
+    assert(ParseMenuCommand("PLOT_COLOR_BY|cyl").action ==
+           CommandAction::SetPlotColorBy);
+    assert(ParseMenuCommand("PLOT_COLOR_LEGEND_VISIBLE|0").action ==
+           CommandAction::SetPlotColorLegendVisible);
+    assert(ParseMenuCommand("PLOT_COLOR_LEGEND_POSITION|bottom_left").action ==
+           CommandAction::SetPlotColorLegendPosition);
+    assert(ParseMenuCommand("PLOT_CONDITION_CATEGORICAL|cyl").action ==
+           CommandAction::ConditionPlotCategorical);
+    assert(ParseMenuCommand("PLOT_CONDITION_EQUAL_COUNT|mpg").action ==
+           CommandAction::ConditionPlotEqualCount);
+    const auto smoothConfidence =
+        ParseMenuCommand("PLOT_SMOOTH_TOGGLE_CONFIDENCE_INTERVALS");
+    assert(smoothConfidence.action == CommandAction::ToggleSmoothConfidenceIntervals);
+    assert(CommandActionName(smoothConfidence.action) ==
+           "toggle_smooth_confidence_intervals");
 
     auto equivalentActive = ParseMenuCommand("OPEN_EQUIVALENT_WITH_ACTIVE_SCOPE");
     assert(equivalentActive.category == CommandCategory::Analysis);
@@ -439,6 +567,10 @@ int main()
     assert(CommandActionName(equivalentActive.action) == "open_equivalent_with_active_scope");
     auto equivalentAll = ParseMenuCommand("OPEN_EQUIVALENT_WITH_ALL_ROWS");
     assert(equivalentAll.action == CommandAction::OpenEquivalentWithAllRows);
+    auto freezeScope = ParseMenuCommand("PLOT_TOGGLE_SCOPE_FREEZE");
+    assert(freezeScope.category == CommandCategory::Plot);
+    assert(freezeScope.action == CommandAction::TogglePlotScopeFreeze);
+    assert(CommandActionName(freezeScope.action) == "toggle_plot_scope_freeze");
 
     auto barplot = ParseMenuCommand("BARPLOT_REPLACE_X|old|new");
     assert(barplot.name == "BARPLOT_REPLACE_X");
@@ -614,6 +746,26 @@ int main()
     auto boxplotOrder = ParseCommandRequest({"BOXPLOT_GROUP_ORDER", "box_1", "median_desc"});
     assert(boxplotOrder.action == CommandAction::BoxplotGroupOrder);
     assert(CommandActionName(boxplotOrder.action) == "boxplot_group_order");
+    assert(ParseCommandRequest({"BOXPLOT_ADD_GROUPING_VARIABLE", "box_1", "am"}).action ==
+           CommandAction::BoxplotAddGroupingVariable);
+    assert(ParseCommandRequest({"BOXPLOT_REPLACE_GROUPING_VARIABLE", "box_1", "am", "vs"}).action ==
+           CommandAction::BoxplotReplaceGroupingVariable);
+    assert(ParseCommandRequest({"BOXPLOT_MOVE_GROUPING_VARIABLE_LATER", "box_1", "am"}).action ==
+           CommandAction::BoxplotMoveGroupingVariableLater);
+    assert(ParseCommandRequest({"TRELLIS_SCATTERPLOT_SET_BOXPLOT_GROUPS", "trellis_1", "2", "am", "vs"}).action ==
+           CommandAction::SetTrellisBoxplotGroupingVariables);
+    assert(ParseCommandRequest({"TRELLIS_SCATTERPLOT_BOXPLOT_REPLACE_GROUP", "trellis_1", "am", "vs"}).action ==
+           CommandAction::ReplaceTrellisBoxplotGroupingVariable);
+    assert(ParseMenuCommand("TRELLIS_SCATTERPLOT_ADD_CONDITION_ORDERED|cyl").action ==
+           CommandAction::AddTrellisConditionOrdered);
+    assert(ParseMenuCommand("TRELLIS_SCATTERPLOT_SET_CONDITION_FACTOR|cyl").action ==
+           CommandAction::SetTrellisConditionFactor);
+    assert(ParseMenuCommand("TRELLIS_SCATTERPLOT_SET_CONDITION_ORDERED|cyl").action ==
+           CommandAction::SetTrellisConditionOrdered);
+    assert(ParseMenuCommand("TRELLIS_SCATTERPLOT_SET_CONDITION_EQUAL_WIDTH|cyl").action ==
+           CommandAction::SetTrellisConditionEqualWidth);
+    assert(ParseMenuCommand("TRELLIS_SCATTERPLOT_SET_CONDITION_EQUAL_COUNT|cyl").action ==
+           CommandAction::SetTrellisConditionEqualCount);
 
     auto glm = ParseMenuCommand("ANALYZE_GLM");
     assert(glm.category == CommandCategory::Analysis);
@@ -634,6 +786,16 @@ int main()
     auto glz = ParseMenuCommand("ANALYZE_GENERALIZED_GLM");
     assert(glz.action == CommandAction::OpenGeneralizedGLM);
 
+    auto positive = ParseMenuCommand("ANALYZE_POSITIVE_CONTINUOUS_MODEL");
+    assert(positive.action == CommandAction::OpenPositiveContinuousModel);
+    auto proportion = ParseMenuCommand("ANALYZE_PROPORTION_MODEL");
+    assert(proportion.action == CommandAction::OpenProportionModel);
+    auto positiveComparison = ParseMenuCommand("ANALYZE_POSITIVE_CONTINUOUS_COMPARISON");
+    assert(positiveComparison.action == CommandAction::OpenPositiveContinuousComparison);
+    auto proportionComparison = ParseMenuCommand("ANALYZE_PROPORTION_COMPARISON");
+    assert(proportionComparison.action == CommandAction::OpenProportionComparison);
+    assert(proportion.action == CommandAction::OpenProportionModel);
+
     auto glzOpen = ParseCommandRequest({"GENERALIZED_GLM_OPEN", "cars", "vs", "binomial", "logit", "1", "mpg"});
     assert(glzOpen.action == CommandAction::GeneralizedGLMOpen);
 
@@ -645,6 +807,12 @@ int main()
 
     auto generalizedComparison = ParseMenuCommand("OPEN_GENERALIZED_COMPARISON");
     assert(generalizedComparison.action == CommandAction::OpenGeneralizedComparison);
+    auto generalizedComparisonError = ParseCommandRequest(
+        {"GENERALIZED_COMPARISON_UPDATE_ERROR", "comparison_1", "7", "fit failed"});
+    assert(generalizedComparisonError.action ==
+           CommandAction::GeneralizedComparisonUpdateError);
+    assert(CommandActionName(generalizedComparisonError.action) ==
+           "generalized_comparison_update_error");
 
     auto independentT = ParseMenuCommand("ANALYZE_INDEPENDENT_T");
     assert(independentT.action == CommandAction::AnalyzeIndependentT);
@@ -733,6 +901,10 @@ int main()
 
     auto histogramShowDensity = ParseCommandRequest({"HIST_SHOW_DENSITY", "hist_1", "TRUE"});
     assert(histogramShowDensity.action == CommandAction::HistogramShowDensity);
+    auto histogramTickMarks = ParseMenuCommand("HIST_TOGGLE_TICK_MARKS");
+    assert(histogramTickMarks.action == CommandAction::HistogramToggleTickMarks);
+    auto histogramTickLabels = ParseMenuCommand("HIST_TOGGLE_TICK_LABELS");
+    assert(histogramTickLabels.action == CommandAction::HistogramToggleTickLabels);
 
     auto biplotX = ParseMenuCommand("PCA_BIPLOT_SET_X|3");
     assert(biplotX.action == CommandAction::BiplotSetX);
@@ -741,6 +913,13 @@ int main()
 
     auto imputationUncertainty = ParseMenuCommand("SET_IMPUTATION_UNCERTAINTY|iqr");
     assert(imputationUncertainty.action == CommandAction::SetImputationUncertainty);
+
+    auto imputationDisplay = ParseMenuCommand("SET_IMPUTATION_DISPLAY|version:3");
+    assert(imputationDisplay.category == CommandCategory::Plot);
+    assert(imputationDisplay.action == CommandAction::SetImputationDisplay);
+    assert(imputationDisplay.args.size() == 1);
+    assert(imputationDisplay.args[0] == "version:3");
+    assert(CommandActionName(imputationDisplay.action) == "set_imputation_display");
 
     auto changeY = ParseMenuCommand("CHANGE_Y_VARIABLE|mpg");
     assert(changeY.action == CommandAction::ChangeYVariable);
@@ -806,6 +985,12 @@ int main()
     assert(dataSheet.action == CommandAction::OpenDataSheet);
     assert(dataSheet.args.size() == 1);
     assert(dataSheet.args[0] == "cars");
+
+    auto effectXAxis = ParseMenuCommand(
+        "PLOT_REGRESSION_SET_EFFECT_X|gender");
+    assert(effectXAxis.action == CommandAction::SetRegressionEffectXAxis);
+    assert(effectXAxis.args.size() == 1);
+    assert(effectXAxis.args[0] == "gender");
 
     auto unknown = ParseMenuCommand("SOMETHING_PRIVATE|x");
     assert(unknown.name == "SOMETHING_PRIVATE");

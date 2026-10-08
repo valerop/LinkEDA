@@ -69,6 +69,8 @@ int main()
     assert(!RecordingDispatchCommandShouldRecord("COPY_SVG"));
     assert(RecordingDispatchCommandShouldRecord("GLM"));
     assert(!RecordingDispatchCommandReplayable("FILE_IMPORT_DATA"));
+    assert(!RecordingDispatchCommandShouldRecord("FILE_EXPORT_DATA"));
+    assert(!RecordingDispatchCommandReplayable("FILE_EXPORT_DATA"));
     assert(RecordingDispatchCommandReplayable("GLM"));
 
     RecordingEntry entry;

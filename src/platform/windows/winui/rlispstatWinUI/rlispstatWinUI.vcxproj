@@ -34,6 +34,11 @@
     <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
     <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+    <!-- C++/WinRT reads TargetPlatformVersion directly.  Pin it to the
+         Windows 11 SDK installed for this project rather than leaving it
+         unset behind the WindowsTargetPlatformVersion alias. -->
+    <TargetPlatformVersion>10.0.26100.0</TargetPlatformVersion>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <UseWinUI>true</UseWinUI>
     <WinUISDKReferences>false</WinUISDKReferences>
     <EnableMsixTooling>true</EnableMsixTooling>
@@ -87,6 +92,16 @@
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
+  <!-- The project is also built directly from the R-package tree, where no
+       solution-level output directory is supplied by Visual Studio. -->
+  <PropertyGroup>
+    <BaseOutputPath>$(ProjectDir)bin\</BaseOutputPath>
+    <OutputPath>$(BaseOutputPath)$(Platform)\$(Configuration)\</OutputPath>
+    <OutDir>$(OutputPath)</OutDir>
+    <BaseIntermediateOutputPath>$(ProjectDir)obj\</BaseIntermediateOutputPath>
+    <IntermediateOutputPath>$(BaseIntermediateOutputPath)$(Platform)\$(Configuration)\</IntermediateOutputPath>
+    <IntDir>$(IntermediateOutputPath)</IntDir>
+  </PropertyGroup>
   <PropertyGroup Label="UserMacros" />
   <ItemDefinitionGroup>
     <ClCompile>
@@ -114,6 +129,11 @@
       <OptimizeReferences>true</OptimizeReferences>
     </Link>
   </ItemDefinitionGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <AdditionalDependencies>gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemGroup Condition="'$(WindowsPackageType)'!='None' and Exists('Package.appxmanifest')">
     <AppxManifest Include="Package.appxmanifest">
       <SubType>Designer</SubType>
@@ -127,14 +147,16 @@
     <ClInclude Include="App.xaml.h">
       <DependentUpon>App.xaml</DependentUpon>
     </ClInclude>
+    <ClInclude Include="ApplicationMenu.h" />
+    <ClInclude Include="DataSheetView.h" />
     <ClInclude Include="ScatterPlotView.h" />
-    <ClInclude Include="MainWindow.xaml.h">
-      <DependentUpon>MainWindow.xaml</DependentUpon>
-    </ClInclude>
+    <ClInclude Include="WindowBranding.h" />
+    <ClInclude Include="WelcomeWindow.h" />
+    <ClInclude Include="WorkflowWindows.h" />
+    <ClInclude Include="TableExportService.h" />
   </ItemGroup>
   <ItemGroup>
     <ApplicationDefinition Include="App.xaml" />
-    <Page Include="MainWindow.xaml" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="pch.cpp">
@@ -143,13 +165,22 @@
     <ClCompile Include="App.xaml.cpp">
       <DependentUpon>App.xaml</DependentUpon>
     </ClCompile>
+    <ClCompile Include="ApplicationMenu.cpp" />
+    <ClCompile Include="DataSheetView.cpp" />
     <ClCompile Include="ScatterPlotView.cpp" />
-    <ClCompile Include="MainWindow.xaml.cpp">
-      <DependentUpon>MainWindow.xaml</DependentUpon>
-    </ClCompile>
+    <ClCompile Include="WindowBranding.cpp" />
+    <ClCompile Include="WelcomeWindow.cpp" />
+    <ClCompile Include="TableExportService.cpp" />
+    <ClCompile Include="WorkflowWindows.cpp" />
     <ClCompile Include="$(GeneratedFilesDir)module.g.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\..\..\core\analysis_scope.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\analysis_initialization.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\..\..\core\application_state.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
@@ -157,6 +188,9 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\core\barplot_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\binary_regression_export.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\core\boxplot_model.cpp">
@@ -177,10 +211,22 @@
     <ClCompile Include="..\..\..\..\core\dataset_protocol.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\..\..\core\linkeda_document.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\..\..\core\dendrogram_model.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\core\dimensionality_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\scale_analysis_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\export_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\provenance_model.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\core\format_model.cpp">
@@ -195,7 +241,13 @@
     <ClCompile Include="..\..\..\..\core\main_r_task_model.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\..\..\core\mean_comparison_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\..\..\core\mixed_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\model_trellis_model.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\core\model_terms.cpp">
@@ -222,21 +274,35 @@
     <ClCompile Include="..\..\..\..\core\session_controller.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\..\..\core\snapshot_album_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\..\..\core\statistics_model.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
     <ClCompile Include="..\..\..\..\core\string_utils.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
+    <ClCompile Include="..\..\..\..\core\svg_writer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
     <ClCompile Include="..\..\..\..\core\table1_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\trellis_scatterplot_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\welcome_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\..\..\core\window_note_model.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="..\..\windows_emf_export.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <Midl Include="MainWindow.idl">
-      <SubType>Code</SubType>
-      <DependentUpon>MainWindow.xaml</DependentUpon>
-    </Midl>
   </ItemGroup>
   <ItemGroup>
     <Text Include="readme.txt">
@@ -248,9 +314,41 @@
     <Image Include="Assets\SplashScreen.scale-200.png" />
     <Image Include="Assets\Square150x150Logo.scale-200.png" />
     <Image Include="Assets\Square44x44Logo.scale-200.png" />
-    <Image Include="Assets\Square44x44Logo.targetsize-24_altform-unplated.png" />
+    <Image Include="Assets\Target24.png" />
     <Image Include="Assets\StoreLogo.png" />
     <Image Include="Assets\Wide310x150Logo.scale-200.png" />
+    <Content Include="Assets\LinkEDA.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\Inter-Variable.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\SourceSans3-Variable.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\IBMPlexSans-Variable.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\OFL-Inter.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\OFL-SourceSans3.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\OFL-IBMPlexSans.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
+    <Content Include="Assets\Fonts\README.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <DeploymentContent>true</DeploymentContent>
+    </Content>
   </ItemGroup>
   <!--
     Defining the "Msix" ProjectCapability here allows the Single-project MSIX Packaging

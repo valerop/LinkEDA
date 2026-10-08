@@ -18,12 +18,18 @@ LinkEDA <- function(data = NULL, name = NULL) {
       grepl("^[.A-Za-z][.A-Za-z0-9_]*$", data_expression)) {
     name <- data_expression
   }
-  rlispstat(data = data, name = name)
+  .linkeda_launch(data = data, name = name, data_expression = data_expression)
 }
 
 #' @rdname LinkEDA
 #' @export
 rlispstat <- function(data = NULL, name = NULL) {
+  .Deprecated("LinkEDA", package = "LinkEDA")
+  data_expression <- if (is.null(data)) "" else deparse(substitute(data), nlines = 1L)
+  .linkeda_launch(data = data, name = name, data_expression = data_expression)
+}
+
+.linkeda_launch <- function(data = NULL, name = NULL, data_expression = "") {
   is_file_request <- is.character(data) && length(data) == 1L &&
     !is.na(data) && nzchar(data)
   if (!is.null(data) && !is.data.frame(data) && !is_file_request) {
@@ -35,11 +41,18 @@ rlispstat <- function(data = NULL, name = NULL) {
     stop("`name` must be a single non-empty string.", call. = FALSE)
   }
 
-  data_expression <- if (is.null(data)) "" else deparse(substitute(data), nlines = 1L)
   .rls_start_backend()
   if (is.null(data)) {
     version <- as.character(utils::packageVersion("LinkEDA"))
-    .rls_send(c("WELCOME_LAUNCH", "from_existing_r", version, "none"))
+    welcome <- c("WELCOME_LAUNCH", "from_existing_r", version, "none")
+    opened <- tryCatch(.rls_send(welcome), error = identity)
+    if (inherits(opened, "error")) {
+      # Quit/Command-Q runs in AppKit. It can win the race after the startup
+      # PING, leaving R with a pipe to an instance that is already closing.
+      .rls_reset_backend_connection(clear_views = TRUE)
+      .rls_start_backend()
+      .rls_send(welcome)
+    }
     return(invisible(NULL))
   }
 

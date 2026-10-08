@@ -42,7 +42,8 @@ The generated website is written to `website/_site/` and is not source content.
 - Shared visual styling is in `assets/styles.css`.
 - The real application icon is `assets/LinkEDA.png`.
 - Verified native captures and the contextual-menu animation are under `assets/screenshots/`.
-- The only published download is `downloads/LinkEDA_0.0.1.tgz`.
+- Download buttons point to installer assets attached to GitHub Releases;
+  installers are not stored in the Git repository.
 - The Quarto configuration sets the repository URL and basic Open Graph metadata. Update `site-url` in `_quarto.yml` when the final public URL is known.
 
 ## GitHub Pages

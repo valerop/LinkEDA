@@ -1,4 +1,4 @@
-#include "../platform/macos/rlispstat_macos_app.h"
+#include "../platform/macos/linkeda_macos_app.h"
 
 int main(int argc, char **argv)
 {

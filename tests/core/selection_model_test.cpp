@@ -15,6 +15,8 @@ using rlispstat::core::InvertSelectionWithin;
 using rlispstat::core::RowsForScope;
 using rlispstat::core::SelectionMode;
 using rlispstat::core::SelectionModeFromString;
+using rlispstat::core::SelectionModeForPointerGesture;
+using rlispstat::core::SelectionModeName;
 using rlispstat::core::SelectionModel;
 
 static std::set<CaseId> S(std::initializer_list<CaseId> values)
@@ -63,6 +65,7 @@ int main()
     assert(selection.version() == 7);
 
     assert(InvertSelectionWithin(S({2}), S({1, 2, 3})) == S({1, 3}));
+    assert(InvertSelectionWithin(S({1, 2, 3}), S({2, 3, 4})) == S({4}));
     assert(CaseSetFromVector({3, 1, 0, 3, -2}) == S({1, 3}));
     assert(CaseSetFromGroupedVectors({{1, 2}, {0, 2, 4}, {-1}}) == S({1, 2, 4}));
     assert(CaseSetText(S({3, 1, 0, -2})) == "1 3");
@@ -79,6 +82,22 @@ int main()
     assert(SelectionModeFromString("subtract") == SelectionMode::Subtract);
     assert(SelectionModeFromString("toggle") == SelectionMode::Toggle);
     assert(SelectionModeFromString("not-a-mode") == SelectionMode::Replace);
+    assert(SelectionModeName(SelectionMode::Replace) == "replace");
+    assert(SelectionModeName(SelectionMode::Add) == "add");
+    assert(SelectionModeName(SelectionMode::Subtract) == "subtract");
+    assert(SelectionModeName(SelectionMode::Toggle) == "toggle");
+    assert(SelectionModeForPointerGesture(
+        S({1, 2}), S({2}), SelectionMode::Replace, false) == SelectionMode::Subtract);
+    assert(SelectionModeForPointerGesture(
+        S({1, 2}), S({2, 3}), SelectionMode::Replace, false) == SelectionMode::Replace);
+    assert(SelectionModeForPointerGesture(
+        S({1, 2}), S({}), SelectionMode::Replace, false) == SelectionMode::Replace);
+    assert(SelectionModeForPointerGesture(
+        S({1, 2}), S({2}), SelectionMode::Replace, true) == SelectionMode::Replace);
+    assert(SelectionModeForPointerGesture(
+        S({1, 2}), S({2}), SelectionMode::Add, false) == SelectionMode::Add);
+    assert(SelectionModeForPointerGesture(
+        S({1, 2}), S({2}), SelectionMode::Toggle, false) == SelectionMode::Toggle);
     assert(EffectiveSelectionModeName(true, true, true, true, "replace") == "subtract");
     assert(EffectiveSelectionModeName(false, true, false, true, "replace") == "toggle");
     assert(EffectiveSelectionModeName(false, false, true, true, "replace") == "toggle");

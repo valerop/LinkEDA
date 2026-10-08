@@ -27,16 +27,20 @@
     if (!series %in% names(data)) stop(sprintf("Column `%s` was not found.", series), call. = FALSE)
     series_name <- series
     raw_groups <- as.character(data[[series]][rows])
-    raw_groups[is.na(raw_groups) | !nzchar(raw_groups)] <- "(missing)"
-    if (is.factor(data[[series]])) {
-      labels <- levels(data[[series]])
-      labels <- labels[labels %in% raw_groups]
-      if ("(missing)" %in% raw_groups) labels <- c(labels, "(missing)")
-    } else {
-      labels <- unique(raw_groups)
-    }
-    if (!length(labels)) labels <- "(missing)"
+    missing_group <- is.na(raw_groups) | !nzchar(raw_groups)
+    observed <- raw_groups[!missing_group]
+    labels <- if (is.factor(data[[series]])) {
+      levels(data[[series]])[levels(data[[series]]) %in% observed]
+    } else unique(observed)
     point_series <- match(raw_groups, labels) - 1L
+    if (any(missing_group)) {
+      missing_label <- if ("(missing)" %in% labels) "(missing values)" else "(missing)"
+      labels <- c(labels, missing_label)
+      point_series[missing_group] <- length(labels) - 1L
+    }
+    # Group identities are determined before preparing safe display labels.
+    # Reserve existing suffixes too, so e.g. A|B, A B and A B #1 stay distinct.
+    labels <- make.unique(gsub("[\r\n\t|]+", " ", labels), sep = " #")
   }
   list(time = time, value = value, time_type = time_type,
        time_values = time_values, value_values = value_values, rows = rows,
@@ -67,7 +71,7 @@
 #' }
 ls_time_series <- function(data, time, value, series = NULL, group = NULL, title = NULL,
                            identification = c("legend", "start_labels", "none"),
-                           legend_position = c("top_right", "top_left", "bottom_right", "bottom_left")) {
+                           legend_position = c("top_right", "top_left", "bottom_right", "bottom_left", "left", "right", "top", "bottom")) {
   identification <- match.arg(identification)
   legend_position <- match.arg(legend_position)
   prepared <- .rls_prepare_time_series_data(data, time, value, series)
@@ -123,7 +127,7 @@ ls_time_series <- function(data, time, value, series = NULL, group = NULL, title
 ls_new_time_series <- function(group = NULL, time = NULL, value = NULL,
                                series = NULL, title = NULL, linked = TRUE,
                                identification = c("legend", "start_labels", "none"),
-                               legend_position = c("top_right", "top_left", "bottom_right", "bottom_left")) {
+                               legend_position = c("top_right", "top_left", "bottom_right", "bottom_left", "left", "right", "top", "bottom")) {
   record <- .rls_dataset_record(group)
   numeric <- .rls_numeric_variable_names(record$data, record$variable_metadata)
   if (length(numeric) < 2L && (is.null(time) || is.null(value))) {
@@ -168,7 +172,7 @@ ls_time_series_group <- function(plot, series = NULL) {
 #' @param plot A time-series plot or plot id.
 #' @param identification One of `"legend"`, `"start_labels"`, or `"none"`.
 #' @param legend_position Optional legend position: `"top_right"`,
-#'   `"top_left"`, `"bottom_right"`, or `"bottom_left"`.
+#'   `"top_left"`, `"bottom_right"`, `"bottom_left"`, `"left"`, `"right"`, `"top"`, or `"bottom"`.
 #' @return Invisibly returns `plot`.
 #' @export
 ls_time_series_identification <- function(
@@ -179,16 +183,16 @@ ls_time_series_identification <- function(
   record <- .rls_plot_record(plot)
   if (!identical(record$type, "time_series")) stop("`plot` is not a time-series plot.", call. = FALSE)
   identification <- match.arg(identification)
-  .rls_send(c("TIME_SERIES_SET_IDENTIFICATION", id, identification))
   record$identification <- identification
   if (!is.null(legend_position)) {
     legend_position <- match.arg(
       legend_position,
-      c("top_right", "top_left", "bottom_right", "bottom_left")
+      c("top_right", "top_left", "bottom_right", "bottom_left", "left", "right", "top", "bottom")
     )
     .rls_send(c("TIME_SERIES_SET_LEGEND_POSITION", id, legend_position))
     record$legend_position <- legend_position
   }
+  .rls_send(c("TIME_SERIES_SET_IDENTIFICATION", id, identification))
   assign(id, record, envir = .rls_state$plots)
   invisible(plot)
 }

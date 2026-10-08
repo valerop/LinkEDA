@@ -24,6 +24,60 @@ double BoxplotJitterForCase(CaseId caseId, double width)
     return (fraction - 0.5) * width;
 }
 
+bool HasNestedCategoryLevels(const BoxplotLayout &layout)
+{
+    if (layout.categoryLevels.size() != layout.categories.size() ||
+        layout.categoryLevels.empty()) return false;
+    const std::size_t depth = layout.categoryLevels.front().size();
+    if (depth < 2) return false;
+    return std::all_of(layout.categoryLevels.begin(), layout.categoryLevels.end(),
+        [depth](const std::vector<std::string> &levels) {
+            return levels.size() == depth;
+        });
+}
+
+std::vector<double> BoxplotCategoryRawPositions(const BoxplotLayout &layout)
+{
+    std::vector<double> positions(layout.categories.size(), 0.0);
+    if (layout.categories.size() < 2) return positions;
+    if (!HasNestedCategoryLevels(layout)) {
+        for (std::size_t index = 0; index < positions.size(); ++index)
+            positions[index] = static_cast<double>(index);
+        return positions;
+    }
+    const std::size_t depth = layout.categoryLevels.front().size();
+    for (std::size_t index = 1; index < positions.size(); ++index) {
+        std::size_t common = 0;
+        while (common < depth &&
+               layout.categoryLevels[index - 1][common] ==
+                   layout.categoryLevels[index][common]) ++common;
+        const std::size_t changedLevels = depth - common;
+        const double hierarchy = depth > 1
+            ? static_cast<double>(changedLevels - 1) /
+                  static_cast<double>(depth - 1)
+            : 0.0;
+        // A change in an outer level must read as a genuinely separate
+        // cluster, rather than as a slightly wider ordinary category gap.
+        positions[index] = positions[index - 1] + 1.0 + 1.6 * hierarchy;
+    }
+    return positions;
+}
+
+std::string NestedCategoryLabel(const std::vector<std::string> &variables,
+                                const std::vector<std::string> &levels)
+{
+    if (levels.empty()) return "NA";
+    if (levels.size() == 1) return levels.front();
+    std::ostringstream out;
+    for (std::size_t index = 0; index < levels.size(); ++index) {
+        if (index) out << " · ";
+        if (index < variables.size() && !variables[index].empty())
+            out << variables[index] << '=';
+        out << levels[index];
+    }
+    return out.str();
+}
+
 } // namespace
 
 bool IsValidBoxplotLayout(const BoxplotLayout &layout)
@@ -206,9 +260,71 @@ double BoxplotCategoryCenter(const BoxplotLayout &layout, const std::string &cat
     const std::size_t index = it == layout.categories.end()
         ? 0
         : static_cast<std::size_t>(it - layout.categories.begin());
-    const std::size_t slots = std::max<std::size_t>(1, layout.categories.size());
+    const std::vector<double> positions = BoxplotCategoryRawPositions(layout);
+    const double last = positions.empty() ? 0.0 : positions.back();
     return layout.plotRect.x + layout.plotRect.width *
-        ((static_cast<double>(index) + 0.5) / static_cast<double>(slots));
+        ((positions[index] + 0.5) / (last + 1.0));
+}
+
+std::string BoxplotInnermostCategoryLabel(const BoxplotLayout &layout,
+                                          const std::string &category)
+{
+    const auto found = std::find(layout.categories.begin(), layout.categories.end(), category);
+    if (found == layout.categories.end()) return category;
+    const std::size_t index = static_cast<std::size_t>(found - layout.categories.begin());
+    if (index >= layout.categoryLevels.size() || layout.categoryLevels[index].empty())
+        return category;
+    return layout.categoryLevels[index].back();
+}
+
+std::vector<BoxplotGroupSpan> BoxplotGroupSpans(const BoxplotLayout &layout)
+{
+    std::vector<BoxplotGroupSpan> spans;
+    if (!HasNestedCategoryLevels(layout)) return spans;
+    const std::size_t depth = layout.categoryLevels.front().size();
+    for (std::size_t level = 0; level + 1 < depth; ++level) {
+        std::size_t start = 0;
+        while (start < layout.categories.size()) {
+            std::size_t end = start + 1;
+            while (end < layout.categories.size()) {
+                bool samePrefix = true;
+                for (std::size_t prefix = 0; prefix <= level; ++prefix) {
+                    if (layout.categoryLevels[start][prefix] !=
+                        layout.categoryLevels[end][prefix]) {
+                        samePrefix = false;
+                        break;
+                    }
+                }
+                if (!samePrefix) break;
+                ++end;
+            }
+            const double first = BoxplotCategoryCenter(layout, layout.categories[start]);
+            const double last = BoxplotCategoryCenter(layout, layout.categories[end - 1]);
+            double half = layout.plotRect.width /
+                std::max(2.0, static_cast<double>(layout.categories.size()) * 5.0);
+            if (end - start > 1) half = 0.0;
+            spans.push_back({level, layout.categoryLevels[start][level],
+                             start, end - 1, first - half, last + half,
+                             (first + last) / 2.0});
+            start = end;
+        }
+    }
+    return spans;
+}
+
+std::set<std::string> BoxplotCategoriesForLevelValue(
+    const BoxplotLayout &layout,
+    std::size_t level,
+    const std::string &value)
+{
+    std::set<std::string> categories;
+    if (layout.categoryLevels.size() != layout.categories.size()) return categories;
+    for (std::size_t index = 0; index < layout.categories.size(); ++index) {
+        if (level < layout.categoryLevels[index].size() &&
+            layout.categoryLevels[index][level] == value)
+            categories.insert(layout.categories[index]);
+    }
+    return categories;
 }
 
 double BoxplotH0SimulationCenterX(const BoxplotLayout &layout)
@@ -1306,39 +1422,110 @@ void RebuildGroupedBoxplotPointsFromDataFrame(PlotModel &model,
                                               const DataFrameModel &df)
 {
     const DataColumn *yCol = nullptr;
-    const DataColumn *xCol = nullptr;
     for (const DataColumn &col : df.columns) {
-        if (col.name == model.yLabel) {
-            yCol = &col;
+        if (col.name == model.yLabel) yCol = &col;
+    }
+    std::vector<std::string> groupingVariables = model.boxplotGroupingVariables;
+    if (groupingVariables.empty() && !model.xLabel.empty()) {
+        const auto exact = std::find_if(df.columns.begin(), df.columns.end(),
+            [&](const DataColumn &col) { return col.name == model.xLabel; });
+        if (exact != df.columns.end()) groupingVariables.push_back(model.xLabel);
+    }
+    std::vector<const DataColumn *> groupingColumns;
+    for (const std::string &name : groupingVariables) {
+        const auto found = std::find_if(df.columns.begin(), df.columns.end(),
+            [&](const DataColumn &col) { return col.name == name; });
+        if (found == df.columns.end()) {
+            groupingColumns.clear();
+            break;
         }
-        if (!model.xLabel.empty() && col.name == model.xLabel) {
-            xCol = &col;
-        }
+        groupingColumns.push_back(&*found);
     }
     model.boxplotPoints.clear();
-    if (!yCol) {
+    model.boxplotCategoryLevels.clear();
+    if (!yCol || groupingColumns.size() != groupingVariables.size()) {
         model.boxplotCategories.clear();
         model.boxplotDefinedCategories.clear();
         return;
     }
     std::size_t n = yCol->values.size();
-    if (xCol) {
-        n = std::min(n, xCol->values.size());
-    }
+    for (const DataColumn *column : groupingColumns)
+        n = std::min(n, column->values.size());
+    std::map<std::string, std::vector<std::string>> levelsByCategory;
+    std::vector<std::vector<std::string>> observedLevels(groupingColumns.size());
     for (std::size_t i = 0; i < n; ++i) {
         double y = NAN;
         if (!ParseDataCellDouble(yCol->values[i], y) || !std::isfinite(y)) {
             continue;
         }
-        std::string category = xCol ? DisplayValueForCell(*xCol, i) : "All";
-        if (DataCellIsMissing(category)) {
-            category = "NA";
+        std::vector<std::string> levels;
+        levels.reserve(groupingColumns.size());
+        for (std::size_t columnIndex = 0; columnIndex < groupingColumns.size(); ++columnIndex) {
+            std::string value = DisplayValueForCell(*groupingColumns[columnIndex], i);
+            if (DataCellIsMissing(value)) value = "NA";
+            levels.push_back(value);
+            if (std::find(observedLevels[columnIndex].begin(), observedLevels[columnIndex].end(), value) ==
+                observedLevels[columnIndex].end()) observedLevels[columnIndex].push_back(value);
         }
+        const std::string category = groupingColumns.empty()
+            ? "All" : NestedCategoryLabel(groupingVariables, levels);
+        levelsByCategory[category] = levels;
         model.boxplotPoints.push_back(BoxplotPoint{y, category, static_cast<int>(i) + 1});
     }
     model.boxplotCategories = CategoriesForPlot(model);
+    if (groupingColumns.size() > 1) {
+        std::stable_sort(model.boxplotCategories.begin(), model.boxplotCategories.end(),
+            [&](const std::string &left, const std::string &right) {
+                const auto &a = levelsByCategory[left];
+                const auto &b = levelsByCategory[right];
+                for (std::size_t level = 0; level < groupingColumns.size(); ++level) {
+                    const auto ai = std::find(observedLevels[level].begin(), observedLevels[level].end(), a[level]);
+                    const auto bi = std::find(observedLevels[level].begin(), observedLevels[level].end(), b[level]);
+                    if (ai != bi) return ai < bi;
+                }
+                return left < right;
+            });
+    }
     model.boxplotDefinedCategories = model.boxplotCategories;
+    for (const std::string &category : model.boxplotDefinedCategories)
+        model.boxplotCategoryLevels.push_back(levelsByCategory[category]);
+    model.boxplotGroupingVariables = groupingVariables;
+    model.xLabel = BoxplotGroupingLabel(groupingVariables);
     model.boxplotGroupOrder = "defined";
+}
+
+std::string BoxplotGroupingLabel(const std::vector<std::string> &variables)
+{
+    std::ostringstream out;
+    for (std::size_t index = 0; index < variables.size(); ++index) {
+        if (index) out << " + ";
+        out << variables[index];
+    }
+    return out.str();
+}
+
+std::string BoxplotNestedCategoryLabel(const std::vector<std::string> &variables,
+                                       const std::vector<std::string> &levels)
+{
+    return NestedCategoryLabel(variables, levels);
+}
+
+std::vector<std::vector<std::string>> BoxplotCategoryLevelsForCategories(
+    const PlotModel &model,
+    const std::vector<std::string> &categories)
+{
+    std::vector<std::vector<std::string>> result;
+    result.reserve(categories.size());
+    if (model.boxplotDefinedCategories.size() != model.boxplotCategoryLevels.size())
+        return result;
+    for (const std::string &category : categories) {
+        const auto found = std::find(model.boxplotDefinedCategories.begin(),
+                                     model.boxplotDefinedCategories.end(), category);
+        if (found == model.boxplotDefinedCategories.end()) return {};
+        result.push_back(model.boxplotCategoryLevels[static_cast<std::size_t>(
+            found - model.boxplotDefinedCategories.begin())]);
+    }
+    return result;
 }
 
 std::vector<BoxplotCase> BoxplotCasesForModel(const PlotModel &model)

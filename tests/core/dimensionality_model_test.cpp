@@ -112,13 +112,13 @@ int main()
     assert(DimensionalityComponentPrefix("factor") == "F");
     assert(DimensionalityComponentPrefix("other") == "PC");
     assert(DimensionalityVariableUnavailableStatus("x") ==
-           "Status: `x` is not available as a numeric variable.");
+           "Status: `x` is not available as a numeric, ordinal, or binary variable.");
     assert(DimensionalityVariableAlreadyIncludedStatus("x") ==
            "Status: `x` is already in the analysis.");
     assert(DimensionalityVariableAddedStatus("x") == "Added variable `x`.");
     assert(DimensionalityVariableReplacedStatus("x", "y") == "Replaced `x` with `y`.");
     assert(DimensionalityVariableRemovedStatus("x") == "Removed variable `x`.");
-    assert(DimensionalityNoMoreNumericVariablesTitle() == "No more numeric variables");
+    assert(DimensionalityNoMoreNumericVariablesTitle() == "No more eligible variables");
     assert(DimensionalityNoReplacementVariablesTitle() == "No replacement variables");
     assert(DimensionalityAddVariableMenuTitle() == "Add variable");
     assert(DimensionalityVariableMenuTitle() == "Variable");
@@ -140,15 +140,14 @@ int main()
            "Scree plot - PCA (2 retained components)");
     assert(DimensionalityScreePlotTitle("factor", 1, "varimax") ==
            "Scree plot - Factor analysis (1 retained factor), varimax rotation");
-    assert(DimensionalityFitSignature("factor", "listwise", "varimax", "selected", true, 3, {"x", "y"}) ==
-           "factor|listwise|varimax|selected|1|3|x|y");
-    assert(DimensionalityFitSignature("pca", "pairwise", "none", "all", false, 2, {"a"}) ==
-           "pca|pairwise|none|all|0|2|a");
+    assert(DimensionalityFitSignature("factor", "listwise", "varimax", "pa", "selected", true, 3, 4, {"x", "y"}) ==
+           "factor|listwise|varimax|pa|selected|1|3|imputation=4|x|y");
+    assert(DimensionalityFitSignature("pca", "pairwise", "none", "minres", "all", false, 2, 1, {"a"}) ==
+           "pca|pairwise|none|minres|all|0|2|imputation=1|a");
     DimensionalityScreeContextMenuState screeMenu = BuildDimensionalityScreeContextMenuState();
     assert(screeMenu.title == "Scree plot");
     assert(screeMenu.viewTitle == "View");
     assert(screeMenu.exportTitle == "Export");
-    assert(screeMenu.rescaleToDataTitle == "Rescale to data");
     assert(screeMenu.closePlotTitle == "Close plot");
     assert(DimensionalityMethodForPopupIndex(1) == "factor");
     assert(DimensionalityMethodForPopupIndex(99) == "pca");
@@ -158,6 +157,8 @@ int main()
     assert(DimensionalityRotationForPopupIndex(2) == "quartimax");
     assert(DimensionalityRotationForPopupIndex(-1) == "none");
     assert(DimensionalityRotationPopupIndex("quartimax") == 2);
+    assert(DimensionalityRotationPopupIndex("oblimin") == 3);
+    assert(DimensionalityRotationPopupIndex("promax") == 4);
     assert(DimensionalityRotationPopupIndex("bad") == 0);
     assert(DimensionalityScopeForPopupIndex(1) == "selected");
     assert(DimensionalityScopeForPopupIndex(2) == "unselected");
@@ -206,11 +207,12 @@ int main()
     assert(closeEnough(minimumWindow.maxWidth, 1104.0));
     assert(closeEnough(minimumWindow.maxHeight, 688.0));
     assert(closeEnough(minimumWindow.targetWidth, 760.0));
-    assert(closeEnough(minimumWindow.targetHeight, 520.0));
-    assert(closeEnough(minimumWindow.titleRect.y, 482.0));
+    assert(closeEnough(minimumWindow.targetHeight, 442.0));
+    assert(closeEnough(minimumWindow.titleRect.y, 404.0));
     assert(closeEnough(minimumWindow.badgeRect.x, 590.0));
+    assert(closeEnough(minimumWindow.autoFitButtonRect.x, 148.0));
     assert(closeEnough(minimumWindow.scrollViewRect.width, 736.0));
-    assert(closeEnough(minimumWindow.scrollViewRect.height, 364.0));
+    assert(closeEnough(minimumWindow.scrollViewRect.height, 286.0));
     DimensionalityWindowLayout cappedWindow = BuildDimensionalityWindowLayout(1400.0, 900.0, 1000.0, 700.0);
     assert(closeEnough(cappedWindow.maxWidth, 920.0));
     assert(closeEnough(cappedWindow.maxHeight, 602.0));
@@ -218,6 +220,9 @@ int main()
     assert(closeEnough(cappedWindow.targetHeight, 602.0));
     assert(closeEnough(cappedWindow.selectedRowsRect.x, 740.0));
     assert(closeEnough(cappedWindow.statusRect.width, 888.0));
+
+    rlispstat::core::DimensionalityState defaultState;
+    assert(defaultState.autoFit);
 
     std::vector<std::string> currentVariables = {"mpg", "wt"};
     std::vector<std::string> availableVariables = {"mpg", "wt", "hp", "drat", "hp"};
@@ -228,11 +233,11 @@ int main()
     DimensionalityAddVariableMenuState addMenu = BuildDimensionalityAddVariableMenuState(
         currentVariables, availableVariables);
     assert((addMenu.variables == std::vector<std::string>({"hp", "drat"})));
-    assert(addMenu.emptyTitle == "No more numeric variables");
+    assert(addMenu.emptyTitle == "No more eligible variables");
     DimensionalityAddVariableMenuState emptyAddMenu = BuildDimensionalityAddVariableMenuState(
         currentVariables, {"mpg", "wt", "mpg"});
     assert(emptyAddMenu.variables.empty());
-    assert(emptyAddMenu.emptyTitle == "No more numeric variables");
+    assert(emptyAddMenu.emptyTitle == "No more eligible variables");
     DimensionalityVariableMenuState variableMenu = BuildDimensionalityVariableMenuState(
         currentVariables, availableVariables, 1);
     assert(variableMenu.ok);
@@ -241,7 +246,7 @@ int main()
     assert((variableMenu.replacementVariables == std::vector<std::string>({"hp", "drat"})));
     assert(variableMenu.replacementEmptyTitle == "No replacement variables");
     assert(variableMenu.removeTitle == "Remove wt");
-    assert(!variableMenu.canRemove);
+    assert(variableMenu.canRemove);
     DimensionalityVariableMenuState removableMenu = BuildDimensionalityVariableMenuState(
         {"mpg", "wt", "hp"}, availableVariables, 1);
     assert(removableMenu.ok);
@@ -261,12 +266,16 @@ int main()
     assert((replaced.variables == std::vector<std::string>({"mpg", "drat"})));
     assert(!DimensionalityVariablesAfterReplace(currentVariables, 5, "hp", availableVariables).ok);
     assert(!DimensionalityVariablesAfterReplace(currentVariables, 0, "wt", availableVariables).ok);
-    assert(!DimensionalityVariablesAfterRemove(currentVariables, 0).ok);
     DimensionalityVariableUpdateResult removed = DimensionalityVariablesAfterRemove(
-        {"mpg", "wt", "hp"}, 1);
+        currentVariables, 0);
     assert(removed.ok);
     assert(removed.changed);
-    assert((removed.variables == std::vector<std::string>({"mpg", "hp"})));
+    assert((removed.variables == std::vector<std::string>({"wt"})));
+    DimensionalityVariableUpdateResult removedLast = DimensionalityVariablesAfterRemove(
+        removed.variables, 0);
+    assert(removedLast.ok);
+    assert(removedLast.variables.empty());
+    assert(!DimensionalityVariablesAfterRemove(currentVariables, 0, 2).ok);
 
     std::vector<rlispstat::core::DimensionalityFitComponent> screeComponents = {
         {1, 2.40, 1.20, 0.60, 0.60},
@@ -356,6 +365,16 @@ int main()
     DimensionalityBiplotPlotState noBiplot = BuildDimensionalityBiplotPlotState(
         {screeComponents.front()}, biplotLoadings, biplotScores, "pca", 1, 2);
     assert(!noBiplot.ok);
+    auto twoScoreColumns = biplotScores;
+    for (auto &score : twoScoreColumns) score.values.resize(2);
+    assert(rlispstat::core::DimensionalityBiplotAvailableComponentCount(
+        screeComponents, twoScoreColumns) == 2);
+    DimensionalityBiplotPlotState limitedBiplot =
+        BuildDimensionalityBiplotPlotState(screeComponents, biplotLoadings,
+            twoScoreColumns, "pca", 1, 3);
+    assert(limitedBiplot.ok);
+    assert(limitedBiplot.xComponent == 1);
+    assert(limitedBiplot.yComponent == 2);
 
     std::vector<rlispstat::core::DimensionalityFitScore> exportScores = {
         {1, 0.0, 0.0, {1.25, 2.50}},
@@ -394,6 +413,9 @@ int main()
         "y",
         2);
     assert(report.summary == "12 complete rows, 4 excluded");
+    assert(report.calculationMethod.find("Calculated in R with stats::factanal") != std::string::npos);
+    assert(report.calculationMethod.find("listwise complete-row input") != std::string::npos);
+    assert(report.calculationImputation.empty());
     assert(report.componentPrefix == "F");
     assert(report.componentCount == 2);
     assert(report.componentRows.size() == 2);
@@ -423,82 +445,83 @@ int main()
     assert(report.status == "Status: fitted.");
     DimensionalityReportLayout layout = BuildDimensionalityReportLayout(report);
     assert(closeEnough(layout.preferredWidth, 740.0));
-    assert(closeEnough(layout.preferredHeight, 380.0));
+    assert(closeEnough(layout.preferredHeight, 384.0));
     assert(closeEnough(layout.summaryRect.x, 18.0));
     assert(closeEnough(layout.summaryRect.y, 14.0));
-    assert(closeEnough(layout.componentsTitleRect.y, 42.0));
+    assert(closeEnough(layout.calculationMethodRect.y, 36.0));
+    assert(closeEnough(layout.componentsTitleRect.y, 56.0));
     assert(layout.componentHeaderRects.size() == 5);
     assert(closeEnough(layout.componentHeaderRects[1].x, 166.0));
     assert(closeEnough(layout.componentHeaderRects[4].x, 524.0));
     assert(closeEnough(layout.componentRuleEndX, 628.0));
-    assert(closeEnough(layout.componentRowsY, 90.0));
-    assert(closeEnough(layout.loadingsRowsY, 226.0));
+    assert(closeEnough(layout.componentRowsY, 104.0));
+    assert(closeEnough(layout.loadingsRowsY, 240.0));
     assert(layout.componentRects.size() == 2);
     assert(closeEnough(layout.componentRects[1].x, 18.0));
-    assert(closeEnough(layout.componentRects[1].y, 114.0));
+    assert(closeEnough(layout.componentRects[1].y, 128.0));
     assert(closeEnough(layout.componentRects[1].width, 610.0));
     assert(layout.componentCellRects.size() == 2);
     assert(layout.componentCellRects[0].size() == 5);
     assert(closeEnough(layout.componentCellRects[1][2].x, 276.0));
-    assert(closeEnough(layout.componentCellRects[1][2].y, 114.0));
-    assert(closeEnough(layout.additionalComponentsRect.y, 138.0));
-    assert(closeEnough(layout.loadingsTitleRect.y, 178.0));
-    assert(closeEnough(layout.loadingVariableHeaderRect.y, 202.0));
+    assert(closeEnough(layout.componentCellRects[1][2].y, 128.0));
+    assert(closeEnough(layout.additionalComponentsRect.y, 152.0));
+    assert(closeEnough(layout.loadingsTitleRect.y, 192.0));
+    assert(closeEnough(layout.loadingVariableHeaderRect.y, 216.0));
     assert(layout.loadingHeaderRects.size() == 2);
     assert(closeEnough(layout.loadingHeaderRects[1].x, 260.0));
-    assert(closeEnough(layout.loadingHeaderRects[1].y, 202.0));
+    assert(closeEnough(layout.loadingHeaderRects[1].y, 216.0));
     assert(closeEnough(layout.communalityHeaderRect.x, 336.0));
     assert(closeEnough(layout.uniquenessHeaderRect.x, 412.0));
     assert(closeEnough(layout.loadingsRuleEndX, 486.0));
     assert(layout.loadingCellRects.size() == 3);
     assert(layout.loadingCellRects[0].size() == 2);
     assert(closeEnough(layout.loadingCellRects[0][1].x, 260.0));
-    assert(closeEnough(layout.loadingCellRects[0][1].y, 226.0));
+    assert(closeEnough(layout.loadingCellRects[0][1].y, 240.0));
     assert(layout.variableRects.size() == 3);
-    assert(closeEnough(layout.variableRects[2].y, 274.0));
+    assert(closeEnough(layout.variableRects[2].y, 288.0));
     assert(layout.communalityRects.size() == 3);
     assert(closeEnough(layout.communalityRects[0].x, 336.0));
     assert(closeEnough(layout.uniquenessRects[0].x, 412.0));
-    assert(closeEnough(layout.addVariableRect.y, 298.0));
+    assert(closeEnough(layout.addVariableRect.y, 312.0));
     assert(closeEnough(layout.emptyStatusRect.x, 184.0));
-    assert(closeEnough(layout.emptyStatusRect.y, 298.0));
+    assert(closeEnough(layout.emptyStatusRect.y, 312.0));
     Rect componentRect = DimensionalityReportRectForComponent(report, layout, 2);
-    assert(closeEnough(componentRect.y, 114.0));
+    assert(closeEnough(componentRect.y, 128.0));
     assert(closeEnough(DimensionalityReportRectForComponent(report, layout, 99).width, 0.0));
     Rect variableRectByIndex = DimensionalityReportRectForVariableIndex(layout, 1);
-    assert(closeEnough(variableRectByIndex.y, 250.0));
+    assert(closeEnough(variableRectByIndex.y, 264.0));
     assert(closeEnough(DimensionalityReportRectForVariableIndex(layout, 99).width, 0.0));
     Rect variableRectByName = DimensionalityReportRectForVariable(report, layout, "missing");
-    assert(closeEnough(variableRectByName.y, 274.0));
+    assert(closeEnough(variableRectByName.y, 288.0));
     assert(closeEnough(DimensionalityReportRectForVariable(report, layout, "absent").width, 0.0));
     Rect focusVariableRect = DimensionalityReportFocusRect(report, layout, 2, "missing");
-    assert(closeEnough(focusVariableRect.y, 274.0));
+    assert(closeEnough(focusVariableRect.y, 288.0));
     Rect focusFallbackRect = DimensionalityReportFocusRect(report, layout, 2, "absent");
-    assert(closeEnough(focusFallbackRect.y, 114.0));
+    assert(closeEnough(focusFallbackRect.y, 128.0));
     assert(closeEnough(DimensionalityReportFocusRect(report, layout, 0, "").width, 0.0));
     DimensionalityReportHit componentHit = HitTestDimensionalityReport(
-        report, layout, Point{20.0, 116.0});
+        report, layout, Point{20.0, 130.0});
     assert(componentHit.kind == DimensionalityReportHitKind::Component);
     assert(componentHit.component == 2);
     assert(componentHit.componentIndex == 1);
     DimensionalityReportHit headerHit = HitTestDimensionalityReport(
-        report, layout, Point{262.0, 204.0});
+        report, layout, Point{262.0, 218.0});
     assert(headerHit.kind == DimensionalityReportHitKind::LoadingHeader);
     assert(headerHit.component == 2);
     DimensionalityReportHit cellHit = HitTestDimensionalityReport(
-        report, layout, Point{262.0, 228.0});
+        report, layout, Point{262.0, 242.0});
     assert(cellHit.kind == DimensionalityReportHitKind::LoadingCell);
     assert(cellHit.component == 2);
     assert(cellHit.componentIndex == 1);
     assert(cellHit.variableIndex == 0);
     assert(cellHit.variable == "y");
     DimensionalityReportHit variableHit = HitTestDimensionalityReport(
-        report, layout, Point{20.0, 276.0});
+        report, layout, Point{20.0, 290.0});
     assert(variableHit.kind == DimensionalityReportHitKind::Variable);
     assert(variableHit.variableIndex == 2);
     assert(variableHit.variable == "missing");
     DimensionalityReportHit addHit = HitTestDimensionalityReport(
-        report, layout, Point{20.0, 300.0});
+        report, layout, Point{20.0, 314.0});
     assert(addHit.kind == DimensionalityReportHitKind::AddVariable);
     DimensionalityReportHit noneHit = HitTestDimensionalityReport(
         report, layout, Point{700.0, 20.0});
@@ -526,20 +549,26 @@ int main()
     assert(contextVariableAction.kind == DimensionalityReportActionKind::OpenVariableMenu);
     assert(contextVariableAction.variableIndex == 2);
     assert(!contextVariableAction.focusVariable);
+    DimensionalityReportAction contextAddAction =
+        DimensionalityReportContextActionForHit(addHit);
+    assert(contextAddAction.kind ==
+           DimensionalityReportActionKind::OpenAddVariableMenu);
     DimensionalityReportAction contextAnalysisAction = DimensionalityReportContextActionForHit(noneHit);
     assert(contextAnalysisAction.kind == DimensionalityReportActionKind::OpenAnalysisMenu);
     DimensionalityReportRenderPlan renderPlan = BuildDimensionalityReportRenderPlan(report, layout);
     assert(renderPlan.rules.size() == 2);
     assert(renderPlan.highlights.size() == 6);
-    assert(renderPlan.texts.size() == 40);
+    assert(renderPlan.texts.size() == 41);
     assert(renderPlan.texts[0].text == "12 complete rows, 4 excluded");
     assert(renderPlan.texts[0].role == DimensionalityReportTextRole::Muted);
-    assert(renderPlan.texts[1].text == "Components");
-    assert(renderPlan.texts[1].role == DimensionalityReportTextRole::Section);
-    assert(renderPlan.texts[3].text == "Eigenvalue");
-    assert(renderPlan.texts[3].role == DimensionalityReportTextRole::RightHeader);
+    assert(renderPlan.texts[1].text.find("stats::factanal") != std::string::npos);
+    assert(renderPlan.texts[1].role == DimensionalityReportTextRole::Muted);
+    assert(renderPlan.texts[2].text == "Components");
+    assert(renderPlan.texts[2].role == DimensionalityReportTextRole::Section);
+    assert(renderPlan.texts[4].text == "Eigenvalue");
+    assert(renderPlan.texts[4].role == DimensionalityReportTextRole::RightHeader);
     assert(renderPlan.highlights[0].role == DimensionalityReportHighlightRole::Strong);
-    assert(closeEnough(renderPlan.highlights[0].rect.y, 112.0));
+    assert(closeEnough(renderPlan.highlights[0].rect.y, 126.0));
     assert(renderPlan.highlights[2].role == DimensionalityReportHighlightRole::Soft);
     DimensionalityReportViewModel viewModel = BuildDimensionalityReportViewModel(
         {"y", "x", "missing"},
@@ -558,10 +587,36 @@ int main()
     assert(viewModel.renderPlan.texts.size() == renderPlan.texts.size());
     assert(viewModel.renderPlan.highlights.size() == renderPlan.highlights.size());
 
+    DimensionalityReportState multipleImputationReport = BuildDimensionalityReportState(
+        {"y", "x"},
+        screeComponents,
+        biplotLoadings,
+        12,
+        0,
+        "pca",
+        2,
+        "Status: fitted.",
+        0,
+        "",
+        2,
+        "listwise",
+        "none",
+        true,
+        true,
+        3,
+        20);
+    assert(multipleImputationReport.calculationMethod.find("stats::prcomp") != std::string::npos);
+    assert(multipleImputationReport.calculationImputation.find("imputation 3 of 20") != std::string::npos);
+    assert(multipleImputationReport.calculationImputation.find("not Rubin-pooled") != std::string::npos);
+    DimensionalityReportLayout multipleImputationLayout =
+        BuildDimensionalityReportLayout(multipleImputationReport);
+    assert(closeEnough(multipleImputationLayout.componentsTitleRect.y, 76.0));
+
     assert(DimensionalityRotationIsValid("none"));
     assert(DimensionalityRotationIsValid("varimax"));
     assert(DimensionalityRotationIsValid("quartimax"));
-    assert(!DimensionalityRotationIsValid("promax"));
+    assert(DimensionalityRotationIsValid("oblimin"));
+    assert(DimensionalityRotationIsValid("promax"));
 
     assert(DimensionalityScopeIsValid("all"));
     assert(DimensionalityScopeIsValid("selected"));

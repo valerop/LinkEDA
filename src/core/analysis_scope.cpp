@@ -112,6 +112,20 @@ std::vector<int> ResolveAnalysisScopeRowIds(const AnalysisScope &scope,
     return ReconcileAnalysisScope(scope, totalRows).originalRowIds;
 }
 
+AnalysisScope AnalysisScopeExcludingRows(const AnalysisScope &scope,
+                                        const std::set<int> &excludedRows,
+                                        std::size_t totalRows,
+                                        const std::string &sourceViewId)
+{
+    std::vector<int> included = ResolveAnalysisScopeRowIds(scope, totalRows);
+    included.erase(std::remove_if(included.begin(), included.end(),
+        [&excludedRows](int row) { return excludedRows.count(row) != 0; }),
+        included.end());
+    return ExplicitAnalysisScope(scope.datasetId, included,
+        AnalysisScopeSourceKind::PlotExclusion,
+        "Cases retained in this plot", totalRows, sourceViewId);
+}
+
 bool AnalysisScopeContainsRow(const AnalysisScope &scope,
                               int originalRowId,
                               std::size_t totalRows)
@@ -129,6 +143,24 @@ std::size_t AnalysisScopeRowCount(const AnalysisScope &scope,
         ? totalRows : ResolveAnalysisScopeRowIds(scope, totalRows).size();
 }
 
+bool AnalysisScopeMatchesRows(const AnalysisScope &scope,
+                              const std::vector<int> &originalRowIds)
+{
+    if (scope.kind != AnalysisScopeKind::ExplicitRowIds) return false;
+    return scope.originalRowIds == NormalizeAnalysisScopeRowIds(originalRowIds);
+}
+
+bool AnalysisScopeTracksCurrentSelection(const AnalysisScope &scope)
+{
+    if (scope.kind != AnalysisScopeKind::ExplicitRowIds ||
+        AnalysisScopeSelectionName(scope).has_value()) {
+        return false;
+    }
+    return scope.sourceKind == AnalysisScopeSourceKind::CurrentSelection ||
+        scope.sourceKind == AnalysisScopeSourceKind::DataTableRows ||
+        scope.sourceKind == AnalysisScopeSourceKind::ScatterplotSelection;
+}
+
 std::string AnalysisScopeKindId(AnalysisScopeKind kind)
 {
     return kind == AnalysisScopeKind::AllObservations ? "all" : "explicit";
@@ -139,6 +171,9 @@ std::string AnalysisScopeSourceKindId(AnalysisScopeSourceKind kind)
     switch (kind) {
     case AnalysisScopeSourceKind::AllData: return "all_data";
     case AnalysisScopeSourceKind::CurrentSelection: return "current_selection";
+    case AnalysisScopeSourceKind::CurrentUnselection: return "current_unselection";
+    case AnalysisScopeSourceKind::PlotExclusion: return "plot_exclusion";
+    case AnalysisScopeSourceKind::IncludedObservations: return "included_observations";
     case AnalysisScopeSourceKind::TrellisPanel: return "trellis_panel";
     case AnalysisScopeSourceKind::DataTableRows: return "data_table_rows";
     case AnalysisScopeSourceKind::ScatterplotSelection: return "scatterplot_selection";
@@ -154,6 +189,9 @@ std::string AnalysisScopeSourceKindId(AnalysisScopeSourceKind kind)
 AnalysisScopeSourceKind AnalysisScopeSourceKindFromId(const std::string &id)
 {
     if (id == "all_data") return AnalysisScopeSourceKind::AllData;
+    if (id == "current_unselection") return AnalysisScopeSourceKind::CurrentUnselection;
+    if (id == "plot_exclusion") return AnalysisScopeSourceKind::PlotExclusion;
+    if (id == "included_observations") return AnalysisScopeSourceKind::IncludedObservations;
     if (id == "current_selection") return AnalysisScopeSourceKind::CurrentSelection;
     if (id == "trellis_panel") return AnalysisScopeSourceKind::TrellisPanel;
     if (id == "data_table_rows") return AnalysisScopeSourceKind::DataTableRows;
@@ -227,6 +265,65 @@ AnalysisScope AnalysisScopeForSavedSelection(const SavedSelection &selection,
         selection.sourceViewId);
 }
 
+std::string SavedAnalysisScopeChoiceValue(const std::string &name)
+{
+    return "saved:" + NormalizeAnalysisScopeSelectionName(name);
+}
+
+std::optional<std::string> SavedAnalysisScopeNameFromChoiceValue(
+    const std::string &value)
+{
+    static const std::string prefix = "saved:";
+    if (value.rfind(prefix, 0) != 0) return std::nullopt;
+    const std::string name = NormalizeAnalysisScopeSelectionName(
+        value.substr(prefix.size()));
+    return ValidateAnalysisScopeSelectionName(name)
+        ? std::optional<std::string>(name) : std::nullopt;
+}
+
+std::vector<AnalysisScopeChoice> BuildAnalysisScopeChoices(
+    std::size_t selectedRowCount,
+    const std::vector<SavedSelection> &savedSelections,
+    bool includeUnselected)
+{
+    std::vector<AnalysisScopeChoice> choices{
+        {"all", "Included cases"},
+        {"selected", "Current selection (live; " +
+            std::to_string(selectedRowCount) + ")"}
+    };
+    if (includeUnselected) choices.push_back({"unselected", "Unselected rows"});
+    for (const SavedSelection &selection : savedSelections) {
+        choices.push_back({
+            SavedAnalysisScopeChoiceValue(selection.name),
+            "Saved scope: " + selection.name + " (" +
+                std::to_string(selection.originalRowIds.size()) + ")"
+        });
+    }
+    return choices;
+}
+
+std::string AnalysisScopeChoiceValue(const std::string &fallbackScope,
+                                     const AnalysisScope &capturedScope,
+                                     bool captured)
+{
+    if (captured) {
+        if (const auto savedName = AnalysisScopeSelectionName(capturedScope)) {
+            return SavedAnalysisScopeChoiceValue(*savedName);
+        }
+        if (capturedScope.kind == AnalysisScopeKind::AllObservations ||
+            capturedScope.sourceKind == AnalysisScopeSourceKind::IncludedObservations)
+            return "all";
+        if (capturedScope.sourceKind == AnalysisScopeSourceKind::CurrentUnselection)
+            return "unselected";
+        if (AnalysisScopeTracksCurrentSelection(capturedScope)) return "selected";
+        return "explicit";
+    }
+    if (fallbackScope == "selected" || fallbackScope == "unselected") {
+        return fallbackScope;
+    }
+    return "all";
+}
+
 std::string AnalysisScopeSummary(const AnalysisScope &scope,
                                  std::size_t totalRows,
                                  bool includePrefix)
@@ -237,19 +334,44 @@ std::string AnalysisScopeSummary(const AnalysisScope &scope,
         return text + "All observations · N = " + std::to_string(totalRows);
     }
     text += scope.sourceDescription.empty() ? "Explicit subset" : scope.sourceDescription;
-    text += " · " + std::to_string(n) + " of " + std::to_string(totalRows) + " observations";
+    text += " · N = " + std::to_string(n) + " of " + std::to_string(totalRows) + " observations";
     if (n == 0) text += " · no valid observations";
     return text;
+}
+
+std::string AnalysisScopeCompactSummary(const AnalysisScope &scope, std::size_t totalRows)
+{
+    const auto name=AnalysisScopeSelectionName(scope);
+    const std::string label=name.has_value()?*name:
+        scope.kind==AnalysisScopeKind::AllObservations?"All":
+        scope.sourceKind==AnalysisScopeSourceKind::CurrentSelection?"Selected":
+        scope.sourceKind==AnalysisScopeSourceKind::CurrentUnselection?"Unselected":
+        scope.sourceDescription.empty()?"Explicit subset":scope.sourceDescription;
+    return label+" · N = "+std::to_string(AnalysisScopeRowCount(scope,totalRows));
 }
 
 std::string AnalysisScopeWindowSummary(const AnalysisScope &scope,
                                        std::size_t totalRows)
 {
-    if (scope.kind == AnalysisScopeKind::AllObservations) {
-        return "Scope: All observations · N = " + std::to_string(totalRows);
-    }
-    return "Scope: " + (scope.sourceDescription.empty() ? "Explicit subset" : scope.sourceDescription) +
-        " · N = " + std::to_string(AnalysisScopeRowCount(scope, totalRows));
+    return "Scope when computed: " + AnalysisScopeSummary(scope, totalRows, false);
+}
+
+std::string FrozenAnalysisScopeNotice(const AnalysisScope &computed,
+                                      const AnalysisScope &current)
+{
+    if (computed.kind == current.kind &&
+        computed.sourceKind == current.sourceKind &&
+        computed.originalRowIds == current.originalRowIds &&
+        computed.sourceDescription == current.sourceDescription &&
+        computed.sourceViewId == current.sourceViewId &&
+        computed.sourceElementId == current.sourceElementId &&
+        computed.totalDatasetRows == current.totalDatasetRows &&
+        computed.invalidatedRowCount == current.invalidatedRowCount)
+        return {};
+    return "Automatic refitting is off. Results shown use " +
+        AnalysisScopeCompactSummary(computed, computed.totalDatasetRows) +
+        "; current global scope is " +
+        AnalysisScopeCompactSummary(current, current.totalDatasetRows) + ".";
 }
 
 } // namespace core

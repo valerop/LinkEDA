@@ -34,6 +34,28 @@ test_that("One-sample t test matches stats::t.test", {
   expect_equal(result_greater$test_results$p_value, r_greater$p.value, tolerance = 1e-10)
 })
 
+test_that("compare-means native tables carry public R verification recipes", {
+  data <- data.frame(
+    outcome = c(1, 2, 3, 5, 6, 8),
+    group = factor(c("A", "A", "A", "B", "B", "B"))
+  )
+  ls_register_dataset("compare_means_r_code", data)
+  id <- ls_new_independent_samples_t_test(
+    "compare_means_r_code", response = "outcome", group = "group",
+    p_adjust = "none"
+  )
+  result <- LinkEDA:::.rls_compare_means_record(id[[1L]])
+  recipe <- LinkEDA:::.rls_compare_means_verification_r_code(list(result))$code
+  expect_silent(parse(text = recipe))
+  expect_match(recipe, "stats::t.test", fixed = TRUE)
+  expect_false(grepl("LinkEDA:::", recipe, fixed = TRUE))
+
+  payload <- LinkEDA:::.rls_compare_means_batch_native_payload(
+    list(result), "compare_means_r_code_output"
+  )
+  expect_true("ANALYSIS_PROVENANCE_V2" %in% payload)
+})
+
 test_that("One-sample t test handles missing values", {
   d <- data.frame(y = c(1, 2, 3, NA, 5, NA, 7))
   ls_register_dataset("cm_onesamp_na", d)
@@ -55,6 +77,35 @@ test_that("One-sample Wilcoxon is calculated by stats::wilcox.test", {
   expect_equal(result$test_results$statistic, unname(reference$statistic), tolerance = 1e-12)
   expect_equal(result$test_results$p_value, reference$p.value, tolerance = 1e-12)
   expect_true(is.finite(result$effect_sizes$rank_biserial))
+})
+
+test_that("one-sample responses can use separate null values and automatic test families", {
+  d <- data.frame(
+    score = c(54, 57, 58, 60, 61, 64, 65, 68),
+    rank = ordered(paste0("level", seq_len(8L)),
+                   levels = paste0("level", seq_len(8L))),
+    happy = factor(c("no", "yes", "yes", "no", "yes", "yes", "yes", "yes"),
+                   levels = c("no", "yes"))
+  )
+  ls_register_dataset("cm_mixed_one", d)
+  ids <- ls_new_one_sample_t_test(
+    "cm_mixed_one", c("score", "rank", "happy"),
+    mu = c(score = 60, rank = 2, happy = 0.5),
+    method = c(score = "student", rank = "wilcoxon", happy = "binomial"),
+    p_adjust = "holm"
+  )
+  records <- lapply(ids, LinkEDA:::.rls_compare_means_record)
+  expect_equal(vapply(records, function(x) x$specification$null_mu, numeric(1L)),
+               c(60, 2, 0.5))
+  expect_equal(vapply(records, function(x) x$specification$test_family, character(1L)),
+               c("student", "wilcoxon", "binomial"))
+  expect_equal(records[[2L]]$test_results$method, "Wilcoxon signed-rank test")
+  expect_equal(records[[3L]]$test_results$method, "Exact binomial test")
+  expect_equal(records[[3L]]$specification$event_level, "yes")
+  expect_equal(records[[3L]]$test_results$successes, 6)
+  expect_equal(records[[3L]]$test_results$observed_proportion, 0.75)
+  reference <- stats::binom.test(6, 8, p = 0.5)
+  expect_equal(records[[3L]]$test_results$p_value, reference$p.value)
 })
 
 test_that("Welch independent t test matches stats::t.test(var.equal = FALSE)", {
@@ -91,8 +142,77 @@ test_that("Independent t test group level ordering and contrast direction", {
   result <- LinkEDA:::.rls_compare_means_record(ids[[1L]])
   expect_equal(result$specification$group_levels, c("Z", "A"))
   expect_equal(result$specification$group, "g")
-  expect_equal(result$test_results$group_reference, "Z")
-  expect_equal(result$test_results$group_comparison, "A")
+  expect_equal(result$test_results$group_reference, "A")
+  expect_equal(result$test_results$group_comparison, "Z")
+  expect_equal(result$test_results$mean_diff, 9)
+  expect_match(result$test_results$direction_note, "Z - A", fixed = TRUE)
+})
+
+test_that("Two-sample tests choose any ordered pair from a factor with more than two levels", {
+  d <- data.frame(
+    y = c(5, 6, 7, 3, 4, 5, 20, 21, 22),
+    g = factor(rep(c("Control", "Treatment", "Waitlist"), each = 3L),
+               levels = c("Control", "Treatment", "Waitlist"))
+  )
+  ls_register_dataset("cm_ind_three_groups", d)
+
+  forward_id <- ls_new_independent_samples_t_test(
+    "cm_ind_three_groups", "y", "g",
+    group_order = c("Control", "Treatment"), p_adjust = "none"
+  )
+  reverse_id <- ls_new_independent_samples_t_test(
+    "cm_ind_three_groups", "y", "g",
+    group_order = c("Treatment", "Control"), p_adjust = "none"
+  )
+  forward <- LinkEDA:::.rls_compare_means_record(forward_id[[1L]])
+  reverse <- LinkEDA:::.rls_compare_means_record(reverse_id[[1L]])
+
+  expect_identical(forward$specification$group_levels,
+                   c("Control", "Treatment"))
+  expect_identical(reverse$specification$group_levels,
+                   c("Treatment", "Control"))
+  expect_equal(forward$descriptives$n, c(3, 3))
+  expect_equal(forward$test_results$mean_diff, 2)
+  expect_equal(reverse$test_results$mean_diff, -2)
+  expect_equal(reverse$test_results$statistic,
+               -forward$test_results$statistic, tolerance = 1e-12)
+  expect_equal(as.numeric(reverse$test_results$conf_int),
+               as.numeric(-rev(forward$test_results$conf_int)), tolerance = 1e-12)
+  expect_equal(reverse$test_results$p_value,
+               forward$test_results$p_value, tolerance = 1e-12)
+  expect_equal(reverse$effect_sizes$hedges_g,
+               -forward$effect_sizes$hedges_g, tolerance = 1e-12)
+  expect_false(any(forward$rows_used_original_ids > 6L))
+})
+
+test_that("Two-sample selected-row scope never falls back to all data", {
+  d <- data.frame(
+    y = c(5, 6, 50, 3, 4, -30),
+    g = factor(rep(c("Control", "Treatment"), each = 3L))
+  )
+  ls_register_dataset("cm_ind_selected_scope", d)
+
+  all_id <- ls_new_independent_samples_t_test(
+    "cm_ind_selected_scope", "y", "g", p_adjust = "none"
+  )
+  selected_id <- ls_new_independent_samples_t_test(
+    "cm_ind_selected_scope", "y", "g", scope = "selected",
+    .selected_rows = c(1L, 2L, 4L, 5L), p_adjust = "none"
+  )
+  all_result <- LinkEDA:::.rls_compare_means_record(all_id[[1L]])
+  selected <- LinkEDA:::.rls_compare_means_record(selected_id[[1L]])
+
+  expect_equal(all_result$descriptives$n, c(3, 3))
+  expect_equal(selected$descriptives$n, c(2, 2))
+  expect_equal(selected$test_results$mean_diff, 2)
+  expect_identical(sort(selected$rows_used_original_ids), c(1L, 2L, 4L, 5L))
+  expect_error(
+    ls_new_independent_samples_t_test(
+      "cm_ind_selected_scope", "y", "g", scope = "selected",
+      .selected_rows = integer(), p_adjust = "none"
+    ),
+    "Not enough complete cases across both groups"
+  )
 })
 
 test_that("Mann-Whitney is calculated by stats::wilcox.test", {
@@ -105,10 +225,79 @@ test_that("Mann-Whitney is calculated by stats::wilcox.test", {
     "cm_mann_whitney", "y", "g", method = "mann_whitney", p_adjust = "none"
   )
   result <- LinkEDA:::.rls_compare_means_record(id[[1L]])
-  expect_equal(result$test_results$method, "Mann\u2013Whitney U test")
+  expect_equal(result$test_results$method, "Mann-Whitney U test")
   expect_equal(result$test_results$statistic, unname(reference$statistic), tolerance = 1e-12)
   expect_equal(result$test_results$p_value, reference$p.value, tolerance = 1e-12)
   expect_true(is.finite(result$effect_sizes$rank_biserial))
+})
+
+test_that("independent samples dispatch continuous, ordinal, and binary responses", {
+  d <- data.frame(
+    group = factor(rep(c("control", "treatment"), each = 8),
+                   levels = c("control", "treatment")),
+    score = c(10, 11, 12, 13, 14, 15, 16, 17,
+              14, 15, 16, 17, 18, 19, 20, 21),
+    rating = ordered(c(1, 2, 2, 3, 3, 4, 4, 5,
+                       2, 3, 3, 4, 4, 5, 5, 5)),
+    improved = factor(c("no", "no", "no", "no", "no", "yes", "yes", "yes",
+                        "no", "yes", "yes", "yes", "yes", "yes", "yes", "yes"),
+                      levels = c("no", "yes"))
+  )
+  ls_register_dataset("cm_independent_mixed", d)
+  ids <- ls_new_independent_samples_t_test(
+    "cm_independent_mixed", c("score", "rating", "improved"), "group",
+    method = c(score = "welch", rating = "mann_whitney", improved = "proportion"),
+    p_adjust = "holm"
+  )
+  results <- lapply(ids, LinkEDA:::.rls_compare_means_record)
+  expect_equal(vapply(results, function(x) x$specification$test_family, character(1L)),
+               c("welch", "mann_whitney", "proportion"))
+
+  welch_reference <- stats::t.test(score ~ group, d, var.equal = FALSE)
+  expect_equal(results[[1L]]$test_results$p_value, welch_reference$p.value,
+               tolerance = 1e-12)
+  rank_reference <- stats::wilcox.test(
+    as.numeric(d$rating[d$group == "control"]),
+    as.numeric(d$rating[d$group == "treatment"]),
+    exact = FALSE, conf.int = TRUE
+  )
+  expect_equal(results[[2L]]$test_results$p_value, rank_reference$p.value,
+               tolerance = 1e-12)
+  expect_equal(results[[2L]]$descriptives$mean,
+               c(stats::median(as.numeric(d$rating[d$group == "control"])),
+                 stats::median(as.numeric(d$rating[d$group == "treatment"]))))
+
+  events <- c(3, 7)
+  proportion_reference <- suppressWarnings(stats::prop.test(events, c(8, 8), correct = FALSE))
+  expect_equal(results[[3L]]$specification$event_level, "yes")
+  expect_equal(unname(results[[3L]]$test_results$successes), events)
+  expect_equal(results[[3L]]$test_results$p_value, proportion_reference$p.value,
+               tolerance = 1e-12)
+  expect_equal(results[[3L]]$test_results$mean_diff, 3 / 8 - 7 / 8)
+  expect_true(is.finite(results[[3L]]$effect_sizes$cohens_h))
+  expect_true(all(vapply(results, function(x)
+    x$test_results$adjustment_family_size, integer(1L)) == 3L))
+
+  state_env <- get(".rls_state", envir = asNamespace("LinkEDA"))
+  old_mixed <- state_env$compare_means_mixed_independent
+  old_method <- state_env$compare_means_batch_method
+  if (is.null(old_mixed)) old_mixed <- FALSE
+  if (is.null(old_method)) old_method <- ""
+  on.exit({
+    state_env$compare_means_mixed_independent <- old_mixed
+    state_env$compare_means_batch_method <- old_method
+  }, add = TRUE)
+  state_env$compare_means_mixed_independent <- TRUE
+  state_env$compare_means_batch_method <- "mann_whitney"
+  payload <- LinkEDA:::.rls_compare_means_batch_native_payload(results, "mixed_independent")
+  expect_identical(payload[[2L]], "COMPARE_MEANS_BATCH_V3")
+  expect_true("Mann-Whitney for numeric/ordinal; proportions for binary" %in% payload)
+  expect_true(all(c("mann_whitney", "proportion", "yes") %in% payload))
+  expect_true(all(!is.na(iconv(payload, from = "UTF-8", to = "UTF-8"))))
+  connection <- rawConnection(raw(), "wb")
+  on.exit(close(connection), add = TRUE)
+  expect_silent(writeLines(payload, connection, useBytes = TRUE))
+  expect_false(any(rawConnectionValue(connection) == as.raw(0L)))
 })
 
 test_that("Paired t test matches stats::t.test(paired = TRUE)", {
@@ -164,6 +353,201 @@ test_that("Paired Wilcoxon is calculated by stats::wilcox.test", {
   expect_true(is.finite(result$effect_sizes$rank_biserial))
 })
 
+test_that("Paired reports select t, Wilcoxon and McNemar per pair", {
+  d <- data.frame(
+    pre = c(1, 2, 3, 4, 5, 6),
+    post = c(1, 1, 2, 4, 4, 5),
+    ordinal_pre = ordered(c("low", "low", "mid", "mid", "high", "high"),
+                          levels = c("low", "mid", "high")),
+    ordinal_post = ordered(c("low", "mid", "mid", "mid", "high", "mid"),
+                           levels = c("low", "mid", "high")),
+    binary_pre = factor(c("no", "yes", "yes", "no", "yes", "no"),
+                        levels = c("no", "yes")),
+    binary_post = factor(c("yes", "yes", "no", "no", "no", "no"),
+                         levels = c("no", "yes"))
+  )
+  ls_register_dataset("cm_paired_mixed", d)
+  ids <- ls_new_paired_samples_t_test(
+    "cm_paired_mixed",
+    list(c("pre", "post"), c("ordinal_pre", "ordinal_post"),
+         c("binary_pre", "binary_post")),
+    method = NULL, p_adjust = "holm"
+  )
+  results <- lapply(ids, LinkEDA:::.rls_compare_means_record)
+  expect_identical(vapply(results, function(x) x$specification$test_family, character(1L)),
+                   c("student", "wilcoxon", "mcnemar"))
+  expect_equal(results[[3L]]$test_results$p_value,
+               stats::binom.test(1, 3, p = 0.5)$p.value)
+  paired_binary_difference <-
+    as.numeric(d$binary_pre == "yes") - as.numeric(d$binary_post == "yes")
+  expect_equal(results[[3L]]$descriptives$differences$sd,
+               stats::sd(paired_binary_difference))
+  expect_equal(results[[3L]]$descriptives$differences$se,
+               stats::sd(paired_binary_difference) / sqrt(nrow(d)))
+  expect_equal(results[[3L]]$test_results$mean_diff_se,
+               results[[3L]]$descriptives$differences$se)
+  expect_true(is.finite(results[[3L]]$effect_sizes$matched_odds_ratio))
+
+  state_env <- LinkEDA:::.rls_state
+  old <- state_env$compare_means_mixed_paired
+  on.exit(state_env$compare_means_mixed_paired <- old, add = TRUE)
+  state_env$compare_means_mixed_paired <- TRUE
+  payload <- LinkEDA:::.rls_compare_means_batch_native_payload(results, "paired_mixed")
+  expect_identical(payload[[2L]], "COMPARE_MEANS_BATCH_V3")
+  expect_true(all(c("student", "wilcoxon", "mcnemar", "yes") %in% payload))
+  individual <- LinkEDA:::.rls_compare_means_native_payload(results[[3L]])
+  sd_label <- match("SD of differences", individual)
+  se_label <- match("SE of differences", individual)
+  expect_equal(as.numeric(individual[[sd_label + 1L]]),
+               stats::sd(paired_binary_difference))
+  expect_equal(as.numeric(individual[[se_label + 1L]]),
+               stats::sd(paired_binary_difference) / sqrt(nrow(d)))
+  odds_label <- match("Matched odds ratio", individual)
+  expect_equal(as.numeric(individual[[odds_label + 1L]]), 2)
+})
+
+test_that("native compare-means delivery retries once and reports failure", {
+  state <- LinkEDA:::.rls_state
+  previous <- list(
+    process_started = state$process_started,
+    backend_kind = state$backend_kind,
+    task_poll_connection = state$task_poll_connection
+  )
+  on.exit({
+    state$process_started <- previous$process_started
+    state$backend_kind <- previous$backend_kind
+    state$task_poll_connection <- previous$task_poll_connection
+  }, add = TRUE)
+  state$process_started <- TRUE
+  state$backend_kind <- "winui"
+  state$task_poll_connection <- NULL
+
+  attempts <- 0L
+  local_mocked_bindings(
+    .rls_send = function(payload) {
+      attempts <<- attempts + 1L
+      if (attempts == 1L) stop("stale socket")
+      "OK"
+    },
+    .rls_close_winui_task_poll_connection = function() invisible(NULL),
+    .package = "LinkEDA"
+  )
+  expect_true(LinkEDA:::.rls_send_native_analysis_result("payload", "test result"))
+  expect_equal(attempts, 2L)
+
+  attempts <- 0L
+  local_mocked_bindings(
+    .rls_send = function(payload) {
+      attempts <<- attempts + 1L
+      stop("still unavailable")
+    },
+    .rls_close_winui_task_poll_connection = function() invisible(NULL),
+    .package = "LinkEDA"
+  )
+  expect_error(
+    LinkEDA:::.rls_send_native_analysis_result("payload", "test result"),
+    "Could not deliver the test result"
+  )
+  expect_equal(attempts, 2L)
+})
+
+test_that("Windows paired-mixed task renders the initial Alien pair", {
+  alien_path <- system.file("examples", "Alien.csv", package = "LinkEDA")
+  expect_true(nzchar(alien_path))
+  ls_register_dataset("paired_alien_restart", utils::read.csv(alien_path))
+
+  state <- LinkEDA:::.rls_state
+  previous <- list(
+    process_started = state$process_started,
+    backend_kind = state$backend_kind,
+    run_id = state$compare_means_run_id,
+    mixed = state$compare_means_mixed_paired,
+    method = state$compare_means_batch_method
+  )
+  on.exit({
+    state$process_started <- previous$process_started
+    state$backend_kind <- previous$backend_kind
+    state$compare_means_run_id <- previous$run_id
+    state$compare_means_mixed_paired <- previous$mixed
+    state$compare_means_batch_method <- previous$method
+  }, add = TRUE)
+  state$process_started <- TRUE
+  state$backend_kind <- "winui"
+  delivered <- NULL
+  local_mocked_bindings(
+    .rls_send = function(payload) {
+      delivered <<- payload
+      "OK"
+    },
+    .package = "LinkEDA"
+  )
+
+  pair_key <- paste0("humans_eaten", intToUtf8(31L), "size")
+  parts <- c(
+    "COMPARE_MEANS_BATCH_NEEDED", "paired_alien_restart_run",
+    "paired_alien_restart", "paired_mixed", "two.sided", "0.95",
+    "student", "holm", "0", "", "0", "1", "humans_eaten", "size",
+    "0", "all", "0", "1", pair_key, "0", "student"
+  )
+  LinkEDA:::.rls_handle_compare_means_batch_needed(parts)
+
+  expect_identical(delivered[[1L]], "COMPARE_MEANS_BATCH_OPEN")
+  expect_identical(delivered[[2L]], "COMPARE_MEANS_BATCH_V3")
+  expect_identical(delivered[[3L]], "paired_alien_restart_run")
+  expect_true(all(c("humans_eaten", "size", "student") %in% delivered))
+})
+
+test_that("native two-sample tasks discard a stale order from another grouping variable", {
+  d <- data.frame(
+    age = c(12, 13, 14, 15, 16, 17, 18, 19),
+    country = factor(rep(c("Finland", "Greece"), each = 4)),
+    gender = factor(rep(c("Female", "Male"), 4))
+  )
+  ls_register_dataset("cm_native_group_order", d)
+
+  state <- LinkEDA:::.rls_state
+  previous <- list(
+    process_started = state$process_started,
+    backend_kind = state$backend_kind,
+    run_id = state$compare_means_run_id,
+    mixed = state$compare_means_mixed_independent,
+    method = state$compare_means_batch_method
+  )
+  on.exit({
+    state$process_started <- previous$process_started
+    state$backend_kind <- previous$backend_kind
+    state$compare_means_run_id <- previous$run_id
+    state$compare_means_mixed_independent <- previous$mixed
+    state$compare_means_batch_method <- previous$method
+  }, add = TRUE)
+  state$process_started <- TRUE
+  state$backend_kind <- "winui"
+  delivered <- NULL
+  local_mocked_bindings(
+    .rls_send = function(payload) {
+      delivered <<- payload
+      "OK"
+    },
+    .package = "LinkEDA"
+  )
+
+  # The grouping variable has changed to country, but the window submits the
+  # previous gender order.  R must derive the current levels, not reject the
+  # otherwise valid analysis.
+  parts <- c(
+    "COMPARE_MEANS_BATCH_NEEDED", "native_group_order_run",
+    "cm_native_group_order", "independent_t", "two.sided", "0.95",
+    "welch", "holm", "0", "country", "1", "age", "0",
+    "2", "Female", "Male", "all", "0", "0"
+  )
+  LinkEDA:::.rls_handle_compare_means_batch_needed(parts)
+
+  expect_identical(delivered[[1L]], "COMPARE_MEANS_BATCH_OPEN")
+  expect_identical(delivered[[3L]], "native_group_order_run")
+  expect_true(all(c("Finland", "Greece") %in% delivered))
+  expect_false("Group order must contain every effective group exactly once." %in% delivered)
+})
+
 test_that("Welch one-way ANOVA matches stats::oneway.test(var.equal = FALSE)", {
   set.seed(42)
   a <- rnorm(10, mean = 0, sd = 1)
@@ -195,7 +579,7 @@ test_that("Kruskal-Wallis is calculated by stats::kruskal.test", {
     "cm_kruskal", "y", "g", method = "kruskal_wallis", p_adjust = "none"
   )
   result <- LinkEDA:::.rls_compare_means_record(id[[1L]])
-  expect_equal(result$test_results$method, "Kruskal\u2013Wallis test")
+  expect_equal(result$test_results$method, "Kruskal-Wallis test")
   expect_equal(result$test_results$statistic, unname(reference$statistic), tolerance = 1e-12)
   expect_equal(result$test_results$parameter[[1L]], unname(reference$parameter), tolerance = 1e-12)
   expect_equal(result$test_results$p_value, reference$p.value, tolerance = 1e-12)
@@ -233,7 +617,7 @@ test_that("Native payload is structured correctly", {
   payload <- LinkEDA:::.rls_compare_means_native_payload(result)
 
   expect_match(payload[[1L]], "COMPARE_MEANS_OPEN")
-  expect_true(any(grepl("One-Sample t Test", payload)))
+  expect_true(any(grepl("One-Sample Tests", payload)))
   expect_true(any(grepl("Mean", payload)))
   expect_true(any(grepl("SD", payload)))
   expect_true(any(grepl("Cohen", payload)))
@@ -264,6 +648,209 @@ test_that("No silent fallback to single imputation - MI datasets are detected", 
   expect_equal(backend, "ordinary")
 })
 
+test_that("MI one-sample batches retain case descriptives and mice metadata", {
+  age_x <- seq(11.2, 16.2, length.out = 169)
+  completed <- replicate(20L, data.frame(age_x = age_x), simplify = FALSE)
+  dataset <- list(
+    dataset_id = "mi_age_probe",
+    group = "mi_age_probe",
+    dataset_type = "multiple_imputation",
+    data = completed[[1L]],
+    completed_datasets = completed,
+    imputation_count = 20L,
+    original_row_ids = seq_along(age_x)
+  )
+
+  result <- LinkEDA:::.rls_one_sample_t_test_mi(
+    list(selected_rows = integer()), dataset, "age_x", 5,
+    "two.sided", 0.95, "all", seq_along(age_x)
+  )
+
+  expect_equal(result$analysis_backend, "multiple_imputation")
+  expect_equal(result$descriptives$n, 169L)
+  expect_equal(result$descriptives$mean, mean(age_x), tolerance = 1e-12)
+  expect_equal(result$descriptives$se,
+               stats::sd(age_x) / sqrt(length(age_x)), tolerance = 1e-12)
+  expect_equal(result$descriptives$n_imputations, 20L)
+  expect_true(is.finite(result$test_results$parameter))
+
+  # LinkEDA delegates the zero-between-imputation-variance boundary to mice.
+  expected_df <- mice::pool.scalar(
+    rep(mean(age_x) - 5, 20L),
+    rep(stats::var(age_x) / length(age_x), 20L),
+    n = 169,
+    k = 1
+  )$df
+  expect_equal(result$test_results$parameter, expected_df, tolerance = 1e-10)
+
+  payload <- LinkEDA:::.rls_compare_means_batch_native_payload(list(result), "mi_probe")
+  expect_identical(payload[[2L]], "COMPARE_MEANS_BATCH_V4")
+  expect_identical(payload[[15L]], "multiple_imputation")
+  expect_identical(payload[[16L]], "20")
+  expect_identical(payload[[17L]], "mice::pool.scalar (Rubin's rules)")
+  response_at <- match("age_x", payload)
+  expect_true(is.finite(response_at))
+  values_at <- response_at + 8L
+  expect_equal(as.numeric(payload[[values_at]]), 169)
+  expect_equal(as.numeric(payload[[values_at + 1L]]), mean(age_x), tolerance = 1e-12)
+  expect_true(is.finite(as.numeric(payload[[values_at + 14L]])))
+})
+
+test_that("MI paired tests retain N and pooled pair descriptives", {
+  completed <- lapply(seq_len(5L), function(i) {
+    data.frame(
+      first = c(10, 12, 14, 16, 18, 20) + i / 10,
+      second = c(8, 11, 13, 15, 15, 19) - i / 20
+    )
+  })
+  dataset <- list(
+    dataset_id = "mi_paired_probe",
+    group = "mi_paired_probe",
+    dataset_type = "multiple_imputation",
+    data = completed[[1L]],
+    completed_datasets = completed,
+    imputation_count = 5L,
+    original_row_ids = seq_len(6L)
+  )
+
+  result <- LinkEDA:::.rls_paired_samples_t_test_mi(
+    list(selected_rows = integer()), dataset, "first", "second",
+    "two.sided", 0.95, "all", seq_len(6L)
+  )
+
+  first_means <- vapply(completed, function(d) mean(d$first), numeric(1L))
+  first_mean_variances <- vapply(
+    completed, function(d) stats::var(d$first) / nrow(d), numeric(1L)
+  )
+  second_means <- vapply(completed, function(d) mean(d$second), numeric(1L))
+  second_mean_variances <- vapply(
+    completed, function(d) stats::var(d$second) / nrow(d), numeric(1L)
+  )
+  expected_first <- mice::pool.scalar(
+    first_means, first_mean_variances, n = 6L, k = 1L
+  )
+  expected_second <- mice::pool.scalar(
+    second_means, second_mean_variances, n = 6L, k = 1L
+  )
+  expected_sd_difference <- sqrt(mean(vapply(
+    completed, function(d) stats::var(d$first - d$second), numeric(1L)
+  )))
+
+  expect_identical(result$analysis_backend, "multiple_imputation")
+  expect_equal(result$descriptives$n, c(6, 6))
+  expect_equal(result$descriptives$differences$n, 6)
+  expect_equal(result$descriptives$mean,
+               c(expected_first$qbar, expected_second$qbar), tolerance = 1e-12)
+  expect_equal(result$descriptives$differences$sd,
+               expected_sd_difference, tolerance = 1e-12)
+  expect_equal(result$descriptives$differences$se,
+               result$test_results$mean_diff_se, tolerance = 1e-12)
+  expect_match(result$descriptives$note, "mice::pool.scalar", fixed = TRUE)
+
+  payload <- LinkEDA:::.rls_compare_means_batch_native_payload(
+    list(result), "mi_paired_probe"
+  )
+  response_at <- match("first", payload)
+  expect_true(is.finite(response_at))
+  values_at <- response_at + 8L
+  expect_equal(as.numeric(payload[[values_at]]), 6)
+  expect_equal(as.numeric(payload[[values_at + 1L]]),
+               expected_first$qbar, tolerance = 1e-12)
+  expect_equal(as.numeric(payload[[values_at + 5L]]),
+               expected_second$qbar, tolerance = 1e-12)
+  expect_equal(as.numeric(payload[[values_at + 9L]]),
+               expected_sd_difference, tolerance = 1e-12)
+  expect_true(is.finite(as.numeric(payload[[values_at + 10L]])))
+})
+
+test_that("MI independent tests honor displayed group order and pool descriptives", {
+  finland <- c(10, 12, 14, 16)
+  greece <- c(20, 22, 24, 26)
+  completed <- lapply(seq_len(20L), function(i) {
+    data.frame(
+      age = c(finland, greece),
+      country = factor(rep(c("Finland", "Greece"), each = 4L),
+                       levels = c("Finland", "Greece"))
+    )
+  })
+  dataset <- list(
+    dataset_id = "mi_country_probe",
+    group = "mi_country_probe",
+    dataset_type = "multiple_imputation",
+    data = completed[[1L]],
+    completed_datasets = completed,
+    imputation_count = 20L,
+    original_row_ids = seq_len(8L)
+  )
+
+  result <- LinkEDA:::.rls_independent_samples_t_test_mi(
+    list(selected_rows = integer()), dataset, "age", "country",
+    c("Greece", "Finland"), "two.sided", 0.95, FALSE, "all",
+    seq_len(8L)
+  )
+
+  expect_identical(result$specification$group_levels, c("Greece", "Finland"))
+  expect_identical(result$descriptives$group, c("Greece", "Finland"))
+  expect_equal(result$descriptives$n, c(4, 4))
+  expect_equal(result$descriptives$mean, c(mean(greece), mean(finland)),
+               tolerance = 1e-12)
+  expect_equal(result$test_results$mean_diff,
+               mean(greece) - mean(finland), tolerance = 1e-12)
+  expect_identical(result$test_results$group_reference, "Finland")
+  expect_identical(result$test_results$group_comparison, "Greece")
+  expect_match(result$test_results$direction_note, "Greece - Finland",
+               fixed = TRUE)
+  expect_equal(result$multiple_imputation$m, 20L)
+  expect_identical(result$test_results$pooling_method, "mice::pool.scalar (Rubin's rules)")
+  expect_true(is.finite(result$test_results$parameter))
+})
+
+test_that("MI two-sample scope uses the same selected subject ids in every imputation", {
+  completed <- lapply(seq_len(5L), function(i) {
+    data.frame(
+      y = c(5, 6, 50 + i, 3, 4, -30 - i, 100, 101),
+      g = factor(rep(c("Control", "Treatment", "Waitlist"), c(3L, 3L, 2L)),
+                 levels = c("Control", "Treatment", "Waitlist"))
+    )
+  })
+  dataset <- list(
+    dataset_id = "mi_selected_pair_probe",
+    group = "mi_selected_pair_probe",
+    dataset_type = "multiple_imputation",
+    data = completed[[1L]],
+    completed_datasets = completed,
+    imputation_count = 5L,
+    original_row_ids = seq_len(8L)
+  )
+  selected_ids <- c(1L, 2L, 4L, 5L)
+
+  forward <- LinkEDA:::.rls_independent_samples_t_test_mi(
+    list(selected_rows = selected_ids), dataset, "y", "g",
+    c("Control", "Treatment"), "two.sided", 0.95, FALSE,
+    "selected", seq_len(8L)
+  )
+  reverse <- LinkEDA:::.rls_independent_samples_t_test_mi(
+    list(selected_rows = selected_ids), dataset, "y", "g",
+    c("Treatment", "Control"), "two.sided", 0.95, FALSE,
+    "selected", seq_len(8L)
+  )
+
+  expect_equal(forward$descriptives$n, c(2, 2))
+  expect_identical(sort(forward$rows_used_original_ids), selected_ids)
+  expect_equal(forward$test_results$mean_diff, 2, tolerance = 1e-12)
+  expect_equal(reverse$test_results$mean_diff, -2, tolerance = 1e-12)
+  expect_equal(reverse$test_results$mean_diff_se,
+               forward$test_results$mean_diff_se, tolerance = 1e-12)
+  expect_equal(reverse$test_results$statistic,
+               -forward$test_results$statistic, tolerance = 1e-12)
+  expect_equal(as.numeric(reverse$test_results$conf_int),
+               as.numeric(-rev(forward$test_results$conf_int)), tolerance = 1e-12)
+  expect_equal(reverse$test_results$p_value,
+               forward$test_results$p_value, tolerance = 1e-12)
+  expect_equal(forward$multiple_imputation$m, 5L)
+  expect_equal(reverse$multiple_imputation$m, 5L)
+})
+
 test_that("Validation errors for invalid inputs", {
   d <- data.frame(y = 1:5, g = factor(c("a", "a", "b", "b", "b")), cat = letters[1:5])
   ls_register_dataset("cm_validation", d)
@@ -271,6 +858,41 @@ test_that("Validation errors for invalid inputs", {
   expect_error(ls_new_independent_samples_t_test("cm_validation", response = "y", group = "nonexistent"), "not found")
   expect_error(ls_new_paired_samples_t_test("cm_validation", pairs = list(c("y", "nonexistent"))), "not found")
   expect_error(ls_new_one_way_anova("cm_validation", response = "y", group = "nonexistent"), "not found")
+})
+
+test_that("two-group validation separates categorical semantics from level count", {
+  d <- data.frame(
+    y = seq_len(12),
+    planet = rep(c("Aurelia", "Borealis", "Cygnus"), 4),
+    stringsAsFactors = FALSE
+  )
+  name <- LinkEDA:::.rls_register_dataset(
+    "cm_imported_planet", d, replace = TRUE, infer_imported_types = TRUE
+  )
+  on.exit(ls_unregister_dataset(name), add = TRUE)
+
+  metadata <- ls_variable_metadata(name, "planet")
+  expect_equal(metadata$current_analysis_type, "factor")
+  expect_error(
+    ls_new_independent_samples_t_test(name, response = "y", group = "planet"),
+    "must have exactly two categories, but has 3",
+    fixed = TRUE
+  )
+
+  ls_set_variable_type(name, "planet", "character")
+  expect_error(
+    ls_new_independent_samples_t_test(name, response = "y", group = "planet"),
+    "is Text",
+    fixed = TRUE
+  )
+  ls_set_variable_type(name, "planet", "factor")
+  expect_equal(levels(LinkEDA:::.rls_dataset_record(name)$data$planet),
+               c("Aurelia", "Borealis", "Cygnus"))
+  expect_error(
+    ls_new_independent_samples_t_test(name, response = "y", group = "planet"),
+    "must have exactly two categories, but has 3",
+    fixed = TRUE
+  )
 })
 
 test_that("Result schema matches specification", {
@@ -322,15 +944,16 @@ test_that("Paired t test direction note is correct", {
   expect_match(result$test_results$direction_note, "a - b")
 })
 
-test_that("Independent t test effect size SE is positive", {
+test_that("Independent t test effect size interval comes from effectsize", {
   d <- data.frame(y = c(rnorm(10, 0), rnorm(10, 1)),
                   g = factor(rep(c("ctrl", "trt"), each = 10)))
   ls_register_dataset("cm_es_ind", d)
   ids <- ls_new_independent_samples_t_test("cm_es_ind", response = "y", group = "g")
   result <- LinkEDA:::.rls_compare_means_record(ids[[1L]])
   expect_true(is.finite(result$effect_sizes$cohens_d))
-  expect_true(is.finite(result$effect_sizes$cohens_d_se))
-  expect_true(result$effect_sizes$cohens_d_se > 0)
+  reference <- effectsize::hedges_g(d$y[d$g == "ctrl"], d$y[d$g == "trt"], verbose = FALSE)
+  expect_equal(result$effect_sizes$effect_size_ci, c(reference$CI_low, reference$CI_high))
+  expect_true(is.na(result$effect_sizes$cohens_d_se))
 })
 
 test_that("One-way ANOVA with missing values preserves row IDs", {
@@ -483,4 +1106,27 @@ test_that("multiple responses and pairs retain analysis-specific N under missing
   anova_ids <- ls_new_one_way_anova("cm_multi_missing", c("y1", "y2"), "g")
   expect_length(anova_ids, 2L)
   expect_equal(LinkEDA:::.rls_compare_means_record(anova_ids[[1L]])$specification$group_levels, c("A", "B"))
+})
+
+test_that("invalid ANOVA responses do not cancel other responses", {
+  data <- data.frame(y=seq_len(30)+sin(seq_len(30)),
+    g=factor(rep(c("Finland","Greece","Italy"),10)),
+    age_group_before=factor(rep(c("young","older"),15)))
+  for (mi in c(FALSE,TRUE)) {
+    id <- ls_register_dataset(paste0("anova_invalid_",mi),data)
+    if(mi) {
+      record <- LinkEDA:::.rls_dataset_record(id)
+      record$dataset_type <- "multiple_imputation";record$imputation_count <- 3L
+      record$original_data <- data
+      record$completed_datasets <- lapply(1:3,function(i)transform(data,y=y+cos(seq_len(30)*i)))
+      LinkEDA:::.rls_set_dataset_record(record)
+    }
+    handles <- ls_new_one_way_anova(id,c("age_group_before","y"),"g")
+    results <- lapply(handles,LinkEDA:::.rls_compare_means_record)
+    expect_match(paste(results[[1]]$warnings,collapse=" "),"numeric dependent variable")
+    expect_true(is.finite(results[[2]]$test_results$p_value))
+    expect_identical(results[[2]]$specification$response,"y")
+    if(!mi) expect_equal(results[[2]]$test_results$p_value,stats::oneway.test(y~g,data=data)$p.value)
+    expect_error(ls_new_one_way_anova(id,"age_group_before","g"),"numeric dependent variable")
+  }
 })

@@ -1,0 +1,28 @@
+LinkEDA licensing
+=================
+
+Copyright (c) 2026 Pedro Valero Mora.
+
+Software
+--------
+
+LinkEDA software is licensed under the GNU General Public License, version 3
+or, at your option, any later version. The complete GPL version 3 text is available with R
+(share/licenses/GPL-3) and in the source repository LICENSE file.
+
+Documentation
+-------------
+
+Except where stated otherwise, original LinkEDA documentation is licensed
+under the Creative Commons Attribution-NonCommercial-NoDerivatives 4.0
+International licence (CC BY-NC-ND 4.0):
+
+https://creativecommons.org/licenses/by-nc-nd/4.0/
+
+Recommended attribution: LinkEDA documentation, Pedro Valero Mora,
+Universitat de València. Licensed under CC BY-NC-ND 4.0.
+
+Source code, executable examples and code excerpts embedded in documentation
+remain under GPL version 3 or later. Third-party datasets, fonts, package
+documentation and other third-party material retain their own notices and
+licences.

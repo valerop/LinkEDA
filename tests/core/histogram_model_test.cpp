@@ -123,19 +123,27 @@ int main()
 
     Rect first = HistogramBinRect(layout, 0);
     Rect fourth = HistogramBinRect(layout, 3);
-    assert(closeEnough(first.x, 11.0));
-    assert(closeEnough(first.width, 98.0));
-    assert(closeEnough(first.y, 170.0));
-    assert(closeEnough(first.height, 50.0));
-    assert(closeEnough(fourth.y, 20.0));
-    assert(closeEnough(fourth.height, 200.0));
+    const Rect contentRect = rlispstat::core::ZeroBaselineContentRect(layout.plotRect);
+    assert(closeEnough(contentRect.x, layout.plotRect.x + 10.0));
+    assert(closeEnough(contentRect.width, 380.0));
+    assert(closeEnough(first.x, contentRect.x + 1.0));
+    assert(closeEnough(first.width, contentRect.width / 4.0 - 2.0));
+    assert(fourth.x + fourth.width < layout.plotRect.x + layout.plotRect.width);
+    assert(contentRect.y > layout.plotRect.y);
+    assert(contentRect.y + contentRect.height < layout.plotRect.y + layout.plotRect.height);
+    assert(closeEnough(first.y, contentRect.y + contentRect.height * 0.75));
+    assert(closeEnough(first.height, contentRect.height * 0.25));
+    assert(closeEnough(fourth.y, contentRect.y));
+    assert(closeEnough(fourth.height, contentRect.height));
 
     auto firstHit = HistogramBinIndexAtPoint(layout, Point{20.0, 30.0});
     assert(firstHit.has_value() && *firstHit == 0);
-    auto lastHit = HistogramBinIndexAtPoint(layout, Point{410.0, 220.0});
+    auto lastHit = HistogramBinIndexAtPoint(layout, Point{399.0, 220.0});
     assert(lastHit.has_value() && *lastHit == 3);
     auto noHit = HistogramBinIndexAtPoint(layout, Point{9.0, 30.0});
     assert(!noHit.has_value());
+    assert(!HistogramBinIndexAtPoint(layout, Point{15.0, 30.0}).has_value());
+    assert(!HistogramBinIndexAtPoint(layout, Point{405.0, 30.0}).has_value());
 
     auto range = HistogramBinRangeForGesture(layout, Point{20.0, 50.0}, Point{250.0, 50.0});
     assert(range.has_value());
@@ -143,9 +151,11 @@ int main()
     assert(range->second == 2);
     auto dragHighlight = HistogramDragHighlightRect(layout, Point{20.0, 50.0}, Point{250.0, 50.0});
     assert(dragHighlight.has_value());
-    assert(closeEnough(dragHighlight->x, 11.0));
+    assert(closeEnough(dragHighlight->x, first.x));
     assert(closeEnough(dragHighlight->y, 20.0));
-    assert(closeEnough(dragHighlight->width, 298.0));
+    assert(closeEnough(dragHighlight->width,
+                       HistogramBinRect(layout, 2).x +
+                       HistogramBinRect(layout, 2).width - first.x));
     assert(closeEnough(dragHighlight->height, 200.0));
     assert(!HistogramDragHighlightRect(layout, Point{0.0, 50.0}, Point{250.0, 50.0}).has_value());
 
@@ -198,23 +208,31 @@ int main()
         true,
         true);
     assert(barPlan.size() == 4);
-    assert(closeEnough(barPlan[0].rect.x, 11.0));
+    assert(closeEnough(barPlan[0].rect.x, first.x));
     assert(barPlan[0].count == 4);
     assert(barPlan[0].showCount);
     assert(barPlan[0].countLabel == "4");
     assert(barPlan[0].colorSegments.size() == 2);
-    assert(barPlan[0].colorSegments[0].colorName == "blue");
-    assert(closeEnough(barPlan[0].colorSegments[0].alpha, 0.18));
-    assert(closeEnough(barPlan[0].colorSegments[0].rect.y, 210.0));
-    assert(closeEnough(barPlan[0].colorSegments[0].rect.height, 10.0));
-    assert(barPlan[0].colorSegments[1].colorName == "orange");
-    assert(closeEnough(barPlan[0].colorSegments[1].rect.y, 210.0));
-    assert(barPlan[0].selectedSegments.size() == 1);
+    assert(barPlan[0].colorSegments[0].colorName.empty());
+    assert(barPlan[0].colorSegments[0].defaultSelection);
+    assert(closeEnough(barPlan[0].colorSegments[0].alpha, 1.0));
+    const double segmentHeight = first.height / 4.0;
+    const double barBaseline = first.y + first.height;
+    assert(closeEnough(barPlan[0].colorSegments[0].rect.y, barBaseline - 2.0 * segmentHeight));
+    assert(closeEnough(barPlan[0].colorSegments[0].rect.height, segmentHeight));
+    assert(barPlan[0].colorSegments[1].colorName == "blue");
+    assert(closeEnough(barPlan[0].colorSegments[1].rect.y, barBaseline - 3.0 * segmentHeight));
+    assert(closeEnough(barPlan[0].colorSegments[1].rect.height, segmentHeight));
+    assert(barPlan[0].selectedSegments.size() == 2);
     assert(barPlan[0].selectedSegments[0].defaultSelection);
     assert(barPlan[0].selectedSegments[0].colorName.empty());
     assert(closeEnough(barPlan[0].selectedSegments[0].alpha, 0.30));
-    assert(closeEnough(barPlan[0].selectedSegments[0].rect.y, 200.0));
-    assert(closeEnough(barPlan[0].selectedSegments[0].rect.height, 20.0));
+    assert(closeEnough(barPlan[0].selectedSegments[0].rect.y, barBaseline - segmentHeight));
+    assert(closeEnough(barPlan[0].selectedSegments[0].rect.height, segmentHeight));
+    assert(!barPlan[0].selectedSegments[1].defaultSelection);
+    assert(barPlan[0].selectedSegments[1].colorName == "orange");
+    assert(closeEnough(barPlan[0].selectedSegments[1].rect.y, first.y));
+    assert(closeEnough(barPlan[0].selectedSegments[1].rect.height, segmentHeight));
     assert(barPlan[2].count == 0);
     assert(!barPlan[2].showCount);
     std::vector<HistogramBarRenderItem> puzzlePlan = BuildHistogramBarRenderPlan(
@@ -225,14 +243,23 @@ int main()
         false,
         true);
     assert(puzzlePlan.size() == 4);
-    assert(puzzlePlan[0].colorSegments.size() == 1);
-    assert(puzzlePlan[0].colorSegments[0].colorName == "orange");
-    assert(closeEnough(puzzlePlan[0].colorSegments[0].rect.y, 200.0));
-    assert(closeEnough(puzzlePlan[0].colorSegments[0].rect.height, 20.0));
+    assert(puzzlePlan[0].colorSegments.size() == 2);
+    assert(puzzlePlan[0].colorSegments[0].colorName.empty());
+    assert(closeEnough(puzzlePlan[0].colorSegments[0].rect.y, barBaseline - 2.0 * segmentHeight));
+    assert(closeEnough(puzzlePlan[0].colorSegments[0].rect.height, 2.0 * segmentHeight));
+    assert(puzzlePlan[0].colorSegments[1].colorName == "orange");
+    assert(closeEnough(puzzlePlan[0].colorSegments[1].rect.y, first.y));
+    assert(closeEnough(puzzlePlan[0].colorSegments[1].rect.height, segmentHeight));
     assert(puzzlePlan[0].selectedSegments.size() == 1);
-    assert(puzzlePlan[0].selectedSegments[0].defaultSelection);
-    assert(puzzlePlan[0].selectedSegments[0].colorName.empty());
-    assert(closeEnough(puzzlePlan[0].selectedSegments[0].rect.y, 210.0));
+    assert(!puzzlePlan[0].selectedSegments[0].defaultSelection);
+    assert(puzzlePlan[0].selectedSegments[0].colorName == "orange");
+    assert(closeEnough(puzzlePlan[0].selectedSegments[0].alpha, 1.0));
+    assert(closeEnough(puzzlePlan[0].selectedSegments[0].rect.y, first.y + segmentHeight));
+    assert(closeEnough(puzzlePlan[0].selectedSegments[0].rect.height, segmentHeight));
+    assert(closeEnough(
+        puzzlePlan[0].colorSegments[1].rect.y +
+            puzzlePlan[0].colorSegments[1].rect.height,
+        puzzlePlan[0].selectedSegments[0].rect.y));
     std::vector<HistogramBarRenderItem> densityBarPlan = BuildHistogramBarRenderPlan(
         layout,
         std::vector<std::vector<CaseId>>{{1, 2, 3, 4}, {5, 6}, {}, {7}},
@@ -250,7 +277,7 @@ int main()
     assert(rugPlan.size() == 2);
     assert(rugPlan[0].caseId == 1);
     assert(closeEnough(rugPlan[0].start.x, first.x + first.width / 2.0));
-    assert(closeEnough(rugPlan[0].start.y, layout.plotRect.y + layout.plotRect.height));
+    assert(closeEnough(rugPlan[0].start.y, barBaseline));
     assert(closeEnough(rugPlan[0].end.y, rugPlan[0].start.y - 7.0));
     assert(rugPlan[1].caseId == 2);
     assert(closeEnough(rugPlan[1].start.x, fourth.x + fourth.width / 2.0));
@@ -293,11 +320,42 @@ int main()
     assert(HistogramColorSegmentsVisible(true, "all"));
     assert(HistogramColorSegmentsVisible(true, "none"));
     assert(HistogramColorSegmentsVisible(false, "all"));
-    auto histogramMenu = BuildHistogramMenuState("mpg", true, false, true, "colors");
+    const auto binningRules = rlispstat::core::HistogramBinningRuleMenuOptions();
+    assert(binningRules.size() == 4);
+    rlispstat::core::PlotModel binningPlot;
+    binningPlot.kind = "histogram";
+    std::vector<double> binningValues;
+    for (int i = 0; i < 64; ++i) {
+        const double value = i == 63 ? 100.0 : i * .1;
+        binningValues.push_back(value);
+        binningPlot.histogramPoints.push_back({value, i + 1, 0});
+        binningPlot.points.push_back({value, 0, i + 1});
+    }
+    for (const auto &rule : binningRules) {
+        assert(rule.command == "HIST_SET_BINNING_RULE|" + rule.value);
+        assert(rlispstat::core::HistogramBinCountForChoice(binningPlot, rule.value) ==
+               HistogramBinCountForRule(binningValues, rule.value));
+    }
+    binningPlot.kind = "trellis_scatterplot";
+    assert(rlispstat::core::HistogramBinCountForChoice(binningPlot, "sqrt") == 8);
+    assert(rlispstat::core::HistogramBinCountForChoice(binningPlot, "27") == 27);
+    for (const auto &invalid : {"", "0", "201", "3.5", "bogus", "10x"})
+        assert(!rlispstat::core::HistogramBinCountForChoice(binningPlot, invalid));
+    const auto binCounts = rlispstat::core::HistogramBinCountMenuOptions(15);
+    assert(binCounts.size() == 6 && binCounts[2].checked);
+
+    auto histogramMenu = BuildHistogramMenuState(
+        "mpg", true, true, false, false, true, "colors");
     assert(histogramMenu.title == "Histogram");
     assert(histogramMenu.densityCurvesTitle == "Density Curves");
     assert(histogramMenu.densityModeTitle == "Density Mode");
     assert(histogramMenu.counts.title == "Hide Counts");
+    assert(histogramMenu.tickMarks.title == "Hide Tick Marks");
+    assert(histogramMenu.tickMarks.checked);
+    assert(histogramMenu.tickMarks.command == "HIST_TOGGLE_TICK_MARKS");
+    assert(histogramMenu.tickLabels.title == "Show Tick Labels");
+    assert(!histogramMenu.tickLabels.checked);
+    assert(histogramMenu.tickLabels.command == "HIST_TOGGLE_TICK_LABELS");
     assert(histogramMenu.rug.title == "Show Rug");
     assert(histogramMenu.densityToggle.title == "Hide Density Curves");
     assert(histogramMenu.densityModes.size() == 4);
@@ -418,10 +476,11 @@ int main()
     renderInput.densityXMaximum = 10.0;
     HistogramRenderPlan renderPlan = BuildHistogramRenderPlan(renderInput);
     assert(renderPlan.bars.size() == 4);
-    assert(renderPlan.bars[0].selectedSegments.size() == 1);
+    assert(renderPlan.bars[0].selectedSegments.size() == 2);
     assert(renderPlan.rugs.size() == 2);
     assert(renderPlan.density.curves.size() == 2);
     assert(renderPlan.density.overlaps.size() == 1);
+    assert(closeEnough(renderPlan.density.curves[0].fillPolygon.back().y, barBaseline));
     renderInput.showRug = false;
     renderInput.showColorSegments = false;
     HistogramRenderPlan sparseRenderPlan = BuildHistogramRenderPlan(renderInput);

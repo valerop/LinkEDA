@@ -15,6 +15,14 @@ SelectionMode SelectionModeFromString(const std::string &mode, SelectionMode fal
     return fallback;
 }
 
+std::string SelectionModeName(SelectionMode mode)
+{
+    if (mode == SelectionMode::Add) return "add";
+    if (mode == SelectionMode::Subtract) return "subtract";
+    if (mode == SelectionMode::Toggle) return "toggle";
+    return "replace";
+}
+
 std::string EffectiveSelectionModeName(bool optionDown,
                                        bool commandDown,
                                        bool controlDown,
@@ -31,6 +39,25 @@ std::string EffectiveSelectionModeName(bool optionDown,
         return "add";
     }
     return fallbackMode;
+}
+
+SelectionMode SelectionModeForPointerGesture(const std::set<CaseId> &current,
+                                              const std::set<CaseId> &incoming,
+                                              SelectionMode requestedMode,
+                                              bool dragGesture)
+{
+    if (dragGesture || requestedMode != SelectionMode::Replace || incoming.empty()) {
+        return requestedMode;
+    }
+
+    const std::set<CaseId> selected = NormalizeCaseSet(current);
+    const std::set<CaseId> hits = NormalizeCaseSet(incoming);
+    if (hits.empty()) return requestedMode;
+
+    const bool allAlreadySelected = std::all_of(
+        hits.begin(), hits.end(),
+        [&selected](CaseId row) { return selected.find(row) != selected.end(); });
+    return allAlreadySelected ? SelectionMode::Subtract : requestedMode;
 }
 
 std::set<CaseId> NormalizeCaseSet(const std::set<CaseId> &cases)
@@ -225,6 +252,13 @@ std::set<int> VisibleRowsForModel(PlotModel *model)
             groups.push_back(std::vector<CaseId>(bin.rows.begin(), bin.rows.end()));
         }
         return CaseSetFromGroupedVectors(groups);
+    } else if (model->kind == "histogram") {
+        std::vector<CaseId> rows;
+        rows.reserve(model->histogramPoints.size());
+        for (const HistogramPoint &point : model->histogramPoints) {
+            rows.push_back(point.row);
+        }
+        return CaseSetFromVector(rows);
     } else {
         std::vector<CaseId> rows;
         rows.reserve(model->points.size());

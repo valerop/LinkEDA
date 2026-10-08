@@ -22,11 +22,21 @@ enum class SelectionMode {
 
 SelectionMode SelectionModeFromString(const std::string &mode,
                                       SelectionMode fallback = SelectionMode::Replace);
+std::string SelectionModeName(SelectionMode mode);
 std::string EffectiveSelectionModeName(bool optionDown,
                                        bool commandDown,
                                        bool controlDown,
                                        bool shiftDown,
                                        const std::string &fallbackMode);
+
+// A plain point click in replace mode behaves as a toggle when every hit case
+// is already selected. Drag brushes and explicit add/subtract/toggle modes keep
+// their requested semantics. An empty click remains replace, so it clears the
+// linked selection.
+SelectionMode SelectionModeForPointerGesture(const std::set<CaseId> &current,
+                                              const std::set<CaseId> &incoming,
+                                              SelectionMode requestedMode,
+                                              bool dragGesture);
 
 std::set<CaseId> NormalizeCaseSet(const std::set<CaseId> &cases);
 std::set<CaseId> CaseSetFromVector(const std::vector<CaseId> &cases);

@@ -130,11 +130,18 @@ struct HistogramMenuOption {
     bool checked = false;
 };
 
+std::vector<HistogramMenuOption> HistogramBinningRuleMenuOptions();
+std::vector<HistogramMenuOption> HistogramBinCountMenuOptions(std::size_t currentCount);
+// Existing rule engine, applied to the observations in the displayed scope.
+std::optional<int> HistogramBinCountForChoice(const PlotModel &plot, const std::string &choice);
+
 struct HistogramMenuState {
     std::string title = "Histogram";
     std::string densityCurvesTitle = "Density Curves";
     std::string densityModeTitle = "Density Mode";
     HistogramMenuOption counts;
+    HistogramMenuOption tickMarks;
+    HistogramMenuOption tickLabels;
     HistogramMenuOption rug;
     HistogramMenuOption densityToggle;
     std::vector<HistogramMenuOption> densityModes;
@@ -224,6 +231,8 @@ bool HistogramColorSegmentsVisible(bool showDensity,
 std::vector<HistogramMenuOption> HistogramDensityModeMenuOptions();
 HistogramMenuState BuildHistogramMenuState(const std::string &xLabel,
                                            bool showCounts,
+                                           bool showTickMarks,
+                                           bool showTickLabels,
                                            bool showRug,
                                            bool showDensity,
                                            const std::string &densityMode);

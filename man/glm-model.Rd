@@ -57,8 +57,12 @@ ls_glm_diagnostics(model)
 
 ls_glm_refresh_diagnostics(model)
 
-ls_glm_open_diagnostic(model, type = c("residuals_vs_fitted", "observed_vs_fitted",
-  "residuals_fitted", "observed_fitted"), native = isTRUE(.rls_state$process_started))
+ls_glm_open_diagnostic(model, type = c("observed_vs_fitted",
+  "residuals_vs_fitted", "residual_histogram", "normal_qq",
+  "scale_location", "residuals_leverage", "cooks_distance",
+  "observed_fitted", "residuals_fitted",
+  "observed_predicted_score_distribution"),
+  native = isTRUE(.rls_state$process_started))
 
 ls_glm_diagnostic_state(plot)
 
@@ -73,7 +77,7 @@ ls_glm_rows_excluded(model)
 \item{model}{An \code{rlispstat_glm} object or dataset/group name.}
 \item{variable}{A variable name. Predictors may also use terms such as \code{factor(cyl)}.}
 \item{var1, var2}{Numeric variable names used to define an interaction term.}
-\item{degree}{Polynomial degree.}
+\item{degree}{Integer polynomial degree from 2 to 99. Adds the numeric main effect and all powers up to this degree.}
 \item{type}{Diagnostic plot type.}
 \item{native}{Logical. If the native backend is active, open a visible native diagnostic plot.}
 \item{plot}{An \code{rlispstat_glm_diagnostic} handle.}
@@ -88,6 +92,6 @@ Create, configure, fit, and inspect ordinary \code{lm()}-style General Linear
 Models for registered datasets. The graphical window is native and linked to
 the active LinkEDA workbench group; the R API stores structured model results
 including coefficients, fit statistics, p values, and partial R-squared.
-Factor predictors are exposed in display rows as parent variables with
+Categorical predictors are exposed in display rows as parent variables with
 indented level rows, including the reference category.
 }

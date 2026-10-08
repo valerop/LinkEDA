@@ -22,12 +22,40 @@
 namespace rlispstat {
 namespace core {
 
+// Semantic presentation of a frozen linear fit, shared by native and R exports.
+std::vector<PublicationTableSpec> LinearModelReportTables(const GroupModelState &state,
+                                                        const GLMFitSummary &fit);
+OutputCodeReference LinearModelCodeReference(const GroupModelState &state,
+                                            const GLMFitSummary &fit);
+
+PublicationTableSpec GeneralizedModelPublicationTable(const GeneralizedGLMState &state);
+std::vector<PublicationTableSpec> GeneralizedModelReportTables(const GeneralizedGLMState &state);
+PublicationTableSpec RegressionComparisonPublicationTable(const RegressionComparisonState &state);
+PublicationTableSpec GeneralizedComparisonPublicationTable(const GeneralizedComparisonState &state);
+
 using CommandBoxplotMutation = std::function<bool(PlotModel &, std::string &)>;
 
 struct CommandVariableInfo {
     std::string name;
     std::string type;
     std::string role;
+};
+
+enum class DatasetMutationKind {
+    CellValue,
+    VariableRename,
+    VariableMetadata,
+    ColumnStructure,
+    LabelColumn
+};
+
+struct DatasetMutationEvent {
+    DatasetMutationKind kind = DatasetMutationKind::VariableMetadata;
+    std::string group;
+    std::string variable;
+    std::string previousVariable;
+    int row = 0;
+    DatasetValueChangeEffects valueChangeEffects;
 };
 
 struct CommandQueryServices {
@@ -66,6 +94,7 @@ struct CommandUiServices {
     std::function<void(const std::string &)> refreshPlotTitle;
     std::function<void(const std::string &)> refreshModelGroup;
     std::function<void(const std::string &)> refreshModelTrellis;
+    std::function<void(const std::string &)> showGeneralizedComparison;
     std::function<void(const std::string &)> showCorrelationMatrix;
     std::function<void(const std::string &)> showDimensionality;
     std::function<void(const std::string &)> refreshDimensionalityPlots;
@@ -90,8 +119,21 @@ struct CommandUiServices {
     std::function<void(PlotModel *)> addPlot;
     std::function<void(const std::string &, const std::string &, const std::string &)> showCompareMeansReport;
     std::function<void(const Table1DisplayState &)> showCompareMeansTable;
+    std::function<void(const Table1DisplayState &)> showTable1;
     std::function<void(const MeanComparisonState &)> showMeanComparison;
     std::function<void(const std::string &, const std::string &)> showMeanComparisonError;
+    // Appended to preserve the positional aggregate layout used by older
+    // native adapters and focused dispatcher tests.
+    std::function<void(const DatasetMutationEvent &)> datasetMutated;
+    std::function<void(const AnalysisScopeChangeEvent &)> analysisScopeChanged;
+    // Scale Analysis is appended so existing positional platform/test
+    // initializers retain their layout while the shared semantic session owns
+    // all statistical state.
+    std::function<void(const std::string &)> showScaleAnalysis;
+    std::function<void(const std::string &)> refreshScaleAnalysisPlots;
+    std::function<void(const std::string &, const std::string &,
+                       const std::optional<DataFrameModel> &)> showRCode;
+    std::function<void(const std::string &)> showDendrogram;
 };
 
 struct CommandSelectionServices {
@@ -107,6 +149,8 @@ struct CommandSelectionServices {
                        const std::vector<SmoothCurveData> &)> replaceSmoothCurves;
     std::function<bool(const std::string &, bool, const std::string &)> setAxisVariable;
     std::function<bool(const std::string &, const std::function<void(PlotModel &)> &)> mutateHistogram;
+    std::function<bool(const std::string &, const std::function<void(PlotModel &)> &)> mutateBarplot;
+    std::function<bool(const std::string &, const std::function<bool(PlotModel &)> &)> mutateScatterMatrix;
     std::function<bool(const std::string &, const CommandBoxplotMutation &, std::string &)> mutateBoxplot;
     std::function<bool(const std::string &)> refitCorrelation;
     std::function<bool(const std::string &)> refitDimensionality;
@@ -114,6 +158,9 @@ struct CommandSelectionServices {
     std::function<bool(const std::string &, SmoothCurveScope)> toggleSmoothCurves;
     std::function<bool(const std::string &, const std::string &, SmoothCurveScope,
                        const std::vector<SmoothCurveData> &)> replaceTrellisSmoothCurves;
+    // Appended so older aggregate initializers remain source-compatible.
+    std::function<bool(const std::string &, const std::string &)> removeLinearModelOverlay;
+    std::function<bool(const std::string &)> refitScaleAnalysis;
 };
 
 struct CommandDispatcherServices {
@@ -124,10 +171,34 @@ struct CommandDispatcherServices {
     CommandSelectionServices selection;
 };
 
+// Rebuilds the portable ggplot2 verification/publication reference after a
+// native plot option changes. The statistical data stay in the captured data
+// version; only the graph recipe and retained presentation specification are
+// refreshed.
+void RefreshBasicPlotCodeReference(ApplicationState &state, PlotModel &plot);
+
+// Native descriptive windows also participate in the shared R verification
+// workflow.  These helpers rebuild a portable public-R recipe from the exact
+// captured specification and register it under the visible output id.
+void RefreshCorrelationCodeReference(ApplicationState &state,
+                                     CorrelationMatrixState &correlation);
+std::optional<MainRDimensionalityTask> PrepareDimensionalityRTask(ApplicationState &application, DimensionalityState &state);
+MainRCorrelationTask PrepareCorrelationRTask(ApplicationState &application, CorrelationMatrixState &state);
+MainRDendrogramTask PrepareDendrogramRTask(ApplicationState &state, DendrogramState &dendrogram);
+void RefreshDendrogramCodeReference(ApplicationState &state,
+                                    DendrogramState &dendrogram);
+void RefreshNativeTableCodeReference(ApplicationState &state,
+                                     Table1DisplayState &table);
+
 class CommandDispatcher {
 public:
     explicit CommandDispatcher(CommandDispatcherServices services);
+    void setMissingInformationRefresh(std::function<void(const Table1DisplayState &)> refresh) {
+        missingInformationRefresh_ = std::move(refresh);
+    }
 
+    void prepareTable1Task(MainRTable1Task &task);
+    void cancelTable1Task(const std::string &id);
     std::string dispatch(const std::vector<std::string> &lines);
     std::string dispatchSession(SessionReadLine readLine);
     bool sessionClosed() const;
@@ -140,11 +211,18 @@ public:
 private:
     std::optional<std::string> dispatchPortable(const CommandRequest &request);
 
+    struct PendingTable1 { MainRTable1Task task; bool pending = true; bool followsActiveScope = false; };
+    std::map<std::string, PendingTable1> table1Requests_;
+    std::uint64_t table1Revision_ = 0;
+    bool currentTable1Reply(const std::string &id, const std::string &group,
+                           std::uint64_t revision, std::uint64_t version) const;
     CommandDispatcherServices services_;
     SessionController session_;
     ApplicationState applicationState_;
     PlotCoordinator plotCoordinator_;
-    std::string plotTheme_ = "classic";
+    std::string plotTheme_ = "publication";
+    std::set<std::string> linkedMissingInformationSources_;
+    std::function<void(const Table1DisplayState &)> missingInformationRefresh_;
 };
 
 } // namespace core

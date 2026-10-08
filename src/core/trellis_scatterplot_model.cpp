@@ -2,6 +2,7 @@
 
 #include "boxplot_model.h"
 #include "format_model.h"
+#include "scatter_matrix_model.h"
 #include "scatterplot_model.h"
 
 #include <algorithm>
@@ -84,14 +85,19 @@ DataViewport CommonViewport(const PlotModel &plot)
             int total = 0;
             for (const auto &category : panel.second) total += category.second;
             for (const auto &category : panel.second) {
-                const double value = plot.trellisSpecification.barMeasure == "percent" && total > 0
-                    ? 100.0 * static_cast<double>(category.second) / static_cast<double>(total)
-                    : static_cast<double>(category.second);
+                double value = static_cast<double>(category.second);
+                if (plot.trellisSpecification.barMeasure == "percent" && total > 0) {
+                    value = 100.0 * value / static_cast<double>(total);
+                } else if (plot.trellisSpecification.barMeasure == "conditional_percent" &&
+                           category.second > 0) {
+                    value = 100.0;
+                }
                 maximum = std::max(maximum, value);
             }
         }
         ymin = 0.0;
-        ymax = plot.trellisSpecification.barMeasure == "percent"
+        ymax = (plot.trellisSpecification.barMeasure == "percent" ||
+                plot.trellisSpecification.barMeasure == "conditional_percent")
             ? 100.0 : std::max(1.0, maximum * 1.08);
     }
     if (type == TrellisPlotType::Histogram) {
@@ -368,8 +374,9 @@ bool PrepareCondition(const TrellisConditioningVariable &condition,
     prepared.rowLevelIds.resize(column.values.size());
     prepared.rowLevelLabels.resize(column.values.size());
     if (condition.kind == TrellisConditioningVariableKind::Categorical) {
-        if (!IsCategoricalColumn(column, rowCount)) {
-            if (error) *error = "A categorical conditioning variable must have discrete levels.";
+        const bool numericInterpretation = IsNumericColumn(column);
+        if (!IsCategoricalColumn(column, rowCount) && !numericInterpretation) {
+            if (error) *error = "A categorical conditioning variable must have discrete categories.";
             return false;
         }
         std::vector<std::size_t> observedRows;
@@ -460,6 +467,40 @@ double Quantile(std::vector<double> values, double probability)
     return values[lower] * (1.0 - fraction) + values[upper] * fraction;
 }
 
+const DataColumn *AnalysisColumn(const DataFrameModel &df, const std::string &name)
+{
+    const auto found = std::find_if(df.columns.begin(), df.columns.end(),
+        [&](const DataColumn &column) { return column.name == name; });
+    return found == df.columns.end() ? nullptr : &*found;
+}
+
+PlotAnalysisEffectiveType AnalysisTypeForColumn(const DataColumn *column)
+{
+    if (!column) return PlotAnalysisEffectiveType::Factor;
+    const std::string type = NormalizeVariableType(column->type);
+    if (type == "numeric") return PlotAnalysisEffectiveType::Numeric;
+    if (type == "ordered") return PlotAnalysisEffectiveType::OrderedFactor;
+    return PlotAnalysisEffectiveType::Factor;
+}
+
+bool AnalysisColumnIsBinary(const DataColumn *column)
+{
+    if (!column) return false;
+    std::set<std::string> observed;
+    for (const std::string &value : column->values) {
+        if (DataCellIsMissing(value)) continue;
+        observed.insert(value);
+        if (observed.size() > 2) return false;
+    }
+    return observed.size() == 2;
+}
+
+void AppendUnique(std::vector<std::string> &values, const std::string &value)
+{
+    if (value.empty() || std::find(values.begin(), values.end(), value) != values.end()) return;
+    values.push_back(value);
+}
+
 } // namespace
 
 std::string TrellisPlotTypeName(TrellisPlotType type)
@@ -490,6 +531,260 @@ std::optional<TrellisPlotType> ParseTrellisPlotType(const std::string &name)
     return std::nullopt;
 }
 
+PlotAnalysisContext BuildTrellisPlotAnalysisContext(
+    const PlotModel &plot,
+    const DataFrameModel &df)
+{
+    PlotAnalysisContext context;
+    if (plot.kind != "trellis_scatterplot" || !plot.trellisSpecificationInitialized) return context;
+    const TrellisPlotSpecification &specification = plot.trellisSpecification;
+
+    auto appendVariable = [&](const std::string &variable,
+                              PlotAnalysisVariableRole role,
+                              std::optional<PlotAnalysisEffectiveType> forcedType = std::nullopt)
+    {
+        if (variable.empty() || !AnalysisColumn(df, variable)) return;
+        const auto existing = std::find_if(context.variables.begin(), context.variables.end(),
+            [&](const PlotAnalysisVariable &item) { return item.variableId == variable; });
+        if (existing != context.variables.end()) return;
+        const DataColumn *column = AnalysisColumn(df, variable);
+        const PlotAnalysisEffectiveType type = forcedType.value_or(AnalysisTypeForColumn(column));
+        context.variables.push_back({variable,
+            column && !column->displayName.empty() ? column->displayName : variable,
+            role, type, AnalysisColumnIsBinary(column)});
+    };
+
+    // Plot-type semantics determine the dependent variable.  In particular,
+    // bars have no observed Y axis: their height is a derived count/percentage.
+    // A split variable, when present, is the response represented by the bar
+    // composition and is therefore the only valid bar-plot dependent variable.
+    switch (specification.plotType) {
+    case TrellisPlotType::Scatter:
+    case TrellisPlotType::TimeSeries:
+    case TrellisPlotType::Boxplot:
+        context.dependentVariable = specification.yVariableId;
+        break;
+    case TrellisPlotType::Bar:
+        context.dependentVariable = specification.splitVariableId;
+        break;
+    case TrellisPlotType::Histogram:
+        // The observed variable is the response represented by a histogram.
+        // Bin counts, percentages and densities are derived drawing values
+        // and must never become model variables.
+        context.dependentVariable = specification.xVariableId;
+        break;
+    case TrellisPlotType::DataTable:
+        break;
+    }
+
+    if (specification.plotType == TrellisPlotType::Bar) {
+        appendVariable(specification.xVariableId, PlotAnalysisVariableRole::X,
+                       PlotAnalysisEffectiveType::Factor);
+        appendVariable(specification.splitVariableId, PlotAnalysisVariableRole::Y,
+                       PlotAnalysisEffectiveType::Factor);
+    } else if (specification.plotType == TrellisPlotType::Histogram) {
+        appendVariable(specification.xVariableId, PlotAnalysisVariableRole::X,
+                       PlotAnalysisEffectiveType::Numeric);
+    } else if (specification.plotType == TrellisPlotType::Boxplot) {
+        // Every nested X variable identifies groups whose distributions are
+        // shown and is categorical in the model even when stored numerically.
+        std::vector<std::string> groups = specification.boxplotGroupingVariableIds;
+        if (groups.empty()) groups.push_back(specification.xVariableId);
+        for (const std::string &group : groups)
+            appendVariable(group, PlotAnalysisVariableRole::X,
+                           PlotAnalysisEffectiveType::Factor);
+        appendVariable(specification.yVariableId, PlotAnalysisVariableRole::Y,
+                       PlotAnalysisEffectiveType::Numeric);
+    } else {
+        appendVariable(specification.xVariableId, PlotAnalysisVariableRole::X);
+        appendVariable(specification.yVariableId, PlotAnalysisVariableRole::Y);
+        appendVariable(specification.splitVariableId, PlotAnalysisVariableRole::Split,
+                       PlotAnalysisEffectiveType::Factor);
+    }
+    appendVariable(specification.groupingVariableId, PlotAnalysisVariableRole::Grouping,
+                   PlotAnalysisEffectiveType::Factor);
+    for (const TrellisConditioningVariable &condition : specification.conditioningVariables) {
+        PlotAnalysisVariableRole role = PlotAnalysisVariableRole::ConditioningNested;
+        if (condition.dimension == TrellisDimension::Rows) role = PlotAnalysisVariableRole::ConditioningRow;
+        else if (condition.dimension == TrellisDimension::Columns) role = PlotAnalysisVariableRole::ConditioningColumn;
+        appendVariable(condition.variableId, role,
+            condition.orderedCategories ? PlotAnalysisEffectiveType::OrderedFactor
+                                        : PlotAnalysisEffectiveType::Factor);
+    }
+
+    for (const PlotAnalysisVariable &variable : context.variables) {
+        if (variable.effectiveType == PlotAnalysisEffectiveType::Numeric)
+            AppendUnique(context.numericVariables, variable.variableId);
+        else {
+            AppendUnique(context.categoricalVariables, variable.variableId);
+            if (variable.role == PlotAnalysisVariableRole::Split ||
+                variable.role == PlotAnalysisVariableRole::Grouping ||
+                variable.role == PlotAnalysisVariableRole::ConditioningRow ||
+                variable.role == PlotAnalysisVariableRole::ConditioningColumn ||
+                variable.role == PlotAnalysisVariableRole::ConditioningNested)
+                AppendUnique(context.groupingVariables, variable.variableId);
+        }
+        if (variable.variableId != context.dependentVariable)
+            AppendUnique(context.predictors, variable.variableId);
+    }
+
+    const auto dependent = std::find_if(context.variables.begin(), context.variables.end(),
+        [&](const PlotAnalysisVariable &variable)
+        { return variable.variableId == context.dependentVariable; });
+    const bool supportsInterceptOnly =
+        specification.plotType == TrellisPlotType::Histogram ||
+        specification.plotType == TrellisPlotType::Boxplot;
+    if (dependent != context.variables.end() &&
+        (!context.predictors.empty() || supportsInterceptOnly)) {
+        if (dependent->effectiveType == PlotAnalysisEffectiveType::Numeric)
+            context.modelKind = PlotAnalysisModelKind::Linear;
+        else if (dependent->binary)
+            context.modelKind = PlotAnalysisModelKind::Binomial;
+    }
+    context.offersModel = context.modelKind != PlotAnalysisModelKind::None;
+    context.offersCorrelations = context.numericVariables.size() >= 2;
+    context.offersContingencyTables = context.categoricalVariables.size() >= 2;
+    context.offersDescriptives = !context.variables.empty();
+    return context;
+}
+
+PlotAnalysisContext BuildPlotAnalysisContext(
+    const PlotModel &plot,
+    const DataFrameModel &df)
+{
+    if (plot.kind == "trellis_scatterplot")
+        return BuildTrellisPlotAnalysisContext(plot, df);
+
+    PlotAnalysisContext context;
+    auto appendVariable = [&](const std::string &variable,
+                              PlotAnalysisVariableRole role,
+                              std::optional<PlotAnalysisEffectiveType> forcedType = std::nullopt)
+    {
+        const DataColumn *column = AnalysisColumn(df, variable);
+        if (variable.empty() || !column) return;
+        if (std::any_of(context.variables.begin(), context.variables.end(),
+            [&](const PlotAnalysisVariable &item) { return item.variableId == variable; })) return;
+        context.variables.push_back({variable,
+            column->displayName.empty() ? variable : column->displayName,
+            role, forcedType.value_or(AnalysisTypeForColumn(column)),
+            AnalysisColumnIsBinary(column)});
+    };
+
+    if (plot.kind == "scatter" || plot.kind == "time_series") {
+        context.dependentVariable = plot.yLabel;
+        appendVariable(plot.xLabel, PlotAnalysisVariableRole::X);
+        appendVariable(plot.yLabel, PlotAnalysisVariableRole::Y);
+        if (plot.kind == "time_series")
+            appendVariable(plot.timeSeriesGroupVariable,
+                           PlotAnalysisVariableRole::Grouping,
+                           PlotAnalysisEffectiveType::Factor);
+    } else if (plot.kind == "barplot") {
+        context.dependentVariable = plot.barplotSplitVariable;
+        const std::vector<std::string> xVariables = plot.barplotXVariables.empty()
+            ? std::vector<std::string>{plot.xLabel} : plot.barplotXVariables;
+        for (const std::string &variable : xVariables)
+            appendVariable(variable, PlotAnalysisVariableRole::X,
+                           PlotAnalysisEffectiveType::Factor);
+        appendVariable(plot.barplotSplitVariable, PlotAnalysisVariableRole::Y,
+                       PlotAnalysisEffectiveType::Factor);
+    } else if (plot.kind == "histogram") {
+        context.dependentVariable = plot.xLabel;
+        appendVariable(plot.xLabel, PlotAnalysisVariableRole::X,
+                       PlotAnalysisEffectiveType::Numeric);
+    } else if (plot.kind == "scatter_matrix") {
+        const std::vector<std::string> matrixVariables =
+            plot.scatterMatrixVariables.empty()
+            ? ScatterMatrixVariablesForModel(plot)
+            : plot.scatterMatrixVariables;
+        for (const std::string &variable : matrixVariables)
+            appendVariable(variable, PlotAnalysisVariableRole::X,
+                           PlotAnalysisEffectiveType::Numeric);
+    } else if (plot.kind == "boxplot") {
+        if (!BoxplotUsesVariableAxes(plot)) {
+            context.dependentVariable = plot.yLabel;
+            const std::vector<std::string> groups = plot.boxplotGroupingVariables.empty()
+                ? std::vector<std::string>{plot.xLabel}
+                : plot.boxplotGroupingVariables;
+            for (const std::string &group : groups)
+                appendVariable(group, PlotAnalysisVariableRole::X,
+                               PlotAnalysisEffectiveType::Factor);
+            appendVariable(plot.yLabel, PlotAnalysisVariableRole::Y,
+                           PlotAnalysisEffectiveType::Numeric);
+        } else if (plot.boxplotVariables.size() == 1) {
+            // A one-variable boxplot can seed an intercept-only model whose
+            // predictors can then be edited in the normal model window.
+            context.dependentVariable = plot.boxplotVariables.front();
+            appendVariable(context.dependentVariable,
+                           PlotAnalysisVariableRole::Y,
+                           PlotAnalysisEffectiveType::Numeric);
+        } else if (!plot.boxplotVariables.empty()) {
+            for (const std::string &variable : plot.boxplotVariables)
+                appendVariable(variable, PlotAnalysisVariableRole::X,
+                               PlotAnalysisEffectiveType::Numeric);
+        }
+    } else {
+        return context;
+    }
+
+    for (const PlotAnalysisVariable &variable : context.variables) {
+        if (variable.effectiveType == PlotAnalysisEffectiveType::Numeric)
+            AppendUnique(context.numericVariables, variable.variableId);
+        else AppendUnique(context.categoricalVariables, variable.variableId);
+        if (variable.role == PlotAnalysisVariableRole::Grouping ||
+            variable.role == PlotAnalysisVariableRole::Split)
+            AppendUnique(context.groupingVariables, variable.variableId);
+        if (variable.variableId != context.dependentVariable)
+            AppendUnique(context.predictors, variable.variableId);
+    }
+    const auto dependent = std::find_if(context.variables.begin(), context.variables.end(),
+        [&](const PlotAnalysisVariable &variable)
+        { return variable.variableId == context.dependentVariable; });
+    const bool supportsInterceptOnly = plot.kind == "histogram" ||
+        (plot.kind == "boxplot" && !context.dependentVariable.empty());
+    if (dependent != context.variables.end() &&
+        (!context.predictors.empty() || supportsInterceptOnly)) {
+        if (dependent->effectiveType == PlotAnalysisEffectiveType::Numeric)
+            context.modelKind = PlotAnalysisModelKind::Linear;
+        else if (dependent->binary)
+            context.modelKind = PlotAnalysisModelKind::Binomial;
+    }
+    context.offersModel = context.modelKind != PlotAnalysisModelKind::None;
+    context.offersCorrelations = context.numericVariables.size() >= 2;
+    context.offersContingencyTables = context.categoricalVariables.size() >= 2;
+    context.offersDescriptives = !context.variables.empty();
+    return context;
+}
+
+std::map<std::string, std::string> PlotAnalysisTermTypes(
+    const PlotAnalysisContext &context)
+{
+    std::map<std::string, std::string> result;
+    for (const PlotAnalysisVariable &variable : context.variables) {
+        if (variable.variableId.empty() ||
+            variable.variableId == context.dependentVariable) continue;
+        result[variable.variableId] =
+            variable.effectiveType == PlotAnalysisEffectiveType::Numeric
+            ? "numeric" : "factor";
+    }
+    return result;
+}
+
+std::vector<PlotAnalysisMenuOption> PlotAnalysisMenuOptions(
+    const PlotAnalysisContext &context)
+{
+    std::vector<PlotAnalysisMenuOption> options;
+    if (context.offersModel) options.push_back({"Model...", "PLOT_ANALYZE_MODEL"});
+    if (context.offersCorrelations)
+        options.push_back({"Correlations...", "PLOT_ANALYZE_CORRELATIONS"});
+    if (context.numericVariables.size() >= 2)
+        options.push_back({"Factor analysis...", "PLOT_ANALYZE_FACTOR"});
+    if (context.offersContingencyTables)
+        options.push_back({"Contingency tables...", "PLOT_ANALYZE_CONTINGENCY"});
+    if (context.offersDescriptives)
+        options.push_back({"Descriptives...", "PLOT_ANALYZE_DESCRIPTIVES"});
+    return options;
+}
+
 void InitializeTrellisDataTableSpecification(PlotModel &plot,
                                              const DataFrameModel &df,
                                              bool restoreFromPlot)
@@ -505,6 +800,8 @@ void InitializeTrellisDataTableSpecification(PlotModel &plot,
         variables.push_back(name);
     };
     add(plot.trellisSpecification.xVariableId);
+    for (const std::string &group :
+         plot.trellisSpecification.boxplotGroupingVariableIds) add(group);
     add(plot.trellisSpecification.yVariableId);
     add(plot.trellisSpecification.splitVariableId);
     add(plot.trellisSpecification.groupingVariableId);
@@ -602,6 +899,11 @@ std::vector<std::string> TrellisDataTableExportVariables(const PlotModel &plot)
 {
     std::vector<std::string> variables =
         plot.trellisSpecification.dataTable.displayedVariableIds;
+    for (const std::string &group :
+         plot.trellisSpecification.boxplotGroupingVariableIds) {
+        if (std::find(variables.begin(), variables.end(), group) == variables.end())
+            variables.push_back(group);
+    }
     for (const TrellisConditioningVariable &condition :
          plot.trellisSpecification.conditioningVariables) {
         if (std::find(variables.begin(), variables.end(), condition.variableId) == variables.end()) {
@@ -781,13 +1083,26 @@ TrellisDerivedMetadata DeriveTrellisMetadata(const PlotModel &plot)
         result.internalTitle = specification.yVariableId + " over " + specification.xVariableId;
         break;
     case TrellisPlotType::Boxplot:
-        result.xAxisLabel = specification.xVariableId;
+        result.xAxisLabel = BoxplotGroupingLabel(
+            specification.boxplotGroupingVariableIds.empty()
+                ? std::vector<std::string>{specification.xVariableId}
+                : specification.boxplotGroupingVariableIds);
         result.yAxisLabel = specification.yVariableId;
-        result.internalTitle = specification.yVariableId + " by " + specification.xVariableId;
+        result.internalTitle = specification.yVariableId + " by " + result.xAxisLabel;
         break;
     case TrellisPlotType::Bar:
         result.xAxisLabel = specification.xVariableId;
-        result.yAxisLabel = specification.barMeasure == "percent" ? "Percent within panel" : "Count";
+        {
+            const std::string measure = specification.barMeasure == "percent"
+                ? "Percent within panel"
+                : (specification.barMeasure == "conditional_percent"
+                    ? "Percent within X" : "Count");
+            // A split bar chart represents a categorical response on its Y
+            // dimension.  Keep the derived height measure, but identify the
+            // variable so the axis remains meaningful and interactive.
+            result.yAxisLabel = specification.splitVariableId.empty()
+                ? measure : specification.splitVariableId + " (" + measure + ")";
+        }
         result.internalTitle = specification.xVariableId;
         break;
     case TrellisPlotType::Histogram:
@@ -851,7 +1166,16 @@ bool ValidateTrellisSpecification(const PlotModel &plot,
             return false;
         }
     } else if (specification.plotType == TrellisPlotType::Boxplot) {
-        if (!IsCategoricalColumn(*x, df.rows) || !IsNumericColumn(*y)) {
+        std::vector<std::string> groups = specification.boxplotGroupingVariableIds;
+        if (groups.empty()) groups.push_back(specification.xVariableId);
+        bool validGroups = !groups.empty();
+        std::set<std::string> seenGroups;
+        for (const std::string &group : groups) {
+            const DataColumn *column = FindDataColumnInDataFrame(df, group);
+            validGroups = validGroups && column && seenGroups.insert(group).second &&
+                IsCategoricalColumn(*column, df.rows);
+        }
+        if (!validGroups || !IsNumericColumn(*y)) {
             if (error) *error = "A trellis boxplot needs a categorical X and numeric Y variable.";
             return false;
         }
@@ -874,7 +1198,7 @@ bool ValidateTrellisSpecification(const PlotModel &plot,
         if (!column) { if (error) *error = "A conditioning variable is unavailable."; return false; }
         if (condition.kind == TrellisConditioningVariableKind::Categorical &&
             !IsCategoricalColumn(*column, df.rows)) {
-            if (error) *error = "A categorical conditioning variable must have discrete levels.";
+            if (error) *error = "A categorical conditioning variable must have discrete categories.";
             return false;
         }
         if (condition.kind == TrellisConditioningVariableKind::ContinuousBinned &&
@@ -963,6 +1287,16 @@ std::vector<TrellisAxisTick> BuildTrellisAxisTicks(double minimum,
     return result;
 }
 
+void PlaceZeroBaselineTicks(std::vector<TrellisAxisTick> &ticks,
+                            const Rect &plotRect, double minimum, double maximum)
+{
+    if (!(maximum > minimum)) return;
+    for (TrellisAxisTick &tick : ticks) {
+        tick.position = ZeroBaselineY(plotRect,
+            (tick.value - minimum) / (maximum - minimum));
+    }
+}
+
 bool TrellisConditionColumnIsValid(const DataColumn &column,
                                    int rowCount,
                                    std::string *error)
@@ -976,11 +1310,11 @@ bool TrellisConditionColumnIsValid(const DataColumn &column,
     const int levels = DataColumnObservedLevelCount(column);
     if (NormalizeVariableType(column.type) == "numeric" &&
         levels > std::max(3, static_cast<int>(std::ceil(std::max(0, rowCount) / 4.0)))) {
-        if (error) *error = "A numeric conditioning variable must be discrete and have relatively few levels.";
+        if (error) *error = "A continuous conditioning variable must be discrete and have relatively few categories.";
         return false;
     }
     if (levels > static_cast<int>(kMaximumTrellisPanels)) {
-        if (error) *error = "The conditioning variable has too many levels for a trellis plot (maximum 20).";
+        if (error) *error = "The conditioning variable has too many categories for a trellis plot (maximum 20).";
         return false;
     }
     return true;
@@ -1025,6 +1359,8 @@ bool RebuildTrellisPlotFromDataFrame(PlotModel &plot,
     }
 
     std::vector<std::string> categories;
+    std::vector<std::vector<std::string>> categoryLevels;
+    std::map<int, std::string> boxplotCategoryByRow;
     if (specification.plotType == TrellisPlotType::Boxplot ||
         specification.plotType == TrellisPlotType::Bar) {
         std::vector<std::size_t> rows;
@@ -1034,16 +1370,20 @@ bool RebuildTrellisPlotFromDataFrame(PlotModel &plot,
         }
         categories = OrderedObservedLevels(*xColumn, rows, xColumn->definedLevels);
         if (specification.plotType == TrellisPlotType::Boxplot) {
-            std::vector<BoxplotCase> cases;
-            for (std::size_t row : rows) {
-                double value = NAN;
-                if (yColumn && row < yColumn->values.size() &&
-                    ParseDataCellDouble(yColumn->values[row], value) && std::isfinite(value)) {
-                    cases.push_back({static_cast<CaseId>(row + 1), value,
-                                     DisplayValueForCell(*xColumn, row)});
-                }
-            }
-            categories = OrderedBoxplotCategories(categories, cases, plot.boxplotGroupOrder);
+            std::vector<std::string> groups = specification.boxplotGroupingVariableIds;
+            if (groups.empty()) groups.push_back(specification.xVariableId);
+            PlotModel grouped;
+            grouped.kind = "boxplot";
+            grouped.yLabel = specification.yVariableId;
+            grouped.boxplotGroupingVariables = groups;
+            grouped.xLabel = BoxplotGroupingLabel(groups);
+            RebuildGroupedBoxplotPointsFromDataFrame(grouped, df);
+            categories = OrderedBoxplotCategories(
+                grouped.boxplotDefinedCategories,
+                BoxplotCasesForModel(grouped), plot.boxplotGroupOrder);
+            categoryLevels = BoxplotCategoryLevelsForCategories(grouped, categories);
+            for (const BoxplotPoint &point : grouped.boxplotPoints)
+                boxplotCategoryByRow[point.row] = point.category;
         }
     }
 
@@ -1079,9 +1419,10 @@ bool RebuildTrellisPlotFromDataFrame(PlotModel &plot,
                 !std::isfinite(x) || !ParseDataCellDouble(yColumn->values[row], y) ||
                 !std::isfinite(y)) continue;
         } else if (specification.plotType == TrellisPlotType::Boxplot) {
-            category = DisplayValueForCell(*xColumn, row);
-            if (DataCellIsMissing(category) ||
+            const auto categoryForRow = boxplotCategoryByRow.find(static_cast<int>(row + 1));
+            if (categoryForRow == boxplotCategoryByRow.end() ||
                 !ParseDataCellDouble(yColumn->values[row], y) || !std::isfinite(y)) continue;
+            category = categoryForRow->second;
             const auto found = std::find(categories.begin(), categories.end(), category);
             if (found == categories.end()) continue;
             x = static_cast<double>(std::distance(categories.begin(), found));
@@ -1123,6 +1464,13 @@ bool RebuildTrellisPlotFromDataFrame(PlotModel &plot,
         plot.trellisPanelLabels.push_back(Join(pieces, " · "));
     }
     plot.boxplotCategories = categories;
+    plot.boxplotDefinedCategories = categories;
+    plot.boxplotCategoryLevels = categoryLevels;
+    if (specification.plotType == TrellisPlotType::Boxplot) {
+        if (specification.boxplotGroupingVariableIds.empty())
+            specification.boxplotGroupingVariableIds = {specification.xVariableId};
+        plot.boxplotGroupingVariables = specification.boxplotGroupingVariableIds;
+    }
     plot.barplotSplitVariable = specification.splitVariableId;
     plot.timeSeriesGroupVariable = specification.groupingVariableId;
     plot.trellisConditionVariable = specification.conditioningVariables.empty()
@@ -1144,35 +1492,99 @@ bool RebuildTrellisScatterplotFromDataFrame(PlotModel &plot,
     return RebuildTrellisPlotFromDataFrame(plot, df, error);
 }
 
+TrellisConditioningVariableKind TrellisConditioningKindForColumn(
+    const DataColumn &column)
+{
+    return VariableTypeIsFactorLike(column.type)
+        ? TrellisConditioningVariableKind::Categorical
+        : TrellisConditioningVariableKind::ContinuousBinned;
+}
+
+bool SynchronizeTrellisConditioningVariableType(
+    PlotModel &plot,
+    const DataFrameModel &df,
+    const std::string &variable,
+    bool *changed,
+    std::string *error)
+{
+    if (changed) *changed = false;
+    if (plot.kind != "trellis_scatterplot" || variable.empty()) return true;
+
+    InitializeTrellisSpecificationFromLegacy(plot);
+    const DataColumn *column = FindDataColumnInDataFrame(df, variable);
+    if (!column) {
+        if (error) *error = "The conditioning variable is unavailable.";
+        return false;
+    }
+
+    PlotModel candidate = plot;
+    auto condition = std::find_if(
+        candidate.trellisSpecification.conditioningVariables.begin(),
+        candidate.trellisSpecification.conditioningVariables.end(),
+        [&](const TrellisConditioningVariable &item) {
+            return item.variableId == variable;
+        });
+    if (condition == candidate.trellisSpecification.conditioningVariables.end()) {
+        // Grouping is separate from panel conditioning.  A categorical type
+        // change can make a previously numeric identifier (for example
+        // Chick in ChickWeight) a valid time-series grouping variable.  The
+        // existing plot must be rebuilt so its series and legend immediately
+        // use the new semantic type.
+        if (candidate.trellisSpecification.plotType == TrellisPlotType::TimeSeries &&
+            candidate.trellisSpecification.groupingVariableId == variable) {
+            if (!RebuildTrellisPlotFromDataFrame(candidate, df, error)) return false;
+            plot = std::move(candidate);
+            if (changed) *changed = true;
+        }
+        return true;
+    }
+
+    const TrellisConditioningVariableKind desired =
+        TrellisConditioningKindForColumn(*column);
+    bool metadataChanged = condition->kind != desired;
+    condition->kind = desired;
+    if (desired == TrellisConditioningVariableKind::Categorical) {
+        metadataChanged = metadataChanged || condition->binning.has_value();
+        condition->binning.reset();
+    } else if (!condition->binning) {
+        TrellisContinuousBinningSpecification binning;
+        binning.method = TrellisContinuousBinningMethod::EqualWidth;
+        binning.binCount = 4;
+        condition->binning = std::move(binning);
+        metadataChanged = true;
+    }
+    if (!metadataChanged) return true;
+    if (!RebuildTrellisPlotFromDataFrame(candidate, df, error)) return false;
+    plot = std::move(candidate);
+    if (changed) *changed = true;
+    return true;
+}
+
 bool InvalidateTrellisSmoothCurvesForDataChange(PlotModel &plot)
 {
-    bool hasOverall = SmoothCurveScopeIsPresent(
-        plot.smoothCurves, SmoothCurveScope::Overall);
-    bool hasSelection = SmoothCurveScopeIsPresent(
-        plot.smoothCurves, SmoothCurveScope::Selection);
-    bool hasColor = SmoothCurveScopeIsPresent(
-        plot.smoothCurves, SmoothCurveScope::ColorGroup);
-    for (const auto &panel : plot.trellisPanelSmoothCurves) {
-        hasOverall = hasOverall || SmoothCurveScopeIsPresent(
-            panel.second, SmoothCurveScope::Overall);
-        hasSelection = hasSelection || SmoothCurveScopeIsPresent(
-            panel.second, SmoothCurveScope::Selection);
-        hasColor = hasColor || SmoothCurveScopeIsPresent(
-            panel.second, SmoothCurveScope::ColorGroup);
+    std::vector<std::pair<SmoothCurveScope, std::string>> enabled;
+    const auto remember = [&enabled](const SmoothCurveData &curve) {
+        const auto key = std::make_pair(curve.scope, curve.fitMethod);
+        if (std::find(enabled.begin(), enabled.end(), key) == enabled.end())
+            enabled.push_back(key);
+    };
+    for (const auto &curve : plot.smoothCurves) remember(curve);
+    for (const auto &overlay : plot.overlays) {
+        if (overlay.type != "lm" || !overlay.visible) continue;
+        SmoothCurveScope scope = SmoothCurveScope::Overall;
+        if (overlay.source == "selected") scope = SmoothCurveScope::Selection;
+        else if (overlay.source == "color") scope = SmoothCurveScope::ColorGroup;
+        else if (overlay.source != "all") continue;
+        const auto key = std::make_pair(scope, std::string("lm"));
+        if (std::find(enabled.begin(), enabled.end(), key) == enabled.end())
+            enabled.push_back(key);
     }
 
     plot.trellisPanelSmoothCurves.clear();
     plot.smoothCurves.clear();
-    if (hasOverall) {
-        plot.smoothCurves.push_back(PendingSmoothCurve(SmoothCurveScope::Overall));
-    }
-    if (hasSelection) {
-        plot.smoothCurves.push_back(PendingSmoothCurve(SmoothCurveScope::Selection));
-    }
-    if (hasColor) {
-        plot.smoothCurves.push_back(PendingSmoothCurve(SmoothCurveScope::ColorGroup));
-    }
-    return hasOverall || hasSelection || hasColor;
+    for (const auto &entry : enabled)
+        plot.smoothCurves.push_back(PendingSmoothCurve(entry.first, entry.second));
+    return !enabled.empty();
 }
 
 bool AddTrellisConditioningVariable(PlotModel &plot,
@@ -1180,7 +1592,8 @@ bool AddTrellisConditioningVariable(PlotModel &plot,
                                     const std::string &variable,
                                     TrellisConditioningVariableKind kind,
                                     TrellisContinuousBinningMethod method,
-                                    std::string *error)
+                                    std::string *error,
+                                    bool orderedCategories)
 {
     InitializeTrellisSpecificationFromLegacy(plot);
     for (const TrellisConditioningVariable &condition : plot.trellisSpecification.conditioningVariables) {
@@ -1193,6 +1606,7 @@ bool AddTrellisConditioningVariable(PlotModel &plot,
     condition.variableId = variable;
     condition.variableLabel = variable;
     condition.kind = kind;
+    condition.orderedCategories = orderedCategories;
     const bool hasRows = std::any_of(
         plot.trellisSpecification.conditioningVariables.begin(),
         plot.trellisSpecification.conditioningVariables.end(),
@@ -1208,6 +1622,53 @@ bool AddTrellisConditioningVariable(PlotModel &plot,
     }
     PlotModel candidate = plot;
     candidate.trellisSpecification.conditioningVariables.push_back(condition);
+    if (!RebuildTrellisPlotFromDataFrame(candidate, df, error)) return false;
+    plot = std::move(candidate);
+    return true;
+}
+
+bool SetTrellisConditioningInterpretation(
+    PlotModel &plot,
+    const DataFrameModel &df,
+    const std::string &variable,
+    TrellisConditioningVariableKind kind,
+    TrellisContinuousBinningMethod method,
+    bool orderedCategories,
+    std::string *error)
+{
+    InitializeTrellisSpecificationFromLegacy(plot);
+    PlotModel candidate = plot;
+    auto &conditions = candidate.trellisSpecification.conditioningVariables;
+    auto found = std::find_if(conditions.begin(), conditions.end(),
+        [&](const TrellisConditioningVariable &item) {
+            return item.variableId == variable;
+        });
+    if (found == conditions.end()) {
+        if (error) *error = "Conditioning variable not found.";
+        return false;
+    }
+    const auto *column = FindDataColumnInDataFrame(df, variable);
+    if (!column) {
+        if (error) *error = "Conditioning variable is unavailable.";
+        return false;
+    }
+    if (kind == TrellisConditioningVariableKind::ContinuousBinned &&
+        !IsNumericColumn(*column)) {
+        if (error) *error = "Only a numeric conditioning variable can be binned.";
+        return false;
+    }
+    found->kind = kind;
+    found->orderedCategories = kind == TrellisConditioningVariableKind::Categorical &&
+        orderedCategories;
+    if (kind == TrellisConditioningVariableKind::ContinuousBinned) {
+        auto binning = found->binning.value_or(TrellisContinuousBinningSpecification{});
+        binning.method = method;
+        binning.binCount = std::max<std::size_t>(2,
+            std::min<std::size_t>(6, binning.binCount));
+        found->binning = std::move(binning);
+    } else {
+        found->binning.reset();
+    }
     if (!RebuildTrellisPlotFromDataFrame(candidate, df, error)) return false;
     plot = std::move(candidate);
     return true;
@@ -1359,9 +1820,162 @@ bool SwapTrellisRowsAndColumns(PlotModel &plot,
 static BoxplotLayout TrellisBoxplotLayoutForPanel(const PlotModel &plot,
                                                   const TrellisPanelLayout &panel)
 {
-    return {panel.plotRect, plot.boxplotCategories,
-            panel.viewport.ymin, panel.viewport.ymax,
-            false, false, 0.0, 34.0};
+    BoxplotLayout layout{panel.plotRect, plot.boxplotCategories,
+                         panel.viewport.ymin, panel.viewport.ymax,
+                         false, false, 0.0, 34.0};
+    layout.categoryLevels = BoxplotCategoryLevelsForCategories(
+        plot, plot.boxplotCategories);
+    return layout;
+}
+
+bool SetPlotColorByVariable(PlotModel &plot,
+                            const DataFrameModel &df,
+                            const std::string &variable,
+                            std::string *error)
+{
+    if (variable.empty() || variable == ".") {
+        plot.colorByVariable.clear();
+        plot.colorByRowColors.clear();
+        plot.colorByLegendItems.clear();
+        plot.colorByLegendRows.clear();
+        return true;
+    }
+    const DataColumn *column = FindDataColumnInDataFrame(df, variable);
+    if (!column || !TrellisConditionColumnIsValid(*column, df.rows)) {
+        if (error) *error = "A split variable must be categorical or have a manageable number of categories.";
+        return false;
+    }
+    std::vector<std::string> levels;
+    auto appendLevel = [&](const std::string &level) {
+        if (level.empty() || std::find(levels.begin(), levels.end(), level) != levels.end()) return;
+        levels.push_back(level);
+    };
+    for (const std::string &level : column->definedLevels) appendLevel(level);
+    for (std::size_t row = 0; row < column->values.size(); ++row)
+        appendLevel(DisplayValueForCell(*column, row));
+    const std::vector<std::string> palette = BarplotPaletteOrder();
+    if (levels.empty() || palette.empty()) {
+        if (error) *error = "The split variable has no displayable categories.";
+        return false;
+    }
+    std::map<std::string, std::string> colors;
+    for (std::size_t index = 0; index < levels.size(); ++index)
+        colors[levels[index]] = palette[index % palette.size()];
+    std::map<int, std::string> rowColors;
+    std::map<std::string, std::vector<int>> legendRows;
+    const std::size_t rowCount = std::min<std::size_t>(
+        column->values.size(), static_cast<std::size_t>(std::max(0, df.rows)));
+    for (std::size_t row = 0; row < rowCount; ++row) {
+        const auto color = colors.find(DisplayValueForCell(*column, row));
+        if (color != colors.end()) {
+            const int caseId = static_cast<int>(row + 1);
+            rowColors[caseId] = color->second;
+            legendRows[DisplayValueForCell(*column, row)].push_back(caseId);
+        }
+    }
+    plot.colorByVariable = variable;
+    plot.colorByRowColors = std::move(rowColors);
+    plot.colorByLegendRows = std::move(legendRows);
+    plot.colorByLegendItems.clear();
+    for (const std::string &level : levels)
+        plot.colorByLegendItems.push_back({level, colors[level]});
+    plot.colorByLegendVisible = true;
+    return true;
+}
+
+bool SetPlotColorLegendPosition(PlotModel &plot,
+                                const std::string &position)
+{
+    if (position == "top_left") {
+        plot.colorByLegendX = 0.08;
+        plot.colorByLegendY = 0.10;
+    } else if (position == "top_right") {
+        plot.colorByLegendX = 0.72;
+        plot.colorByLegendY = 0.10;
+    } else if (position == "bottom_left") {
+        plot.colorByLegendX = 0.08;
+        plot.colorByLegendY = 0.68;
+    } else if (position == "bottom_right") {
+        plot.colorByLegendX = 0.72;
+        plot.colorByLegendY = 0.68;
+    } else {
+        return false;
+    }
+    plot.colorByLegendVisible = true;
+    return true;
+}
+
+bool ConvertPlotToTrellisWithCondition(
+    PlotModel &plot,
+    const DataFrameModel &df,
+    const std::string &variable,
+    TrellisConditioningVariableKind kind,
+    TrellisContinuousBinningMethod method,
+    bool orderedCategories,
+    std::string *error)
+{
+    if (plot.kind == "trellis_scatterplot") {
+        return AddTrellisConditioningVariable(
+            plot, df, variable, kind, method, error, orderedCategories);
+    }
+
+    PlotModel candidate = plot;
+    TrellisPlotSpecification specification;
+    if (plot.kind == "scatter") {
+        specification.plotType = TrellisPlotType::Scatter;
+        specification.xVariableId = plot.xLabel;
+        specification.yVariableId = plot.yLabel;
+        specification.splitVariableId = plot.colorByVariable;
+    } else if (plot.kind == "time_series") {
+        specification.plotType = TrellisPlotType::TimeSeries;
+        specification.xVariableId = plot.xLabel;
+        specification.yVariableId = plot.yLabel;
+        specification.groupingVariableId = plot.timeSeriesGroupVariable;
+        specification.connectObservations = true;
+    } else if (plot.kind == "histogram") {
+        specification.plotType = TrellisPlotType::Histogram;
+        specification.xVariableId = plot.xLabel;
+        specification.splitVariableId = plot.colorByVariable;
+        specification.histogramBinCount = plot.histogramBins.empty()
+            ? 10 : plot.histogramBins.size();
+    } else if (plot.kind == "barplot") {
+        const std::vector<std::string> xVariables = BarplotXVariablesForModel(&plot);
+        if (xVariables.size() != 1) {
+            if (error) *error = "Conditioning a bar chart currently requires exactly one X variable.";
+            return false;
+        }
+        specification.plotType = TrellisPlotType::Bar;
+        specification.xVariableId = xVariables.front();
+        specification.splitVariableId = plot.barplotSplitVariable;
+        specification.barMeasure = plot.barplotMode == "conditional_percent"
+            ? "conditional_percent"
+            : (plot.barplotMode == "overall_percent" ? "percent" : "count");
+    } else if (plot.kind == "boxplot" && !BoxplotUsesVariableAxes(plot)) {
+        std::vector<std::string> groups = plot.boxplotGroupingVariables;
+        if (groups.empty() && !plot.xLabel.empty()) groups.push_back(plot.xLabel);
+        if (groups.empty()) {
+            if (error) *error = "A grouped boxplot needs at least one grouping variable before it can be conditioned.";
+            return false;
+        }
+        specification.plotType = TrellisPlotType::Boxplot;
+        specification.xVariableId = groups.front();
+        specification.yVariableId = plot.yLabel;
+        specification.boxplotGroupingVariableIds = std::move(groups);
+    } else {
+        if (error) *error = "This plot type cannot be converted to a trellis plot.";
+        return false;
+    }
+
+    specification.layoutMode = plot.trellisLayoutMode;
+    specification.panelOrder = plot.trellisPanelOrder;
+    candidate.kind = "trellis_scatterplot";
+    candidate.trellisSpecification = std::move(specification);
+    candidate.trellisSpecificationInitialized = true;
+    candidate.trellisConditionVariable.clear();
+    if (!AddTrellisConditioningVariable(
+            candidate, df, variable, kind, method, error, orderedCategories)) return false;
+    plot = std::move(candidate);
+    return true;
 }
 
 TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
@@ -1385,13 +1999,26 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
     // Row-conditioning strips and the shared Y scale occupy opposite sides.
     // Their placement is model state so every platform can expose the same choice.
     const double rowSideWidth = 32.0 + rowStripWidth + rowStripGap;
-    const double yAxisSideWidth = std::max(54.0, 25.0 + yTickLabelWidth);
+    // Reserve room for both the tick text and the rotated variable name.  The
+    // old gutter left the Y title pressed against the window edge at common
+    // Windows display scales.
+    const double yAxisSideWidth = std::max(70.0, 33.0 + yTickLabelWidth);
     const double outerLeft = plot.trellisRowStripsOnLeft ? rowSideWidth : yAxisSideWidth;
     const double outerRight = plot.trellisRowStripsOnLeft ? yAxisSideWidth : rowSideWidth;
-    const double outerTop = 40.0;
-    const double outerBottom = 42.0;
+    const bool showBarSplitLegend = plot.trellisSpecificationInitialized &&
+        plot.trellisSpecification.plotType == TrellisPlotType::Bar &&
+        !plot.trellisSpecification.splitVariableId.empty();
+    const double outerTop = showBarSplitLegend ? 62.0 : 40.0;
+    std::size_t boxplotGroupingDepth = 0;
+    if (plot.trellisSpecificationInitialized &&
+        plot.trellisSpecification.plotType == TrellisPlotType::Boxplot)
+        for (const auto &levels : plot.boxplotCategoryLevels)
+            boxplotGroupingDepth = std::max(boxplotGroupingDepth, levels.size());
+    const double hierarchyHeight = boxplotGroupingDepth > 1
+        ? 18.0 * static_cast<double>(boxplotGroupingDepth - 1) : 0.0;
+    const double outerBottom = 42.0 + hierarchyHeight;
     const double gapX = 16.0;
-    const double gapY = 16.0;
+    const double gapY = 16.0 + hierarchyHeight;
     const double headerHeight = 22.0;
     const double availableWidth = std::max(10.0, bounds.width - outerLeft - outerRight);
     const double availableHeight = std::max(10.0, bounds.height - outerTop - outerBottom);
@@ -1535,21 +2162,38 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
         }
         const int xTarget = plotRect.width < 210.0 ? 4 : 6;
         const int yTarget = plotRect.height < 150.0 ? 4 : 6;
+        const Rect xScaleRect = plot.trellisSpecificationInitialized &&
+            plot.trellisSpecification.plotType == TrellisPlotType::Histogram
+                ? ZeroBaselineContentRect(plotRect) : plotRect;
         panel.xTicks = BuildTrellisAxisTicks(
-            layout.viewport.xmin, layout.viewport.xmax, plotRect, true, xTarget);
+            layout.viewport.xmin, layout.viewport.xmax, xScaleRect, true, xTarget);
         if (plot.trellisSpecificationInitialized &&
             (plot.trellisSpecification.plotType == TrellisPlotType::Boxplot ||
              plot.trellisSpecification.plotType == TrellisPlotType::Bar)) {
             panel.xTicks.clear();
+            const BoxplotLayout boxplotLayout = TrellisBoxplotLayoutForPanel(plot, panel);
+            BarplotLayout barTickLayout;
+            barTickLayout.plotRect = plotRect;
+            barTickLayout.values.assign(plot.boxplotCategories.size(), 1.0);
+            const std::vector<Rect> barTickRects = BarplotBarRects(barTickLayout);
             for (std::size_t category = 0; category < plot.boxplotCategories.size(); ++category) {
-                const Point position = DataToScreen(
-                    {static_cast<double>(category), 0.0}, layout.viewport, plotRect, true);
-                panel.xTicks.push_back({static_cast<double>(category), position.x,
-                                        plot.boxplotCategories[category]});
+                const std::string &name = plot.boxplotCategories[category];
+                const double position = plot.trellisSpecification.plotType == TrellisPlotType::Boxplot
+                    ? BoxplotCategoryCenter(boxplotLayout, name)
+                    : barTickRects[category].x + barTickRects[category].width / 2.0;
+                panel.xTicks.push_back({static_cast<double>(category), position,
+                    plot.trellisSpecification.plotType == TrellisPlotType::Boxplot
+                        ? BoxplotInnermostCategoryLabel(boxplotLayout, name) : name});
             }
         }
         panel.yTicks = BuildTrellisAxisTicks(
             layout.viewport.ymin, layout.viewport.ymax, plotRect, false, yTarget);
+        if (plot.trellisSpecificationInitialized &&
+            (plot.trellisSpecification.plotType == TrellisPlotType::Bar ||
+             plot.trellisSpecification.plotType == TrellisPlotType::Histogram)) {
+            PlaceZeroBaselineTicks(panel.yTicks, plotRect,
+                layout.viewport.ymin, layout.viewport.ymax);
+        }
         if (plot.trellisSpecificationInitialized &&
             plot.trellisSpecification.plotType == TrellisPlotType::DataTable) {
             panel.xTicks.clear();
@@ -1603,8 +2247,9 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
                  layout.panelsBoundingRect.y + layout.panelsBoundingRect.height + 28.0)};
     layout.yAxisLabelAnchor = {
         plot.trellisRowStripsOnLeft
-            ? bounds.x + bounds.width - 16.0
-            : bounds.x + 16.0,
+            ? layout.panelsBoundingRect.x + layout.panelsBoundingRect.width +
+                  yTickLabelWidth + 13.0
+            : layout.panelsBoundingRect.x - yTickLabelWidth - 13.0,
         layout.panelsBoundingRect.y + layout.panelsBoundingRect.height / 2.0};
 
     std::map<std::string, std::size_t> panelIndices;
@@ -1637,7 +2282,10 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
         panel.context.viewport = local;
         const int xTarget = panel.plotRect.width < 210.0 ? 4 : 6;
         const int yTarget = panel.plotRect.height < 150.0 ? 4 : 6;
-        panel.xTicks = BuildTrellisAxisTicks(local.xmin, local.xmax, panel.plotRect, true, xTarget);
+        const Rect xScaleRect = plot.trellisSpecificationInitialized &&
+            plot.trellisSpecification.plotType == TrellisPlotType::Histogram
+                ? ZeroBaselineContentRect(panel.plotRect) : panel.plotRect;
+        panel.xTicks = BuildTrellisAxisTicks(local.xmin, local.xmax, xScaleRect, true, xTarget);
         if (plot.trellisSpecificationInitialized &&
             plot.trellisSpecification.plotType == TrellisPlotType::TimeSeries &&
             plot.timeSeriesTimeType != "numeric") {
@@ -1653,14 +2301,28 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
             (plot.trellisSpecification.plotType == TrellisPlotType::Boxplot ||
              plot.trellisSpecification.plotType == TrellisPlotType::Bar)) {
             panel.xTicks.clear();
+            const BoxplotLayout boxplotLayout = TrellisBoxplotLayoutForPanel(plot, panel);
+            BarplotLayout barTickLayout;
+            barTickLayout.plotRect = panel.plotRect;
+            barTickLayout.values.assign(plot.boxplotCategories.size(), 1.0);
+            const std::vector<Rect> barTickRects = BarplotBarRects(barTickLayout);
             for (std::size_t category = 0; category < plot.boxplotCategories.size(); ++category) {
-                const Point position = DataToScreen({static_cast<double>(category), 0.0},
-                    local, panel.plotRect, true);
-                panel.xTicks.push_back({static_cast<double>(category), position.x,
-                                        plot.boxplotCategories[category]});
+                const std::string &name = plot.boxplotCategories[category];
+                const double position = plot.trellisSpecification.plotType == TrellisPlotType::Boxplot
+                    ? BoxplotCategoryCenter(boxplotLayout, name)
+                    : barTickRects[category].x + barTickRects[category].width / 2.0;
+                panel.xTicks.push_back({static_cast<double>(category), position,
+                    plot.trellisSpecification.plotType == TrellisPlotType::Boxplot
+                        ? BoxplotInnermostCategoryLabel(boxplotLayout, name) : name});
             }
         }
         panel.yTicks = BuildTrellisAxisTicks(local.ymin, local.ymax, panel.plotRect, false, yTarget);
+        if (plot.trellisSpecificationInitialized &&
+            (plot.trellisSpecification.plotType == TrellisPlotType::Bar ||
+             plot.trellisSpecification.plotType == TrellisPlotType::Histogram)) {
+            PlaceZeroBaselineTicks(panel.yTicks, panel.plotRect,
+                local.ymin, local.ymax);
+        }
         if (plot.trellisSpecificationInitialized &&
             plot.trellisSpecification.plotType == TrellisPlotType::DataTable) {
             panel.xTicks.clear();
@@ -1719,7 +2381,9 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
                 layout.panels[panelIndex].plotRect,
                 {plot.trellisSpecification.xVariableId},
                 bins,
-                plot.trellisSpecification.barMeasure == "percent" ? "overall_percent" : "count",
+                plot.trellisSpecification.barMeasure == "percent" ? "overall_percent" :
+                    (plot.trellisSpecification.barMeasure == "conditional_percent"
+                        ? "conditional_percent" : "count"),
                 "equal");
             const std::vector<Rect> barRects = BarplotBarRects(barplotLayout);
             for (std::size_t category = 0;
@@ -1779,23 +2443,25 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
                 } else if (plot.trellisSpecification.histogramMeasure == "density" && total > 0) {
                     value /= static_cast<double>(total) * averageWidth;
                 }
-                const double lower = binning.bins[bin].lower;
-                const double upper = binning.bins[bin].upper;
-                const Point first = DataToScreen({lower, 0.0}, layout.panels[panelIndex].viewport,
-                    layout.panels[panelIndex].plotRect, true);
-                const Point second = DataToScreen({upper, value}, layout.panels[panelIndex].viewport,
-                    layout.panels[panelIndex].plotRect, true);
-                Rect rawRect{std::min(first.x, second.x), std::min(first.y, second.y),
-                             std::fabs(second.x - first.x), std::fabs(second.y - first.y)};
+                const Rect &panelRect = layout.panels[panelIndex].plotRect;
+                const Rect contentRect = ZeroBaselineContentRect(panelRect);
+                const double slot = contentRect.width /
+                    static_cast<double>(binning.bins.size());
+                const double baseline = ZeroBaselineY(panelRect, 0.0);
+                const double height = contentRect.height * value /
+                    std::max(1.0e-12, layout.panels[panelIndex].viewport.ymax);
+                Rect rawRect{contentRect.x + slot * static_cast<double>(bin) + 1.0,
+                             baseline - height, std::max(1.0, slot - 2.0), height};
                 Rect clipped = IntersectionRect(rawRect, layout.panels[panelIndex].plotRect);
                 if (!IsValidRect(clipped)) {
-                    const Rect &panelRect = layout.panels[panelIndex].plotRect;
                     const double left = std::max(panelRect.x, rawRect.x);
                     const double right = std::min(panelRect.x + panelRect.width,
                                                   rawRect.x + rawRect.width);
                     clipped = {left, panelRect.y + panelRect.height,
                                std::max(0.0, right - left), 0.0};
                 }
+                const double lower = binning.bins[bin].lower;
+                const double upper = binning.bins[bin].upper;
                 TrellisAggregateGeometry aggregate;
                 aggregate.kind = TrellisAggregateKind::HistogramBin;
                 aggregate.panelIndex = panelIndex;
@@ -1862,17 +2528,17 @@ TrellisScatterplotLayout BuildTrellisScatterplotLayout(const PlotModel &plot,
                     if (value >= q1 - 1.5 * iqr) whiskerLow = std::min(whiskerLow, value);
                     if (value <= q3 + 1.5 * iqr) whiskerHigh = std::max(whiskerHigh, value);
                 }
-                const Point first = DataToScreen({static_cast<double>(category) - 0.28, q3},
-                    layout.panels[panelIndex].viewport, layout.panels[panelIndex].plotRect, true);
-                const Point second = DataToScreen({static_cast<double>(category) + 0.28, q1},
-                    layout.panels[panelIndex].viewport, layout.panels[panelIndex].plotRect, true);
+                const BoxplotLayout boxplotLayout =
+                    TrellisBoxplotLayoutForPanel(plot, layout.panels[panelIndex]);
+                const auto draw = BuildBoxplotStatsRenderPlan(boxplotLayout,
+                    {{plot.boxplotCategories[category], q1, median, q3,
+                      whiskerLow, whiskerHigh, static_cast<int>(values.size())}});
                 TrellisAggregateGeometry aggregate;
                 aggregate.kind = TrellisAggregateKind::Box;
                 aggregate.panelIndex = panelIndex;
                 aggregate.id = panelEntry.first + "|" + plot.boxplotCategories[category];
                 aggregate.label = plot.boxplotCategories[category];
-                aggregate.rect = {std::min(first.x, second.x), std::min(first.y, second.y),
-                                  std::fabs(second.x - first.x), std::fabs(second.y - first.y)};
+                if (!draw.empty()) aggregate.rect = draw.front().boxRect;
                 aggregate.caseIds = rows;
                 aggregate.lower = q1;
                 aggregate.upper = q3;
@@ -1910,7 +2576,8 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
             ? std::vector<std::string>{}
             : OrderedUniqueBarplotLevels(plot.trellisPointSplitValues);
     std::map<CaseId, std::string> effectiveRowColors = rowColors;
-    if ((type == TrellisPlotType::Scatter || type == TrellisPlotType::TimeSeries) &&
+    if ((type == TrellisPlotType::Scatter || type == TrellisPlotType::TimeSeries ||
+         type == TrellisPlotType::Histogram) &&
         !splitLevels.empty()) {
         const std::vector<std::string> palette = BarplotPaletteOrder();
         std::map<std::string, std::string> splitColors;
@@ -1931,6 +2598,8 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
         plan.context = panel.context;
         if (type == TrellisPlotType::Scatter || type == TrellisPlotType::TimeSeries) {
             ScatterplotRenderInput input;
+            input.shadeOverlap = plot.scatterShadeOverlap;
+            input.sizeByOverlap = plot.scatterSizeByOverlap;
             input.viewport = panel.viewport;
             input.plotRect = panel.plotRect;
             input.selectedRows = selection;
@@ -1942,7 +2611,8 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
                 const auto panelSmooth = plot.trellisPanelSmoothCurves.find(panel.levelId);
                 if (panelSmooth != plot.trellisPanelSmoothCurves.end()) {
                     for (const SmoothCurveData &curve : panelSmooth->second) {
-                        if (SmoothCurveScopeIsPresent(plot.smoothCurves, curve.scope)) {
+                        if (FitCurveScopeIsPresent(plot.smoothCurves, curve.scope,
+                                                   curve.fitMethod)) {
                             input.smoothCurves.push_back(curve);
                         }
                     }
@@ -1953,6 +2623,10 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
                     input.points.push_back({entry.caseId, entry.dataPoint.x, entry.dataPoint.y});
                 }
             }
+            input.showFitConfidenceIntervals =
+                plot.scatterFitConfidenceIntervalsVisible;
+            input.showSmoothConfidenceIntervals =
+                plot.scatterSmoothConfidenceIntervalsVisible;
             plan.scatterplot = BuildScatterplotRenderPlan(input);
             if (type == TrellisPlotType::TimeSeries) {
                 std::vector<DataPoint> panelPoints;
@@ -2010,10 +2684,11 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
                 input.binRows.push_back(bin->caseIds);
             }
             input.selection = selection;
-            input.rowColors = rowColors;
+            input.rowColors = effectiveRowColors;
             input.showCounts = plot.histogramShowCounts;
-            input.showColorSegments = HistogramColorSegmentsVisible(
-                plot.histogramShowDensity, plot.histogramDensityMode);
+            input.showColorSegments = !seriesOrSplitVariable.empty() ||
+                HistogramColorSegmentsVisible(
+                    plot.histogramShowDensity, plot.histogramDensityMode);
             input.showRug = plot.histogramShowRug;
             std::vector<HistogramCaseValue> densityCases;
             for (std::size_t pointIndex = 0; pointIndex < plot.points.size(); ++pointIndex) {
@@ -2026,7 +2701,7 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
                 densityCases, panel.viewport.xmin, panel.viewport.xmax,
                 plot.histogramShowDensity, plot.histogramDensityMode,
                 plot.histogramDensityBw, plot.histogramDensityAdjust,
-                selection, rowColors);
+                selection, effectiveRowColors);
             input.densityXMinimum = panel.viewport.xmin;
             input.densityXMaximum = panel.viewport.xmax;
             for (std::size_t bin = 0; bin < input.binRows.size(); ++bin) {
@@ -2089,7 +2764,9 @@ std::vector<TrellisPanelRenderPlan> BuildTrellisPanelRenderPlans(
                 panel.plotRect,
                 {plot.trellisSpecification.xVariableId},
                 plan.barplotBins,
-                plot.trellisSpecification.barMeasure == "percent" ? "overall_percent" : "count",
+                plot.trellisSpecification.barMeasure == "percent" ? "overall_percent" :
+                    (plot.trellisSpecification.barMeasure == "conditional_percent"
+                        ? "conditional_percent" : "count"),
                 "equal");
             const std::vector<Rect> barRects = BarplotBarRects(plan.barplotLayout);
             for (std::size_t index = 0; index < plan.barplotBins.size(); ++index) {

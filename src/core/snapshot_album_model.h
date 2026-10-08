@@ -19,6 +19,7 @@ enum class SnapshotContentKind {
     DataTable,
     Trellis,
     ModelResult,
+    TextOutput,
     OtherRenderable
 };
 
@@ -35,12 +36,26 @@ struct FrozenPlotContent {
 };
 
 struct FrozenTableContent {
+    std::vector<std::string> column_headers;
+    std::vector<std::vector<std::string>> rows;
     std::string tab_delimited_text;
     std::vector<double> column_widths;
     std::size_t first_source_row = 0;
     std::size_t source_row_count = 0;
     std::size_t total_source_row_count = 0;
     bool contains_all_source_rows = true;
+};
+
+struct FrozenTextContent {
+    std::string plain_text;
+};
+
+// A self-contained vector rendering frozen from a native result surface.
+// Unlike FrozenImageContent, text and rules remain sharp at every zoom level.
+struct FrozenSvgContent {
+    std::string svg;
+    double preferred_width = 720.0;
+    double preferred_height = 520.0;
 };
 
 // A rendered native view which has no portable PlotModel representation yet.
@@ -53,7 +68,8 @@ struct FrozenImageContent {
 };
 
 using FrozenRenderableContent = std::variant<FrozenPlotContent, FrozenTableContent,
-                                             FrozenImageContent>;
+                                             FrozenSvgContent, FrozenImageContent,
+                                             FrozenTextContent>;
 
 struct SnapshotMetadata {
     std::string snapshot_id;
@@ -82,6 +98,8 @@ std::string GenerateSnapshotId();
 std::string SnapshotContentKindName(SnapshotContentKind kind);
 std::string SnapshotScopeSummary(const SnapshotItem &item);
 std::size_t EstimateSnapshotMemoryBytes(const SnapshotItem &item);
+FrozenTableContent FrozenTableFromTabDelimited(std::string const& text);
+std::string FrozenTableToTabDelimited(FrozenTableContent const& table);
 
 class SnapshotAlbum {
 public:

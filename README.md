@@ -4,23 +4,78 @@
 `LinkEDA` R package. It provides statistical
 graphics inspired by XLISP-STAT / Lisp-Stat.
 
-The current prototype focuses on fluid interaction rather than publication
-graphics:
+## Multiple imputation: import and diagnostics
 
-- native macOS scatterplot windows;
+Import the original `mice::mids` object for MI analyses. Completed lists (`mild`)
+are rejected with instructions to save the original object using
+`saveRDS(imp, "my_imputation.rds")`. Stacked `.imp`/`.id` tables open as ordinary
+data with an explanatory notice; LinkEDA does not reconstruct the imputation
+process from completed tables.
+Imputations created in LinkEDA retain their original `mids` through native
+synchronization and new `.linkeda` saves, including methods, predictor matrix,
+logged events and chains. Older documents without this metadata still open,
+but cannot reconstruct the original chain diagnostics from completed values.
+
+The imputation dialog keeps its method and predictor controls. Its default
+uses the selected predictors across the imputation models, which may be
+unsuitable for a particular study, hinder convergence or consume unnecessary
+resources. Use `mice` in R for study-specific predictor matrices, interactions,
+blocks and constraints, and import the resulting original `mids`.
+
+**Data > Missing Data > Imputation diagnostics** opens the original missingness
+summary. Its context menu provides missingness by variable, frequent or all
+patterns, the imputation specification, logged events, available chain means
+and variances, and observed versus imputed distributions. Each imputation has
+its own series; these checks cannot establish that imputations are correct.
+**Convergence summary** adds lag-1 autocorrelation and classical Gelman-Rubin
+PSRF for the retained chain means and SDs, using `coda` in R. It uses all
+iterations without automatic burn-in and reports unavailable or constant
+chains explicitly. This is not rank-normalized split R-hat; inspect traces
+alongside the numbers, particularly with few iterations.
+
+Pooled result menus offer **Multiple imputation > Show missing-information
+diagnostics** where the pooling decomposition is retained. The expanded table
+reports FMI, RIV, within/between/total variance, lambda and approximate relative
+efficiency on the pooling scale. FMI measures uncertainty associated with
+missing information, not the percentage of missing cells. No good/bad cutoffs
+are used. Ordinary result columns stay unchanged.
+The expanded table also includes `m`, **MCSE (estimate)** (`sqrt(B / m)`) and
+**MCSE / SE (%)**. These assess simulation error of the pooled point estimate
+assuming independent, converged imputations, not stability of its standard
+error or p-value. More imputations generally reduce MCSE, but small `m` makes
+the diagnostic itself uncertain. Verification exports recompute it from the
+same scoped data with public R functions.
+
+`ls_imputation_diagnostics(..., native = FALSE)` returns dataset diagnostics;
+`ls_missing_information_diagnostics(result)` returns analytical diagnostics.
+Calculations remain in R. Native views provide R verification through
+**Export > R Code**; imputation-process recipes export a frozen copy of the
+original `mids` and its original data, including retained process metadata.
+
+LinkEDA combines fluid native interaction with statistical analysis and
+publication export:
+
+- native macOS scatterplot windows and a WinUI 3 Windows scatterplot surface;
 - rectangular mouse brushing;
 - highlighted selected points;
 - linked brushing for plots that share a `group`;
-- R functions to query and clear the current selection.
+- R functions to query and clear the current selection;
+- linear, generalized, count, binary, mixed, scale, dimensionality and
+  missing-data analyses;
+- linked diagnostics and immutable analysis scopes;
+- vector/raster export, publication tables, and executable R verification
+  recipes.
 
 It deliberately does **not** use Shiny, htmlwidgets, plotly, ggplot2, JavaScript,
 or a browser.
 
 ## Architecture
 
-R is the statistical frontend. The graphics backend is a separate native macOS
-process compiled from `src/native/backend_macos.mm`. R starts that process on demand and
-communicates with it through a local TCP socket.
+R is the statistical frontend. The graphics backend is a separate native
+process: the macOS application is compiled from `src/native/backend_macos.mm`,
+and the Windows application is a WinUI 3/C++/WinRT target under
+`src/platform/windows/winui`. R communicates with the visible Windows target
+through a local TCP socket.
 
 This keeps the R session responsive and avoids embedding an AppKit event loop
 inside R. The command protocol is intentionally small, so the macOS Cocoa backend
@@ -47,6 +102,24 @@ From the directory that contains this package:
 ```sh
 R CMD INSTALL .
 ```
+
+LinkEDA requires R 4.1 or newer. Core package dependencies are installed by R.
+Some analysis and export features use suggested packages, including
+`emmeans`, `glmmTMB`, `lme4`, `lmerTest`, `mitml`, `gamlss`, `tinytable`, and
+`svglite`; LinkEDA reports a clear message when an optional dependency needed
+for a requested feature is unavailable.
+
+For a distribution check from the repository root:
+
+```sh
+R CMD build .
+R CMD check --no-manual LinkEDA_*.tar.gz
+```
+
+The build compiles the native macOS backend through `configure`. The Windows
+TCP backend uses Rtools; the optional WinUI application is built separately
+from `src/platform/windows/winui/rlispstatWinUI` with Visual Studio and the
+Windows App SDK.
 
 Or from inside the package directory:
 
@@ -82,8 +155,8 @@ ls_close_all()
 ## Interactive UI
 
 Each native scatterplot supports a right-click / two-finger-click context menu.
-Use it to change mouse mode, clear/invert/select all rows, reset the view, copy
-selected row indices, export the view, show the tool panel, or close the plot.
+Click a mark or drag a rectangle to select observations. Use the context menu
+to clear/invert/select all rows, copy selected row indices, or export the view.
 
 The shared floating tool panel controls the active plot:
 
@@ -92,26 +165,18 @@ ls_panel(TRUE)
 ```
 
 Click inside a plot to make it active. The plot status line and window title show
-the current mode and selection operation. The context menu's `Export` submenu
+the selection operation. The context menu's `Export` submenu
 copies PDF/SVG/PNG on macOS and saves SVG/PDF/PNG. SVG is genuine vector output;
 the Windows backend uses a native Enhanced Metafile for its default visual copy.
 
 Keyboard shortcuts:
 
-- `s`: select mode
-- `b`: brush mode
-- `i`: identify mode placeholder
-- `z`: zoom rectangle mode
-- `p`: pan mode placeholder
 - `x`: open X-variable menu
 - `y`: open Y-variable menu
-- `r`: reset/rescale
 - `c`: clear selection
 - `a`: select all visible
 - `v`: invert selection
 - `g`: open the native GLM workbench
-- `+` / `-`: change brush size
-- `Esc`: pointer/none mode
 - `Cmd+S` / `Ctrl+S`: open the default SVG save panel
 
 Modifier selection behavior:
@@ -119,6 +184,10 @@ Modifier selection behavior:
 - `Shift`: add to selection
 - `Option/Alt`: subtract from selection
 - `Command` or `Control`: toggle selected points
+
+The Windows scatterplot surface also provides its native right-click menu for
+selecting all visible points, inverting the current selection, and clearing it.
+Its keyboard equivalents are `A`, `V`, and `C`/`Esc`.
 
 R can query and set the same UI state:
 
@@ -194,19 +263,25 @@ variable names, types, and role badges. Double-clicking and right-clicking a
 variable can assign it as the dependent variable or add it as a predictor. The
 GLM workbench reads that same group-level model object.
 
-Limitations in this phase: identify labels, true panning, label movement, hidden
-points, smoother overlays, full OLS for all model terms, full live
-ANOVA/coefficient row objects, Cook/leverage diagnostics, case tables, and
-polished export dialogs are not implemented yet. Linear regression overlays, a
-selected-point color palette, the native variable palette, the group model
-window, and residual/fitted linked diagnostic plots are available from R and from
-the native UI. PNG/PDF export saves a snapshot to the Desktop.
+Limitations in this phase: identify labels, true panning, label movement and
+hidden points remain incomplete. Result windows use a common `Export` hierarchy
+with `Copy`, `Save`, and `R Code` sections. Tables support formatted and
+tab-delimited copy plus CSV, Markdown, SVG, PNG and PDF output; statistical
+plots support vector and raster copy/save formats. Verification export creates
+a self-contained Quarto document and its prepared RDS data in one folder.
 
 ## Current limitations
 
-- macOS backend only;
-- scatterplots only;
-- rectangular brushing only;
-- no labels, callbacks, formulas, histograms, scatterplot matrices, or theming;
+- the Windows WinUI surface renders linked scatterplots, bar charts,
+  histograms, boxplots, trellis plots, time-series plots, scatterplot matrices,
+  parallel coordinates and linked data sheets. It also provides the native
+  menu, variable palette, analysis workflows and result windows for the
+  currently supported analyses;
+- Windows and macOS share the command/state layer, but new or platform-specific
+  commands still need parity verification and visual polish on both native
+  surfaces;
+- click, rectangular brushing, keyboard/context-menu selection and data-sheet
+  row selection are implemented on Windows;
+- identify labels, true panning and label movement remain incomplete;
 - the backend stores simple in-memory plot/group state and is meant for up to
   about 100,000 points per plot.

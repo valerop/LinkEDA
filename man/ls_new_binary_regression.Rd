@@ -14,13 +14,19 @@ ls_new_binary_regression(
   data = NULL,
   response = NULL,
   terms = NULL,
-  link = c("logit", "probit"),
+  link = c("logit", "log", "probit", "cloglog"),
   event = NULL,
   reference = NULL,
   scope = "all",
   name = NULL,
   native = TRUE,
-  term_types = NULL
+  term_types = NULL,
+  centered_predictors = NULL,
+  factor_reference_levels = NULL,
+  .selected_rows = NULL,
+  .native_generation = 0L,
+  .comparison_rows = NULL,
+  offset = NULL
 )
 
 ls_binary_regression_fit(model)
@@ -41,8 +47,11 @@ ls_binary_regression_term_tests(model)
 \item{response}{Binary response variable.}
 
 \item{terms}{Predictor terms.}
+\item{offset}{Optional numeric column added to the link-scale predictor with a fixed coefficient of one.}
 
-\item{link}{Either \code{"logit"} or \code{"probit"}.}
+\item{link}{One of \code{"logit"}, \code{"log"}, \code{"probit"}, or
+\code{"cloglog"}. The log link reports risk ratios; the logit link reports
+odds ratios.}
 
 \item{event, reference}{Original response values defining the event and reference.}
 
@@ -53,6 +62,13 @@ ls_binary_regression_term_tests(model)
 \item{native}{Open/synchronize the native result window.}
 
 \item{term_types}{Optional named predictor type overrides.}
+
+\item{centered_predictors}{Optional predictors to center within this model.}
+
+\item{factor_reference_levels}{Optional model-local reference categories.}
+
+\item{.selected_rows, .native_generation, .comparison_rows}{Internal native
+workflow arguments.}
 
 \item{model}{A fitted Binary Regression model handle.}
 }

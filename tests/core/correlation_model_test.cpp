@@ -5,9 +5,6 @@
 #include <limits>
 #include <string>
 
-using rlispstat::core::ComputeCorrelationCellForDataFrameVersion;
-using rlispstat::core::ComputePearsonCorrelationForRows;
-using rlispstat::core::ComputePooledCorrelationCell;
 using rlispstat::core::BuildCorrelationMatrixLayout;
 using rlispstat::core::BuildCorrelationWindowLayout;
 using rlispstat::core::BuildCorrelationWindowContentLayout;
@@ -34,6 +31,7 @@ using rlispstat::core::CorrelationAddVariableMenuTitle;
 using rlispstat::core::CorrelationMissingModeLockedStatus;
 using rlispstat::core::CorrelationNoMoreNumericVariablesTitle;
 using rlispstat::core::CorrelationRemoveVariableTitle;
+using rlispstat::core::CorrelationReplaceVariableTitle;
 using rlispstat::core::CorrelationPooledAddVariableLockedTitle;
 using rlispstat::core::CorrelationPooledAddVariableStatus;
 using rlispstat::core::CorrelationPooledRemoveVariableStatus;
@@ -43,6 +41,7 @@ using rlispstat::core::CorrelationVariableMenuTitle;
 using rlispstat::core::CorrelationVariableMenuState;
 using rlispstat::core::CorrelationVariablesAfterAdd;
 using rlispstat::core::CorrelationVariablesAfterRemove;
+using rlispstat::core::CorrelationVariablesAfterReplace;
 using rlispstat::core::CorrelationVariablesAvailableToAdd;
 using rlispstat::core::CorrelationWindowLayout;
 using rlispstat::core::CorrelationWindowControlState;
@@ -79,6 +78,7 @@ int main()
     assert(CorrelationNoMoreNumericVariablesTitle() == "No more numeric variables");
     assert(CorrelationAddVariableMenuTitle() == "Add variable");
     assert(CorrelationVariableMenuTitle() == "Variable");
+    assert(CorrelationReplaceVariableTitle("mpg") == "Replace mpg with");
     assert(CorrelationRemoveVariableTitle("mpg") == "Remove mpg");
     assert(CorrelationPooledAddVariableLockedTitle() ==
            "Pooled MI matrices must be refit from R to add variables");
@@ -140,6 +140,8 @@ int main()
     assert(closeEnough(fixedWindowLayout.targetHeight, 500.0));
     assert(closeEnough(fixedWindowLayout.titleRect.y, 462.0));
     assert(closeEnough(fixedWindowLayout.scrollViewRect.height, 376.0));
+    assert(closeEnough(fixedWindowLayout.scopeLabelRect.x, 16.0));
+    assert(closeEnough(fixedWindowLayout.scopePopupRect.x, 64.0));
     CorrelationWindowControlState controls = BuildCorrelationWindowControlState(
         "cars", "Pearson Correlation Matrix", {"mpg", "wt"}, "pairwise",
         true, false, true, false, false, 0, "");
@@ -172,10 +174,20 @@ int main()
     assert((added.variables == std::vector<std::string>({"mpg", "wt", "hp"})));
     assert(!CorrelationVariablesAfterAdd({"mpg", "wt"}, "wt", {"mpg", "wt"}).ok);
     assert(!CorrelationVariablesAfterAdd({"mpg", "wt"}, "disp", {"mpg", "wt"}).ok);
+    auto replaced = CorrelationVariablesAfterReplace(
+        {"mpg", "wt", "hp"}, 1, "qsec", {"mpg", "wt", "hp", "qsec"});
+    assert(replaced.ok);
+    assert(replaced.changed);
+    assert((replaced.variables == std::vector<std::string>({"mpg", "qsec", "hp"})));
+    assert(!CorrelationVariablesAfterReplace(
+        {"mpg", "wt"}, 0, "wt", {"mpg", "wt"}).ok);
+    assert(!CorrelationVariablesAfterReplace(
+        {"mpg", "wt"}, 4, "hp", {"mpg", "wt", "hp"}).ok);
     auto removed = CorrelationVariablesAfterRemove({"mpg", "wt", "hp"}, 1);
     assert(removed.ok);
     assert(removed.changed);
     assert((removed.variables == std::vector<std::string>({"mpg", "hp"})));
+    assert(!CorrelationVariablesAfterRemove({"mpg", "wt"}, 0).ok);
     assert(!CorrelationVariablesAfterRemove({"mpg"}, 5).ok);
     CorrelationAddVariableMenuState addMenu = BuildCorrelationAddVariableMenuState(
         {"mpg"}, {"mpg", "wt", "hp"}, false);
@@ -192,9 +204,10 @@ int main()
     assert(variableMenu.valid);
     assert(!variableMenu.locked);
     assert(variableMenu.variable == "wt");
+    assert(variableMenu.replaceVariableTitle == "Replace wt with");
     assert(variableMenu.removeVariableTitle == "Remove wt");
-    assert(variableMenu.treatAsNumericTitle == "Treat as Numeric");
-    assert(variableMenu.treatAsFactorTitle == "Treat as Factor");
+    assert(variableMenu.treatAsNumericTitle == "Treat predictor as continuous");
+    assert(variableMenu.treatAsFactorTitle == "Treat predictor as categorical");
     assert(variableMenu.informationTitle == "Show Variable Information");
     assert(!BuildCorrelationVariableMenuState({"mpg"}, 4, false).valid);
     CorrelationVariableMenuState lockedVariableMenu = BuildCorrelationVariableMenuState(
@@ -243,11 +256,10 @@ int main()
     assert(emptyRenderPlan.showEmptyMessage);
     assert(emptyRenderPlan.emptyMessage == "Add numeric variables to build the matrix.");
 
-    CorrelationCellResult pearson = ComputePearsonCorrelationForRows(
-        "x", "y",
-        {1, 2, 3, 4, 5},
-        {2, 5, 4, 9, 10},
-        {1, 2, 3, 4, 5});
+    // Presentation fixture from stats::cor.test(c(1,2,3,4,5), c(2,5,4,9,10)).
+    CorrelationCellResult pearson;
+    pearson.xVariable="x"; pearson.yVariable="y"; pearson.r=0.9325048;
+    pearson.p=0.02083515; pearson.n=5;
     assert(pearson.status == "valid");
     assert(pearson.n == 5);
     assert(closeEnough(pearson.r, 0.9325048, 1.0e-6));
@@ -261,60 +273,30 @@ int main()
     assert(CorrelationCellStatusText(&pearson, 1, 0).find("extra detail") != std::string::npos);
     assert(CorrelationCellCopyDetailText(&pearson).find("\nextra detail") != std::string::npos);
 
-    CorrelationCellResult zeroVariance = ComputePearsonCorrelationForRows(
-        "x", "flat", {1, 2, 3}, {4, 4, 4}, {1, 2, 3});
-    assert(zeroVariance.status == "zero_variance");
-
-    DataFrameModel df;
-    df.group = "demo";
-    df.rows = 5;
-    DataColumn x;
-    x.name = "x";
-    x.type = "numeric";
-    x.values = {"1", "2", "3", "4", "5"};
-    df.columns.push_back(x);
-    DataColumn y;
-    y.name = "y";
-    y.type = "numeric";
-    y.values = {"2", "5", "4", "9", "10"};
-    df.columns.push_back(y);
-    DataColumn z;
-    z.name = "z";
-    z.type = "numeric";
-    z.values = {"1", "NA", "3", "4", "5"};
-    df.columns.push_back(z);
-
-    CorrelationCellResult xy = ComputeCorrelationCellForDataFrameVersion(
-        df, {"x", "y"}, "x", "y", "pairwise", 0);
-    assert(xy.status == "valid");
-    assert(xy.n == 5);
-    assert(closeEnough(xy.r, 0.9325048, 1.0e-6));
-
-    CorrelationCellResult diagonal = ComputeCorrelationCellForDataFrameVersion(
-        df, {"x", "z"}, "x", "x", "listwise", 0);
-    assert(diagonal.status == "diagonal");
-    assert(diagonal.n == 4);
-
-    DataFrameModel imputed = df;
-    imputed.datasetType = "multiple_imputation";
-    imputed.imputationCount = 3;
-    imputed.columns[1].imputedMissing = {false, true, false, false, false};
-    imputed.columns[1].imputationValuesSparse.resize(3);
-    imputed.columns[1].imputationValuesSparse[0][1] = "5";
-    imputed.columns[1].imputationValuesSparse[1][1] = "6";
-    imputed.columns[1].imputationValuesSparse[2][1] = "7";
-    CorrelationCellResult pooled = ComputePooledCorrelationCell(
-        imputed, {"x", "y"}, "x", "y", "pairwise");
-    assert(pooled.status == "valid");
-    assert(pooled.n == 5);
-    assert(std::isfinite(pooled.r));
-    assert(std::isfinite(pooled.p));
-    assert(pooled.detail.find("Rubin") != std::string::npos);
-
     assert(rlispstat::core::CorrelationWindowTitle() == "Pearson Correlation Matrix");
     assert(rlispstat::core::CorrelationShowStarsButtonTitle() == "Stars");
     assert(rlispstat::core::CorrelationShowPValuesButtonTitle() == "p-values");
     assert(rlispstat::core::CorrelationShowNButtonTitle() == "N");
+
+    for(const std::string part:{"full","lower","upper"}) {
+        auto plan=BuildCorrelationMatrixRenderPlan({"a","b","c"},{},-1,-1,true,true,true,part);
+        assert(plan.cells.size()==(part=="full"?9:6));
+        for(const auto &item:plan.cells) {
+            assert(rlispstat::core::CorrelationCellIsVisible(part,item.row,item.column));
+        }
+        const auto rect=plan.layout.cellRects[0][2];
+        const auto hit=HitTestCorrelationMatrix(plan.layout,{rect.x+2,rect.y+2},part);
+        assert((hit.kind==CorrelationMatrixHitKind::Cell)==(part!="lower"));
+    }
+    rlispstat::core::CorrelationMatrixState view;
+    view.variables={"x","y"};view.cells={cell,pearson,pearson,cell};
+    view.displayPart="lower";view.showPValue=true;view.showN=true;
+    assert(rlispstat::core::CorrelationDisplayedCellText(view,0,1).empty());
+    auto displayed=rlispstat::core::CorrelationDisplayedCellText(view,1,0);
+    assert(displayed.find("p=")!=std::string::npos && displayed.find("N = 5")!=std::string::npos);
+    assert(displayed.find('\n')==std::string::npos);
+    const auto options=rlispstat::core::CorrelationContextOptions(view);
+    assert(options.size()==8 && options[1].checked && !options[2].checked && options[5].checked);
 
     return 0;
 }

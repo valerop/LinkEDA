@@ -68,6 +68,8 @@ struct WelcomeStrings {
     std::string about;
     std::string versionPrefix;
     std::string openingData;
+    std::string openDataDocument;
+    std::string importDataFile;
 };
 
 struct WelcomeRecentItem {
@@ -82,6 +84,8 @@ struct WelcomeExampleItem {
     std::string id;
     std::string displayName;
     std::string description;
+    std::string fileName;
+    std::string category;
 };
 
 struct WelcomeCapabilities {
@@ -103,6 +107,8 @@ struct WelcomeWindowModel {
 
 const WelcomeStrings &DefaultWelcomeStrings();
 const ApplicationCredits &DefaultApplicationCredits();
+const std::vector<WelcomeExampleItem> &DefaultWelcomeExampleItems();
+const WelcomeExampleItem *FindWelcomeExample(const std::string &id);
 WelcomeWindowModel DefaultWelcomeWindowModel(const std::string &version,
                                              bool connectedToR,
                                              std::vector<WelcomeRecentItem> recentItems = {});

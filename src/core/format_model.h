@@ -81,12 +81,17 @@ struct PlotThemeStyleSpec {
     bool squareSelectedMarks = false;
     double selectedMarkScale = 1.0;
     double selectedMarkStrokeWidth = 1.5;
+    bool showAxisTickMarks = false;
 };
 PlotRGBA PlotThemeRGB(double r, double g, double b, double a = 1.0);
 PlotRGBA PlotThemeWhite(double w, double a = 1.0);
+// Density shading accumulates opacity; uniform marks resolve the muted tone once.
+PlotRGBA PlotMarkColor(PlotRGBA color, PlotRGBA panel, bool shadeOverlap, double alphaMultiplier = 1.0);
 PlotThemeStyleSpec PlotThemeStyleForName(const std::string &theme);
 PlotRGBA PlotColorForName(const std::string &name, double alpha = 1.0);
 PlotRGBA PlotColorForNameOrHex(const std::string &nameOrHex, double alpha = 1.0);
+PlotRGBA PlotLightColorForNameOrHex(const std::string &nameOrHex, double alpha = 1.0);
+PlotRGBA PlotSelectedColorForNameOrHex(const std::string &nameOrHex, double alpha = 1.0);
 std::string PlotNoActiveStatus();
 std::string UnknownColorStatus();
 std::string FormatFixedDecimalsLabel();

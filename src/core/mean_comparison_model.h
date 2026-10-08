@@ -2,13 +2,19 @@
 #define RLISPSTAT_CORE_MEAN_COMPARISON_MODEL_H
 
 #include "analysis_scope.h"
+#include "provenance_model.h"
 
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace rlispstat {
 namespace core {
+
+struct DataColumn;
+bool MeanComparisonBinaryResponse(const DataColumn &column);
+bool MeanComparisonBinaryPairCompatible(const DataColumn &first, const DataColumn &second);
 
 enum class MeanComparisonCellFormat {
     Text,
@@ -21,7 +27,8 @@ enum class MeanComparisonCellFormat {
 enum class MeanComparisonRowKind {
     Result,
     Descriptive,
-    Warning
+    Warning,
+    GroupHeader
 };
 
 enum class MeanComparisonKind {
@@ -66,6 +73,9 @@ struct MeanComparisonSpecification {
     std::optional<std::string> groupingVariableId;
     std::vector<PairedVariableSpecification> pairs;
     double testValue = 0.0;
+    // One-sample analyses may use a different null value for every response.
+    // testValue remains the convenient "set all" default used by the header.
+    std::map<std::string, double> testValues;
     AlternativeHypothesis alternative = AlternativeHypothesis::TwoSided;
     double confidenceLevel = 0.95;
     MeanComparisonMethod method = MeanComparisonMethod::OneSampleT;
@@ -128,10 +138,14 @@ struct MeanComparisonState {
     double testValue = 0.0;
     std::string firstGroup;
     std::string secondGroup;
+    bool multipleImputation = false;
+    std::size_t imputationCount = 0;
+    std::string poolingMethod;
     MeanComparisonSpecification specification;
     std::size_t adjustmentFamilySize = 0;
     std::vector<MeanComparisonTable> tables;
     std::vector<std::string> warnings;
+    AnalysisProvenance provenance;
 };
 
 struct MeanComparisonPlotMenuOption {
@@ -167,10 +181,21 @@ std::vector<MeanComparisonPlotMenuOption> MeanComparisonPlotMenuOptions(
 std::vector<MeanComparisonPairedForestRow> MeanComparisonPairedForestRows(
     const MeanComparisonState &state);
 std::vector<int> MeanComparisonLinkedRows(const MeanComparisonRow &row);
+std::vector<std::string> MeanComparisonDefaultIndependentGroupOrder(
+    const std::vector<std::string> &availableLevels);
+std::vector<std::string> MeanComparisonIndependentGroupOrderForReference(
+    const std::vector<std::string> &availableLevels,
+    const std::string &referenceLevel);
+bool MeanComparisonIndependentGroupOrderIsValid(
+    const std::vector<std::string> &groupOrder,
+    const std::vector<std::string> &availableLevels);
 
 bool ParseMeanComparisonBatch(const std::vector<std::string> &args,
                               MeanComparisonState &state,
                               std::string *error = nullptr);
+bool MeanComparisonResponseTypeAllowed(const std::string &analysisType, const std::string &type,
+    bool binaryCategorical, bool multipleImputation);
+PublicationTableSpec MeanComparisonPublicationTable(const MeanComparisonTable &table);
 std::string MeanComparisonCellText(const MeanComparisonCell &cell,
                                    MeanComparisonCellFormat format);
 std::string MeanComparisonTableText(const MeanComparisonTable &table,
@@ -182,6 +207,10 @@ double MeanComparisonPreferredStubWidth(const MeanComparisonTable &table);
 std::vector<double> MeanComparisonPreferredColumnWidths(const MeanComparisonTable &table);
 double MeanComparisonPreferredWidth(const MeanComparisonState &state);
 double MeanComparisonPreferredHeight(const MeanComparisonState &state);
+bool MeanComparisonIsDescriptiveTable(const MeanComparisonTable &table);
+double MeanComparisonVisiblePreferredHeight(const MeanComparisonState &state,
+                                             bool showDescriptives,
+                                             bool descriptivesOnly = false);
 
 } // namespace core
 } // namespace rlispstat

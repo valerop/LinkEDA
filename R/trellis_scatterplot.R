@@ -69,7 +69,8 @@
   }
   switch(record$plot_type %||% "scatter",
     scatter = paste0(record$y, " by ", record$x, suffix),
-    boxplot = paste0(record$y, " by ", record$x, suffix),
+    boxplot = paste0(record$y, " by ",
+                     paste(record$boxplot_groups %||% record$x, collapse = " + "), suffix),
     bar = paste0(record$x, suffix),
     histogram = paste0("Distribution of ", record$x, suffix),
     paste0(record$y, " by ", record$x, suffix)
@@ -84,10 +85,10 @@
   }
   observed <- value[!is.na(value)]
   levels <- length(unique(observed))
-  if (levels < 2L) stop("`by` must have at least two observed levels.", call. = FALSE)
-  if (levels > 20L) stop("`by` has too many levels for a trellis plot (maximum 20).", call. = FALSE)
+  if (levels < 2L) stop("`by` must have at least two observed categories.", call. = FALSE)
+  if (levels > 20L) stop("`by` has too many categories for a trellis plot (maximum 20).", call. = FALSE)
   if (is.numeric(value) && levels > max(3L, ceiling(row_count / 4))) {
-    stop("A numeric `by` variable must be discrete and have relatively few levels.", call. = FALSE)
+    stop("A continuous `by` variable must be discrete and have relatively few categories.", call. = FALSE)
   }
   invisible(TRUE)
 }
@@ -295,7 +296,9 @@ ls_trellis_scatterplot_display <- function(
 #' Change a trellis plot type
 #'
 #' @param type One of `"scatter"`, `"boxplot"`, `"bar"`, or `"histogram"`.
-#' @param x Optional compatible X variable to apply atomically with the new type.
+#' @param x Optional compatible X variable to apply atomically with the new
+#'   type. For boxplots this may be an ordered vector of categorical variables,
+#'   from the outermost to the innermost grouping level.
 #' @param y Optional numeric Y variable for scatterplots or boxplots.
 #' @rdname ls_trellis_scatterplot_x
 #' @export
@@ -309,11 +312,28 @@ ls_trellis_plot_type <- function(plot, type, x = NULL, y = NULL) {
     record$y <- y
   }
   if (!is.null(x)) {
-    x <- .rls_validate_protocol_name(x, "x")
-    .rls_send(c("TRELLIS_SCATTERPLOT_SET_TYPE_WITH_X", id, type, x))
-    record$x <- x
+    if (!is.character(x) || !length(x) || anyNA(x) || anyDuplicated(x)) {
+      stop("`x` must contain unique variable names.", call. = FALSE)
+    }
+    x <- vapply(x, function(value) .rls_validate_protocol_name(value, "x"), character(1L))
+    if (!identical(type, "boxplot") && length(x) != 1L) {
+      stop("Multiple `x` variables are only available for trellis boxplots.", call. = FALSE)
+    }
+    missing_x <- setdiff(x, names(record$data))
+    if (length(missing_x)) stop(sprintf("Unknown X variable `%s`.", missing_x[[1L]]), call. = FALSE)
+    .rls_send(c("TRELLIS_SCATTERPLOT_SET_TYPE_WITH_X", id, type, x[[1L]]))
+    if (identical(type, "boxplot")) {
+      .rls_send(c("TRELLIS_SCATTERPLOT_SET_BOXPLOT_GROUPS", id,
+                  as.character(length(x)), x))
+      record$boxplot_groups <- x
+    } else {
+      record$boxplot_groups <- NULL
+    }
+    record$x <- x[[1L]]
   } else {
     .rls_send(c("TRELLIS_SCATTERPLOT_SET_TYPE", id, type))
+    if (identical(type, "boxplot") && is.null(record$boxplot_groups))
+      record$boxplot_groups <- record$x
   }
   record$plot_type <- type
   if (!isTRUE(record$custom_title)) record$title <- .rls_trellis_derived_title(record)

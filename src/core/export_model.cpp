@@ -37,6 +37,9 @@ ExportCapabilities StandardVisualExportCapabilities(ExportPlatform platform)
         result.supported.insert(ExportCapability::CopyPdf);
         result.supported.insert(ExportCapability::CopyVectorNative);
     } else if (platform == ExportPlatform::Windows) {
+        // On Windows this capability means one rich clipboard package with
+        // the canonical SVG plus a PNG fallback.  It replaces the legacy EMF
+        // renderer, which independently reconstructed only part of a plot.
         result.supported.insert(ExportCapability::CopyVectorNative);
     }
     return result;
@@ -46,6 +49,11 @@ ExportCapabilities StandardTableExportCapabilities(ExportPlatform platform,
                                                    bool supportsApaPdf)
 {
     ExportCapabilities result = StandardVisualExportCapabilities(platform);
+    // A result table has two explicit PDF products below: the compact visual
+    // report and, when supported, the semantic APA 7 table.  Keeping the
+    // generic plot-oriented SavePdf capability as well produced three PDF
+    // commands whose outputs were indistinguishable to users.
+    result.supported.erase(ExportCapability::SavePdf);
     result.supported.insert(ExportCapability::CopyFormattedText);
     result.supported.insert(ExportCapability::CopyTabDelimitedText);
     result.supported.insert(ExportCapability::SaveCsv);
@@ -61,7 +69,7 @@ std::vector<ExportMenuAction> BuildExportMenuActions(
     std::vector<ExportMenuAction> actions;
     if (platform == ExportPlatform::Windows) {
         AddIf(actions, capabilities, ExportCapability::CopyVectorNative,
-              "copy_emf", "Copy as Enhanced Metafile", "COPY_EMF");
+              "copy_for_office", "Copy for Office", "COPY_RICH");
     } else if (platform == ExportPlatform::MacOS) {
         AddIf(actions, capabilities, ExportCapability::CopyPdf,
               "copy_pdf", "Copy as PDF", "COPY_PDF");
@@ -87,9 +95,23 @@ std::vector<ExportMenuAction> BuildExportMenuActions(
     AddIf(actions, capabilities, ExportCapability::SaveCsv,
           "save_csv", "CSV...", "SAVE_CSV", hasVisual && !capabilities.has(ExportCapability::CopyFormattedText));
     AddIf(actions, capabilities, ExportCapability::SaveApaPdf,
-          "save_apa_pdf", "PDF — APA 7 style...", "SAVE_APA_PDF");
+          "save_apa_pdf", "PDF (APA 7 table)...", "SAVE_APA_PDF");
     AddIf(actions, capabilities, ExportCapability::SaveDisplayedPdf,
-          "save_displayed_pdf", "PDF — As displayed...", "SAVE_DISPLAYED_PDF");
+          "save_displayed_pdf", "PDF (as shown)...", "SAVE_DISPLAYED_PDF");
+    return actions;
+}
+
+std::vector<ExportMenuAction> BuildRCodeExportMenuActions(bool hasRCode,
+                                                          bool hasPublicationCode)
+{
+    std::vector<ExportMenuAction> actions;
+    if (hasRCode) actions.push_back({
+        ExportCapability::ShowRCode, "show_r_code", "Show R Code...",
+        "SHOW_R_CODE", false, "r_code", "R Code"});
+    if (hasPublicationCode) actions.push_back({
+        ExportCapability::ShowRPublicationCode, "show_r_publication_code",
+        "R Publication Code...", "SHOW_R_PUBLICATION_CODE", false,
+        "r_code", "R Code"});
     return actions;
 }
 
@@ -114,7 +136,17 @@ std::vector<ExportAuditIssue> AuditExportSurfaceRegistry(
         if ((surface.kind == ExportSurfaceKind::Plot || surface.kind == ExportSurfaceKind::Table) &&
             platform == ExportPlatform::Windows &&
             !surface.capabilities.has(ExportCapability::CopyVectorNative)) {
-            issues.push_back({surface.identifier, "Windows visual surface does not provide EMF copy."});
+            issues.push_back({surface.identifier, "Windows visual surface does not provide native vector copy."});
+        }
+        if (surface.kind == ExportSurfaceKind::Table) {
+            if (!surface.capabilities.has(ExportCapability::CopyFormattedText))
+                issues.push_back({surface.identifier, "Table export surface does not provide formatted copy."});
+            if (!surface.capabilities.has(ExportCapability::CopyTabDelimitedText))
+                issues.push_back({surface.identifier, "Table export surface does not provide tab-delimited copy."});
+            if (!surface.capabilities.has(ExportCapability::SaveCsv))
+                issues.push_back({surface.identifier, "Table export surface does not provide CSV save."});
+            if (!surface.capabilities.has(ExportCapability::SaveDisplayedPdf))
+                issues.push_back({surface.identifier, "Table export surface does not provide displayed PDF save."});
         }
         const auto actions = BuildExportMenuActions(surface.capabilities, platform);
         std::set<std::string> actionIds;
@@ -143,10 +175,14 @@ std::vector<ExportSurfaceRegistration> DefaultExportSurfaceRegistry(ExportPlatfo
     }
     for (const char *identifier : {
              "general-linear-model", "generalized-linear-model", "binary-regression",
+             "count-model",
              "compare-means", "anova", "pairwise-comparisons",
              "generalized-model-comparison", "regression-model-comparison",
              "linear-model-trellis", "contingency-table", "table-1",
-             "descriptives", "mixed-model"}) {
+             "frequency-table", "descriptives", "correlation-matrix",
+             "dimensionality-report", "scale-analysis", "scale-analysis-derived",
+             "interaction-interpretation", "missing-data-diagnostics",
+             "multiple-imputation-diagnostics", "mixed-model"}) {
         result.push_back({identifier, ExportSurfaceKind::Table, table});
     }
     ExportCapabilities data;
@@ -172,6 +208,31 @@ std::string SafeExportBaseName(const std::string &value, const std::string &fall
     }
     while (!output.empty() && output.back() == '-') output.pop_back();
     return output.empty() ? fallback : output;
+}
+
+std::string CsvReportToTabDelimited(const std::string &csv)
+{
+    std::string result;
+    result.reserve(csv.size());
+    bool quoted = false;
+    for (std::size_t i = 0; i < csv.size(); ++i) {
+        const char ch = csv[i];
+        if (ch == '"') {
+            if (quoted && i + 1 < csv.size() && csv[i + 1] == '"') {
+                result.push_back('"');
+                ++i;
+            } else {
+                quoted = !quoted;
+            }
+        } else if (quoted) {
+            result.push_back(ch == '\n' || ch == '\r' || ch == '\t' ? ' ' : ch);
+        } else if (ch == ',') {
+            result.push_back('\t');
+        } else if (ch != '\r') {
+            result.push_back(ch);
+        }
+    }
+    return result;
 }
 
 } // namespace core

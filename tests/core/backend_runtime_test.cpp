@@ -7,7 +7,7 @@
 int main()
 {
     {
-        char arg0[] = "rlispstat_backend";
+        char arg0[] = "LinkEDA_backend";
         char *argv[] = {arg0, nullptr};
         auto parsed = rlispstat::core::ParseBackendLaunchArguments(1, argv);
         assert(!parsed.ok);
@@ -15,7 +15,7 @@ int main()
         assert(parsed.error == rlispstat::core::BackendLaunchUsage());
     }
     {
-        char arg0[] = "rlispstat_backend";
+        char arg0[] = "LinkEDA_backend";
         char arg1[] = "--port";
         char arg2[] = "4242";
         char arg3[] = "--rscript";
@@ -34,7 +34,7 @@ int main()
         assert(parsed.options.parentPid == 12345);
     }
     {
-        char arg0[] = "rlispstat_backend";
+        char arg0[] = "LinkEDA_backend";
         char arg1[] = "--fifo";
         char arg2[] = "/tmp/backend";
         char *argv[] = {arg0, arg1, arg2, nullptr};

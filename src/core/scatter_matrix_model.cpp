@@ -7,6 +7,25 @@
 namespace rlispstat {
 namespace core {
 
+std::string ScatterMatrixFitPanelId(const PlotModel &model,
+                                    std::size_t row, std::size_t column)
+{
+    return "matrix:" + std::to_string(model.scatterMatrixFitGeneration) +
+        ":" + std::to_string(row) + ":" + std::to_string(column);
+}
+
+void InvalidateScatterMatrixFits(PlotModel &model)
+{
+    if (model.kind != "scatter_matrix") return;
+    ++model.scatterMatrixFitGeneration;
+    model.scatterMatrixFitsPending = !model.overlays.empty();
+    model.trellisPanelSmoothCurves.clear();
+    model.smoothCurves.erase(
+        std::remove_if(model.smoothCurves.begin(), model.smoothCurves.end(),
+            [](const SmoothCurveData &curve) { return curve.fitMethod == "lm"; }),
+        model.smoothCurves.end());
+}
+
 namespace {
 
 bool ContainsString(const std::vector<std::string> &values, const std::string &value)
@@ -551,6 +570,7 @@ void NormalizeScatterMatrixVariables(PlotModel &model)
 
 void RebuildScatterMatrixPoints(PlotModel &model)
 {
+    InvalidateScatterMatrixFits(model);
     NormalizeScatterMatrixVariables(model);
     std::vector<ScatterMatrixVariableSeries> vars =
         ScatterMatrixVariableSeriesForModel(model, model.scatterMatrixVariables);

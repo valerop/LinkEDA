@@ -12,10 +12,16 @@
 .rls_binary_resolve_coding <- function(response, event = NULL, reference = NULL) {
   labels <- .rls_binary_effective_levels(response)
   if (length(labels) != 2L) {
-    stop("Binary Regression requires exactly two observed response values in the selected scope.", call. = FALSE)
+    stop("Binary Model requires exactly two observed response values in the selected scope.", call. = FALSE)
   }
-  event <- as.character(event %||% labels[[2L]])[[1L]]
-  reference <- as.character(reference %||% setdiff(labels, event)[[1L]])[[1L]]
+  if (!is.null(event)) event <- as.character(event)[[1L]]
+  if (!is.null(reference)) reference <- as.character(reference)[[1L]]
+  if (!is.null(event) && (is.na(event) || !event %in% labels))
+    stop("The event must be an observed response value.", call. = FALSE)
+  if (!is.null(reference) && (is.na(reference) || !reference %in% labels))
+    stop("The reference must be an observed response value.", call. = FALSE)
+  event <- event %||% if (!is.null(reference)) setdiff(labels, reference)[[1L]] else labels[[2L]]
+  reference <- reference %||% setdiff(labels, event)[[1L]]
   if (!event %in% labels) stop(sprintf("Event `%s` is not an observed response value.", event), call. = FALSE)
   if (!reference %in% labels) stop(sprintf("Reference `%s` is not an observed response value.", reference), call. = FALSE)
   if (identical(event, reference) || !setequal(c(event, reference), labels)) {
@@ -45,19 +51,10 @@
 }
 
 .rls_binary_term_tests <- function(fit) {
-  table <- tryCatch(stats::drop1(fit, test = "Chisq"), error = function(e) NULL)
-  if (is.null(table) || nrow(table) < 2L) return(data.frame())
-  table <- as.data.frame(table, stringsAsFactors = FALSE)
-  term <- rownames(table)
-  keep <- term != "<none>"
-  statistic_name <- intersect(c("LRT", "Deviance"), names(table))
-  p_name <- grep("Pr\\(", names(table), value = TRUE)
-  data.frame(
-    term = term[keep],
-    df = as.integer(table[keep, "Df"]),
-    statistic = if (length(statistic_name)) as.numeric(table[keep, statistic_name[[1L]]]) else NA_real_,
-    p_value = if (length(p_name)) as.numeric(table[keep, p_name[[1L]]]) else NA_real_,
-    stringsAsFactors = FALSE
+  .rls_model_global_term_tests(
+    fit,
+    attr(stats::terms(fit), "term.labels") %||% character(),
+    likelihood_available = TRUE
   )
 }
 
@@ -66,6 +63,8 @@
   critical <- stats::qnorm(0.975)
   rows$ci_lower <- rows$estimate - critical * rows$std_error
   rows$ci_upper <- rows$estimate + critical * rows$std_error
+  # Keep the legacy odds-ratio fields genuinely odds-ratio specific. The
+  # shared generalized fields carry the risk ratio for a log-binomial fit.
   if (identical(link, "logit")) {
     rows$odds_ratio <- exp(rows$estimate)
     rows$odds_ratio_lower <- exp(rows$ci_lower)
@@ -78,13 +77,7 @@
   rows
 }
 
-.rls_binary_fit_record <- function(record) {
-  fit_record <- record
-  fit_record$data <- .rls_generalized_glm_data_for_fit(record)
-  complete <- .rls_generalized_glm_complete_data(fit_record)
-  if (nrow(complete$data) <= length(record$terms)) {
-    stop("Not enough complete cases to fit the binary regression model.", call. = FALSE)
-  }
+.rls_binary_prepare_generalized_fit <- function(record, fit_record, complete) {
   coding <- .rls_binary_resolve_coding(
     complete$data[[record$response]], record$event %||% NULL, record$reference %||% NULL
   )
@@ -93,16 +86,38 @@
   complete$data[[temporary_response]] <- coding$binary
   fit_record$response <- temporary_response
   fit_record$data <- complete$data
-  family_object <- stats::binomial(link = record$link)
-  captured_warnings <- character()
-  fit <- withCallingHandlers(
-    stats::glm(.rls_generalized_glm_formula_object(fit_record), data = complete$data, family = family_object),
-    warning = function(w) {
-      captured_warnings <<- unique(c(captured_warnings, conditionMessage(w)))
-      invokeRestart("muffleWarning")
-    }
-  )
-  extracted <- .rls_generalized_glm_extract_fit(fit_record, fit, complete)
+  list(fit_record = fit_record, complete = complete, coding = coding)
+}
+
+.rls_binary_validate_log_fit <- function(fit, link, captured_warnings = character(),
+                                         prefix = "The log-binomial model") {
+  if (!identical(link, "log")) return(invisible(TRUE))
+  problems <- character()
+  if (!isTRUE(fit$converged)) problems <- c(problems, "stats::glm() did not converge")
+  if (isTRUE(fit$boundary)) problems <- c(problems, "stats::glm() reported a boundary fit")
+  probabilities <- suppressWarnings(as.numeric(stats::fitted(fit)))
+  if (any(!is.finite(probabilities)) ||
+      any(probabilities < -sqrt(.Machine$double.eps) |
+          probabilities > 1 + sqrt(.Machine$double.eps))) {
+    problems <- c(problems, "fitted probabilities are outside the admissible [0, 1] range")
+  }
+  if (length(problems)) {
+    warning_text <- if (length(captured_warnings)) {
+      paste0(" R warning(s): ", paste(unique(captured_warnings), collapse = "; "), ".")
+    } else ""
+    stop(paste0(
+      prefix, " did not produce a valid fit: ",
+      paste(unique(problems), collapse = "; "), ".", warning_text,
+      " LinkEDA has not substituted a different model or link."
+    ), call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+.rls_binary_finalize_generalized_fit <- function(record, fit_record, fit, complete,
+                                                 coding, extracted,
+                                                 captured_warnings = character()) {
+  .rls_binary_validate_log_fit(fit, record$link, captured_warnings)
   extracted$coefficient_rows <- .rls_binary_augment_coefficient_rows(extracted$coefficient_rows, record$link)
   extracted$coefficients <- .rls_binary_augment_coefficient_rows(extracted$coefficients, record$link)
   diagnostics <- extracted$diagnostics
@@ -118,12 +133,17 @@
   global_df <- unname(fit$df.null - fit$df.residual)
   cox_snell <- if (is.finite(log_lik) && is.finite(null_log_lik)) 1 - exp((2 / n) * (null_log_lik - log_lik)) else NA_real_
   max_cox_snell <- if (is.finite(null_log_lik)) 1 - exp(2 * null_log_lik / n) else NA_real_
-  eta <- unname(stats::predict(fit, type = "link"))
   probability <- unname(stats::fitted(fit))
-  calibration <- tryCatch(
-    suppressWarnings(stats::coef(stats::glm(coding$binary ~ eta, family = stats::binomial()))),
-    error = function(e) c(NA_real_, NA_real_)
-  )
+  # Logistic calibration always uses predicted log odds, whatever link fitted
+  # the original model. Boundary probabilities have no finite log odds.
+  calibration <- c(NA_real_, NA_real_)
+  if (all(is.finite(probability) & probability > 0 & probability < 1)) {
+    predicted_log_odds <- stats::qlogis(probability)
+    calibration <- tryCatch(
+      suppressWarnings(stats::coef(stats::glm(coding$binary ~ predicted_log_odds,
+        family = stats::binomial(link = "logit")))),
+      error = function(e) c(NA_real_, NA_real_))
+  }
   separation_hint <- any(abs(stats::coef(fit)) > 25, na.rm = TRUE) ||
     any(probability < 1e-08 | probability > 1 - 1e-08, na.rm = TRUE)
   coefficient_se <- tryCatch(sqrt(diag(stats::vcov(fit))), error = function(e) rep(NA_real_, length(stats::coef(fit))))
@@ -143,6 +163,7 @@
     auc = .rls_binary_auc(coding$binary, probability),
     calibration_intercept = unname(calibration[[1L]] %||% NA_real_),
     calibration_slope = unname(calibration[[2L]] %||% NA_real_),
+    calibration_method = "Apparent logistic calibration: outcome ~ logit(predicted probability), on fitting cases",
     converged = isTRUE(fit$converged),
     iterations = as.integer(fit$iter %||% NA_integer_),
     boundary = isTRUE(fit$boundary),
@@ -155,7 +176,11 @@
     reference_count = coding$reference_count,
     warnings = captured_warnings
   ))
-  extracted$term_tests <- .rls_binary_term_tests(fit)
+  # The shared generalized extractor calculates the complete-term tests.
+  # Keep this compatibility path for records produced by older callers.
+  if (!is.data.frame(extracted$term_tests) || !nrow(extracted$term_tests)) {
+    extracted$term_tests <- .rls_binary_term_tests(fit)
+  }
   extracted$event <- coding$event
   extracted$reference <- coding$reference
   extracted$warnings <- captured_warnings
@@ -175,25 +200,38 @@
 #' @param data Registered dataset name, data frame, or `NULL` for the active dataset.
 #' @param response Binary response variable.
 #' @param terms Predictor terms.
-#' @param link Either `"logit"` or `"probit"`.
+#' @param link One of the supported binomial links: `"logit"`, `"log"`,
+#'   `"probit"`, or `"cloglog"`.
 #' @param event,reference Original response values defining the event and reference.
 #' @param scope One of `"all"`, `"selected"`, or `"unselected"`.
 #' @param name Optional model identifier.
 #' @param native Open/synchronize the native result window.
+#' @param offset Optional numeric column added to the link-scale predictor with
+#'   a fixed coefficient of one.
 #' @param term_types Optional named predictor type overrides.
 #' @param model A fitted Binary Regression model handle.
 #' @return An `rlispstat_binary_regression` model handle.
 #' @export
 ls_new_binary_regression <- function(data = NULL, response = NULL, terms = NULL,
-                                     link = c("logit", "probit"), event = NULL,
+                                     link = c("logit", "log", "probit", "cloglog"), event = NULL,
                                      reference = NULL, scope = "all", name = NULL,
                                      native = TRUE, term_types = NULL,
-                                     .selected_rows = NULL) {
+                                     centered_predictors = NULL,
+                                     factor_reference_levels = NULL,
+                                     .selected_rows = NULL,
+                                     .native_generation = 0L,
+                                     .comparison_rows = NULL, offset = NULL) {
   link <- match.arg(link)
   handle <- ls_new_generalized_linear_model(
     data = data, response = response, terms = NULL, family = "binomial", link = link,
+    offset = offset,
     scope = scope, name = name, native = FALSE, term_types = term_types,
-    .selected_rows = .selected_rows
+    centered_predictors = centered_predictors,
+    factor_reference_levels = factor_reference_levels,
+    .model_type = "binary",
+    .selected_rows = .selected_rows,
+    .native_generation = .native_generation,
+    .comparison_rows = .comparison_rows
   )
   record <- .rls_generalized_glm_record(handle)
   terms <- unlist(lapply(terms %||% character(), function(term) {
@@ -202,15 +240,38 @@ ls_new_binary_regression <- function(data = NULL, response = NULL, terms = NULL,
   }), use.names = FALSE)
   record$terms <- if (length(terms)) unique(as.character(terms)) else character()
   record$term_types <- .rls_generalized_glm_normalize_term_types(term_types, record$terms)
+  # The shared constructor initially receives no terms so that this frontend
+  # can enable its valid intercept-only state.  Once the Binary Regression
+  # terms have been resolved, retain only transformations that refer to the
+  # now-effective model terms.  These remain model-local; the data set is not
+  # altered.
+  term_variables <- if (length(record$terms)) {
+    setdiff(all.vars(.rls_model_formula_object(record$response, record$terms)), record$response)
+  } else {
+    character()
+  }
+  record$centered_predictors <- intersect(
+    unique(as.character(centered_predictors %||% character())), term_variables
+  )
+  references <- factor_reference_levels %||% list()
+  if (!is.list(references)) references <- as.list(references)
+  if (is.null(names(references))) references <- list()
+  record$factor_reference_levels <- references[
+    intersect(names(references), term_variables)
+  ]
   record$binary_regression <- TRUE
+  record$allow_intercept_only <- TRUE
   record$event <- if (is.null(event)) NULL else as.character(event)[[1L]]
   record$reference <- if (is.null(reference)) NULL else as.character(reference)[[1L]]
   record$status <- "Not fitted."
+  if (isTRUE(native)) .rls_start_backend()
+  record$native_sync_enabled <- isTRUE(native)
   handle <- .rls_assign_generalized_glm(record)
   class(handle) <- c("rlispstat_binary_regression", class(handle))
   handle <- ls_binary_regression_fit(handle)
   record <- .rls_generalized_glm_record(handle)
-  if (isTRUE(native)) .rls_generalized_glm_sync_native(record)
+  record$native_sync_enabled <- isTRUE(native)
+  handle <- .rls_assign_generalized_glm(record)
   invisible(structure(handle, class = c("rlispstat_binary_regression", "rlispstat_generalized_linear_model")))
 }
 
@@ -218,15 +279,10 @@ ls_new_binary_regression <- function(data = NULL, response = NULL, terms = NULL,
 #' @export
 ls_binary_regression_fit <- function(model) {
   record <- .rls_generalized_glm_record(model)
-  if (!isTRUE(record$binary_regression)) stop("The model is not a Binary Regression model.", call. = FALSE)
-  extracted <- .rls_binary_fit_record(record)
-  record[names(extracted)] <- extracted
-  record$fit_statistics <- extracted$summary
-  record$diagnostic_data <- extracted$diagnostics
-  record$fit_version <- record$fit_version + 1L
-  record$diagnostics_version <- record$diagnostics_version + 1L
+  if (!isTRUE(record$binary_regression)) stop("The model is not a Binary Model.", call. = FALSE)
+  record$allow_intercept_only <- TRUE
   handle <- .rls_assign_generalized_glm(record)
-  if (isTRUE(.rls_state$process_started)) try(.rls_generalized_glm_sync_native(record), silent = TRUE)
+  handle <- ls_generalized_linear_model_fit(handle)
   invisible(structure(handle, class = c("rlispstat_binary_regression", "rlispstat_generalized_linear_model")))
 }
 
@@ -258,12 +314,26 @@ ls_binary_regression_diagnostics <- function(model) {
   record$diagnostics
 }
 
+#' Open a linked Binary Regression diagnostic plot
+#'
+#' @param model A fitted Binary Regression model.
+#' @param type Diagnostic plot type.
+#' @param native Open the native LinkEDA plot window when available.
+#' @return A linked diagnostic handle.
+#' @export
+ls_binary_regression_open_diagnostic <- function(
+    model,
+    type = c("observed_vs_fitted", "residuals_vs_fitted", "residual_histogram",
+             "normal_qq", "scale_location", "residuals_leverage",
+             "cooks_distance", "roc_curve", "calibration_plot"),
+    native = isTRUE(.rls_state$process_started)) {
+  ls_generalized_linear_model_open_diagnostic(model, match.arg(type), native = native)
+}
+
 #' @rdname ls_new_binary_regression
 #' @export
 ls_binary_regression_term_tests <- function(model) {
-  record <- .rls_generalized_glm_record(model)
-  if (is.null(record$fit)) record <- .rls_generalized_glm_record(ls_binary_regression_fit(model))
-  record$term_tests %||% data.frame()
+  ls_generalized_linear_model_term_tests(model)
 }
 
 #' Pairwise comparisons for a categorical term in a binary regression
@@ -271,33 +341,30 @@ ls_binary_regression_term_tests <- function(model) {
 #' @param model Binary regression model.
 #' @param term Simple categorical term.
 #' @param scale For logit, `"odds_ratio"`, `"link"`, or `"probability"`; for
-#'   probit, `"probability"` or `"link"`.
+#'   log, `"risk_ratio"`, `"link"`, or `"probability"`; for the other links,
+#'   `"probability"` or `"link"`.
 #' @param adjust Multiplicity adjustment passed to `emmeans`.
 #' @return A data frame calculated by `emmeans` in R.
 #' @export
 ls_binary_regression_pairwise <- function(model, term, scale = NULL, adjust = "tukey") {
-  if (!requireNamespace("emmeans", quietly = TRUE)) {
-    stop("Pairwise comparisons require the suggested R package `emmeans`.", call. = FALSE)
-  }
   record <- .rls_generalized_glm_record(model)
   if (is.null(record$fit)) record <- .rls_generalized_glm_record(ls_binary_regression_fit(model))
-  term <- .rls_validate_protocol_name(term, "term")
-  if (!term %in% record$terms || grepl(":", term, fixed = TRUE)) {
-    stop("Pairwise comparisons are available only for simple terms in the model.", call. = FALSE)
+  if (is.null(scale)) {
+    scale <- if (identical(record$link, "logit")) "odds_ratio" else
+      if (identical(record$link, "log")) "risk_ratio" else "probability"
   }
-  if (!is.factor(record$fit$model[[term]])) stop("Pairwise comparisons require a categorical term.", call. = FALSE)
-  if (is.null(scale)) scale <- if (identical(record$link, "logit")) "odds_ratio" else "probability"
-  allowed <- if (identical(record$link, "logit")) c("odds_ratio", "link", "probability") else c("probability", "link")
+  allowed <- if (identical(record$link, "logit")) {
+    c("odds_ratio", "link", "probability")
+  } else if (identical(record$link, "log")) {
+    c("risk_ratio", "link", "probability")
+  } else c("probability", "link")
   scale <- match.arg(scale, allowed)
-  grid <- emmeans::emmeans(record$fit, specs = term)
-  if (identical(scale, "probability")) grid <- emmeans::regrid(grid, transform = "response")
-  result <- as.data.frame(summary(emmeans::contrast(grid, method = "pairwise", adjust = adjust), infer = c(TRUE, TRUE)))
-  result$term <- term
-  result$scale <- scale
+  result <- .rls_regression_pairwise_record(record, term, scale, adjust)
+  # Preserve the established public aliases while adding the standardized
+  # pooled columns shared by every regression family.
   if (identical(scale, "odds_ratio")) {
-    result$odds_ratio <- exp(result$estimate)
-    if ("lower.CL" %in% names(result)) result$lower.OR <- exp(result$lower.CL)
-    if ("upper.CL" %in% names(result)) result$upper.OR <- exp(result$upper.CL)
+    result$lower.OR <- result$odds_ratio_conf_low
+    result$upper.OR <- result$odds_ratio_conf_high
   }
   result
 }
@@ -310,71 +377,28 @@ ls_binary_regression_pairwise <- function(model, term, scale = NULL, adjust = "t
 #' links or analysis rows retain descriptive AIC/BIC/AUC comparison but no LRT.
 #'
 #' @param ... Binary Regression model handles, or one list of handles.
+#' @param native Logical; open the native Windows comparison window.
 #' @return A comparison object with `models` and adjacent `tests` data frames.
 #' @export
-ls_compare_binary_regression_models <- function(...) {
+ls_compare_binary_regression_models <- function(...,
+                                                native = isTRUE(.rls_state$process_started),
+                                                .native_id = NULL,
+                                                .native_labels = NULL,
+                                                .native_generation = 0L,
+                                                .native_specification_revisions = integer(),
+                                                .native_specification_fingerprints = character()) {
   models <- list(...)
   if (length(models) == 1L && is.list(models[[1L]]) && !inherits(models[[1L]], "rlispstat_generalized_linear_model")) {
     models <- models[[1L]]
   }
-  if (length(models) < 2L) stop("Choose at least two stored Binary Regression models.", call. = FALSE)
-  records <- lapply(models, .rls_generalized_glm_record)
-  if (!all(vapply(records, function(x) isTRUE(x$binary_regression) && !is.null(x$fit), logical(1L)))) {
-    stop("All models must be fitted Binary Regression models.", call. = FALSE)
-  }
-  base <- records[[1L]]
-  same_identity <- vapply(records, function(x) {
-    identical(x$group, base$group) && identical(x$response, base$response) &&
-      identical(x$event, base$event) && identical(x$reference, base$reference)
-  }, logical(1L))
-  if (!all(same_identity)) {
-    stop("Models must use the same dataset, response, and event/reference coding.", call. = FALSE)
-  }
-  summaries <- lapply(records, function(x) x$summary %||% list())
-  model_table <- data.frame(
-    model = vapply(records, function(x) x$id, character(1L)),
-    link = vapply(records, function(x) x$link, character(1L)),
-    n = vapply(summaries, function(x) as.integer(x$n_used %||% NA_integer_), integer(1L)),
-    logLik = vapply(summaries, function(x) as.numeric(x$log_lik %||% NA_real_), numeric(1L)),
-    AIC = vapply(summaries, function(x) as.numeric(x$aic %||% NA_real_), numeric(1L)),
-    BIC = vapply(summaries, function(x) as.numeric(x$bic %||% NA_real_), numeric(1L)),
-    AUC = vapply(summaries, function(x) as.numeric(x$auc %||% NA_real_), numeric(1L)),
-    terms = vapply(records, function(x) paste(x$terms, collapse = " + "), character(1L)),
-    stringsAsFactors = FALSE
-  )
-  tests <- vector("list", length(records) - 1L)
-  for (i in seq_len(length(records) - 1L)) {
-    left <- records[[i]]; right <- records[[i + 1L]]
-    same_link <- identical(left$link, right$link) && identical(left$family, right$family)
-    same_rows <- identical(sort(left$rows_used), sort(right$rows_used))
-    nested <- all(left$terms %in% right$terms) || all(right$terms %in% left$terms)
-    row <- data.frame(
-      reduced = NA_character_, full = NA_character_, link = if (same_link) left$link else NA_character_,
-      df = NA_integer_, statistic = NA_real_, p_value = NA_real_, available = FALSE,
-      reason = if (!same_rows) "Different analysis rows: descriptive comparison only; AIC/BIC may not be directly comparable."
-        else if (!same_link) "Different links: descriptive comparison only."
-        else if (!nested) "Models are not nested." else "",
-      stringsAsFactors = FALSE
-    )
-    if (same_rows && same_link && nested && !setequal(left$terms, right$terms)) {
-      reduced <- if (length(left$terms) < length(right$terms)) left else right
-      full <- if (length(left$terms) < length(right$terms)) right else left
-      tab <- tryCatch(as.data.frame(stats::anova(reduced$fit, full$fit, test = "Chisq")), error = function(e) NULL)
-      if (!is.null(tab) && nrow(tab) >= 2L) {
-        p_name <- grep("Pr\\(", names(tab), value = TRUE)
-        row$reduced <- reduced$id; row$full <- full$id
-        row$df <- as.integer(abs(stats::df.residual(reduced$fit) - stats::df.residual(full$fit)))
-        row$statistic <- as.numeric(tab$Deviance[[2L]])
-        row$p_value <- if (length(p_name)) as.numeric(tab[[p_name[[1L]]]][[2L]]) else NA_real_
-        row$available <- is.finite(row$statistic) && is.finite(row$p_value)
-        row$reason <- if (row$available) "R: stats::anova(..., test = 'Chisq')" else "R did not return an estimable LRT."
-      }
-    }
-    tests[[i]] <- row
-  }
-  structure(list(
-    response = base$response, event = base$event, reference = base$reference,
-    common_rows = all(vapply(records, function(x) identical(sort(x$rows_used), sort(base$rows_used)), logical(1L))),
-    rows_used = base$rows_used, models = model_table, tests = do.call(rbind, tests)
-  ), class = "rlispstat_binary_regression_comparison")
+  if (length(models) < 1L) stop("Choose at least one stored Binary Model.", call. = FALSE)
+  do.call(ls_compare_generalized_linear_models, c(models, list(
+    native = native,
+    .native_id = .native_id,
+    .native_labels = .native_labels,
+    .native_generation = .native_generation,
+    .native_specification_revisions = .native_specification_revisions,
+    .native_specification_fingerprints = .native_specification_fingerprints,
+    .binary_comparison = TRUE
+  )))
 }

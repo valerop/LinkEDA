@@ -27,6 +27,14 @@ struct ScatterplotPointValue {
     double y = 0.0;
 };
 
+// One complete X/Y point cloud from a multiple-imputation dataset.  Keeping
+// these clouds separate prevents overlays and smoothers from fitting a
+// synthetic cloud made by averaging or stacking different imputations.
+struct ScatterplotImputationPointSet {
+    int imputationIndex = 0;
+    std::vector<ScatterplotPointValue> points;
+};
+
 struct ScatterplotImputationGlyph {
     bool hasImputation = false;
     int axisMask = 0;
@@ -48,6 +56,7 @@ struct ScatterplotPointDrawItem {
     ScatterplotImputationGlyph imputationGlyph;
     std::string colorName;
     bool hasExplicitColor = false;
+    bool shadeOverlap = true;
     double fillAlpha = 0.72;
     double strokeAlpha = 0.42;
     double radius = 3.0;
@@ -111,14 +120,20 @@ struct ScatterplotOverlayDrawItem {
 
 struct ScatterplotSmoothCurveDrawItem {
     std::vector<Point> points;
+    std::vector<Point> confidencePolygon;
     std::string colorName;
     double alpha = 0.85;
+    double confidenceAlpha = 0.16;
     double lineWidth = 2.5;
     bool dashed = false;
 };
 
 struct ScatterplotRenderInput {
     std::vector<ScatterplotPointValue> points;
+    // Screen geometry may be reused while only linked selection changes.
+    // The caller owns this vector and must invalidate it when the data,
+    // viewport, plot rectangle, or imputation uncertainty mode changes.
+    const std::vector<ScatterplotPointDrawInput> *precomputedPointDrawInputs = nullptr;
     DataViewport viewport;
     Rect plotRect;
     std::set<CaseId> selectedRows;
@@ -130,9 +145,21 @@ struct ScatterplotRenderInput {
     const DataFrameModel *imputationDataFrame = nullptr;
     const DataColumn *xColumn = nullptr;
     const DataColumn *yColumn = nullptr;
+    const std::vector<ScatterplotPointImputationValues> *pointImputationValues = nullptr;
+    const std::vector<ScatterplotPointImputationValues> *completeImputationPointValues = nullptr;
+    // Diagnostic-only classification: all rows may have fitted-value
+    // uncertainty, while these rows also contain a directly imputed response
+    // or predictor and are highlighted separately.
+    std::set<CaseId> directlyImputedModelRows;
+    bool distinguishDiagnosticImputationRows = false;
     std::string imputationUncertaintyMode = "central80";
     bool skipNonCaseRows = false;
     std::vector<SmoothCurveData> smoothCurves;
+    bool shadeOverlap = true;
+    bool sizeByOverlap = false;
+    bool sizeByVisualOverlap = false;
+    bool showFitConfidenceIntervals = false;
+    bool showSmoothConfidenceIntervals = false;
 };
 
 struct ScatterplotRenderPlan {
@@ -162,6 +189,9 @@ struct ScatterplotMenuState {
     std::vector<ScatterplotMenuOption> selectionActionOptions;
     std::vector<ScatterplotMenuOption> brushOptions;
     std::vector<ScatterplotMenuOption> viewOptions;
+    bool showImputationDisplayOptions = false;
+    std::string imputationDisplayTitle;
+    std::vector<ScatterplotMenuOption> imputationDisplayOptions;
     bool showImputationUncertaintyOptions = false;
     std::vector<ScatterplotMenuOption> imputationUncertaintyOptions;
     ScatterplotMenuOption chooseLabelColumn;
@@ -169,7 +199,6 @@ struct ScatterplotMenuState {
     std::vector<ScatterplotMenuOption> overlayOptions;
     ScatterplotMenuOption clearOverlays;
     std::vector<ScatterplotMenuOption> smoothOptions;
-    std::vector<ScatterplotMenuOption> analysisOptions;
     std::vector<ScatterplotMenuOption> plotOptions;
     ScatterplotMenuOption closePlot;
 };
@@ -200,6 +229,10 @@ std::set<CaseId> SelectCasesForGesture(const std::vector<ScatterplotCaseGeometry
                                        double maxClickDistance = 8.0,
                                        double glyphPadding = 2.0);
 
+// Count overlapping ordinary 3-point-radius marks in logical screen pixels.
+// Subpixel coordinates share a pixel cell; original case geometry is unchanged.
+std::vector<std::size_t> ScatterplotVisualOverlapCounts(const std::vector<Point> &positions);
+
 std::vector<ScatterplotPointDrawItem> BuildScatterplotPointDrawPlan(
     const std::vector<ScatterplotPointDrawInput> &points,
     const std::set<CaseId> &selectedRows,
@@ -214,11 +247,23 @@ std::optional<DataViewport> ScatterplotViewportIncludingImputations(
     const DataColumn &yColumn,
     const std::vector<ScatterplotPointValue> &points,
     const std::string &uncertaintyMode);
+std::optional<DataViewport> ScatterplotViewportIncludingPointImputations(
+    const std::vector<ScatterplotPointValue> &points,
+    const std::vector<ScatterplotPointImputationValues> &imputationValues,
+    const std::string &uncertaintyMode);
 
 ScatterplotImputationGlyph ScatterplotImputationGlyphForPoint(
     const DataFrameModel &df,
     const DataColumn &xColumn,
     const DataColumn &yColumn,
+    const ScatterplotPointValue &point,
+    const DataViewport &viewport,
+    const Rect &plotRect,
+    const std::string &uncertaintyMode,
+    double singleAxisMinimumSize = 9.0,
+    double twoAxisMinimumSize = 14.0);
+ScatterplotImputationGlyph ScatterplotImputationGlyphForPointValues(
+    const ScatterplotPointImputationValues &values,
     const ScatterplotPointValue &point,
     const DataViewport &viewport,
     const Rect &plotRect,
@@ -246,6 +291,12 @@ std::vector<ScatterplotCaseGeometry> BuildScatterplotCaseGeometry(
     const std::string &uncertaintyMode = "central80",
     bool skipNonCaseRows = false);
 
+// Build hit-test geometry from the same complete render specification used to
+// draw the plot.  In particular, regression diagnostics can supply derived
+// per-imputation X/Y values that do not exist as worksheet columns.
+std::vector<ScatterplotCaseGeometry> BuildScatterplotCaseGeometry(
+    const ScatterplotRenderInput &input);
+
 SimpleLinearFitResult FitSimpleLinearModel(const std::vector<ScatterplotPointValue> &points,
                                            const std::set<CaseId> &selectedCases = {},
                                            const std::string &scope = "all",
@@ -260,11 +311,28 @@ std::vector<ScatterplotOverlayLineItem> BuildScatterplotOverlayLinePlan(
     const std::map<CaseId, std::string> &rowColors,
     const std::string &selectedColorName,
     const DataViewport &viewport);
+std::vector<ScatterplotImputationPointSet> BuildScatterplotImputationPointSets(
+    const ScatterplotRenderInput &input);
+// Diagnostic coordinates are derived by R and generally do not correspond to
+// worksheet columns named by the plot axes.  Supply those exact displayed
+// coordinates back to R when the user requests a fitted or smooth line.
+std::vector<ScatterplotImputationPointSet>
+BuildRegressionDiagnosticSmoothPointSets(const PlotModel &model);
+// ROC geometry has its own step curve and reference diagonal.  Other
+// scatter-based diagnostics can accept optional R-fitted straight/smooth lines.
+bool RegressionDiagnosticSupportsAddedLines(const PlotModel &model);
 ScatterplotRenderPlan BuildScatterplotRenderPlan(const ScatterplotRenderInput &input);
 std::vector<ScatterplotSmoothCurveDrawItem> BuildSmoothCurveDrawItems(
     const std::vector<SmoothCurveData> &curves,
     const DataViewport &viewport,
-    const Rect &plotRect);
+    const Rect &plotRect,
+    bool showConfidenceIntervals = false);
+std::vector<ScatterplotSmoothCurveDrawItem> BuildSmoothCurveDrawItems(
+    const std::vector<SmoothCurveData> &curves,
+    const DataViewport &viewport,
+    const Rect &plotRect,
+    bool showLinearConfidenceIntervals,
+    bool showSmoothConfidenceIntervals);
 bool ScatterplotHasOverlaySource(const std::vector<ScatterplotOverlaySpec> &overlays,
                                  const std::string &source);
 ScatterplotVariableMenuState BuildScatterplotVariableMenuState(
@@ -282,6 +350,14 @@ std::vector<ScatterplotMenuOption> ScatterplotLabelDisplayMenuOptions(
     const std::string &labelDisplayMode);
 std::vector<ScatterplotMenuOption> ScatterplotImputationUncertaintyMenuOptions(
     const std::string &currentMode);
+std::string ScatterplotImputationDisplayMenuTitle(
+    int imputationCount,
+    int activeImputationVersion,
+    const std::string &displayMode);
+std::vector<ScatterplotMenuOption> ScatterplotImputationDisplayMenuOptions(
+    int imputationCount,
+    int activeImputationVersion,
+    const std::string &displayMode);
 std::vector<ScatterplotMenuOption> ScatterplotPlotMenuOptions();
 ScatterplotMenuOption ScatterplotClosePlotOption();
 ScatterplotMenuState BuildScatterplotMenuState(
@@ -292,7 +368,9 @@ ScatterplotMenuState BuildScatterplotMenuState(
     const std::string &labelColumn,
     const std::string &labelDisplayMode,
     const std::vector<ScatterplotOverlaySpec> &overlays,
-    bool hasMultipleImputation,
+    int imputationCount,
+    int activeImputationVersion,
+    const std::string &imputationDisplayMode,
     const std::string &imputationUncertaintyMode,
     const std::vector<SmoothCurveData> &smoothCurves = {});
 ScatterplotCreationDialogState BuildScatterplotCreationDialogState();

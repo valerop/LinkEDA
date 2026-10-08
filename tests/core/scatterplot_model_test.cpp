@@ -14,6 +14,8 @@ using rlispstat::core::BuildScatterplotCreationDialogState;
 using rlispstat::core::BuildScatterplotMenuState;
 using rlispstat::core::BuildScatterplotPointDrawInputs;
 using rlispstat::core::BuildScatterplotRenderPlan;
+using rlispstat::core::BuildScatterplotImputationPointSets;
+using rlispstat::core::BuildRegressionDiagnosticSmoothPointSets;
 using rlispstat::core::BuildSmoothCurveDrawItems;
 using rlispstat::core::CaseId;
 using rlispstat::core::DataColumn;
@@ -23,7 +25,9 @@ using rlispstat::core::FitSimpleLinearModel;
 using rlispstat::core::FitScatterplotLineForViewport;
 using rlispstat::core::NearestCaseToPoint;
 using rlispstat::core::Point;
+using rlispstat::core::PendingSmoothCurve;
 using rlispstat::core::Rect;
+using rlispstat::core::RegressionDiagnosticSupportsAddedLines;
 using rlispstat::core::ScatterplotCaseGeometry;
 using rlispstat::core::ScatterplotBrushMenuOptions;
 using rlispstat::core::ScatterplotChooseLabelColumnOption;
@@ -36,6 +40,7 @@ using rlispstat::core::ScatterplotReplacePredictorTitle;
 using rlispstat::core::ScatterplotSetActiveModelTitle;
 using rlispstat::core::ScatterplotImputationGlyph;
 using rlispstat::core::ScatterplotImputationGlyphForPoint;
+using rlispstat::core::ScatterplotPointImputationValues;
 using rlispstat::core::ScatterplotMouseModeMenuOptions;
 using rlispstat::core::ScatterplotPlotMenuOptions;
 using rlispstat::core::ScatterplotPointDrawInput;
@@ -52,12 +57,14 @@ using rlispstat::core::ScatterplotRenderPlan;
 using rlispstat::core::ScatterplotSelectionActionMenuOptions;
 using rlispstat::core::ScatterplotSelectionModeMenuOptions;
 using rlispstat::core::ScatterplotViewportIncludingImputations;
+using rlispstat::core::ScatterplotViewportIncludingPointImputations;
 using rlispstat::core::ScatterplotViewMenuOptions;
 using rlispstat::core::SelectCasesForGesture;
 using rlispstat::core::SelectCasesInBrush;
 using rlispstat::core::SimpleLinearFitResult;
 using rlispstat::core::SmoothCurveData;
 using rlispstat::core::SmoothCurveScope;
+using rlispstat::core::ToggleSmoothCurveScopePending;
 using rlispstat::core::ScatterplotSmoothCurveDrawItem;
 
 static bool closeEnough(double a, double b)
@@ -121,30 +128,31 @@ int main()
         std::map<CaseId, std::string>{{1, "Case 1"}, {3, "Case 3"}},
         "selected");
     assert(selectedDrawPlan.size() == 4);
-    assert(selectedDrawPlan[0].caseId == 1);
-    assert(selectedDrawPlan[0].selected);
-    assert(selectedDrawPlan[0].colorName == "black");
-    assert(!selectedDrawPlan[0].hasExplicitColor);
-    assert(selectedDrawPlan[0].fillAlpha == 1.0);
-    assert(selectedDrawPlan[0].strokeAlpha == 0.90);
-    assert(selectedDrawPlan[0].radius == 3.6);
-    assert(selectedDrawPlan[0].hasHalo);
-    assert(selectedDrawPlan[0].haloRadius == 6.0);
-    assert(selectedDrawPlan[0].showLabel);
-    assert(selectedDrawPlan[0].label == "Case 1");
-    assert(selectedDrawPlan[1].colorName == "orange");
-    assert(selectedDrawPlan[1].hasExplicitColor);
-    assert(selectedDrawPlan[1].fillAlpha == 0.35);
-    assert(selectedDrawPlan[1].strokeAlpha == 0.25);
-    assert(!selectedDrawPlan[1].hasHalo);
-    assert(selectedDrawPlan[2].hasImputationGlyph);
-    assert(selectedDrawPlan[2].colorName == "blue");
-    assert(closeEnough(selectedDrawPlan[2].labelAnchor.x, 31.0));
-    assert(closeEnough(selectedDrawPlan[2].labelAnchor.y, 30.0));
-    assert(!selectedDrawPlan[2].showLabel);
-    assert(selectedDrawPlan[3].caseId == 0);
-    assert(selectedDrawPlan[3].colorName.empty());
-    assert(selectedDrawPlan[3].fillAlpha == 0.22);
+    assert(selectedDrawPlan[0].caseId == 2);
+    assert(selectedDrawPlan[0].colorName == "orange");
+    assert(selectedDrawPlan[0].hasExplicitColor);
+    assert(selectedDrawPlan[0].fillAlpha == 0.35);
+    assert(selectedDrawPlan[0].strokeAlpha == 0.25);
+    assert(!selectedDrawPlan[0].hasHalo);
+    assert(selectedDrawPlan[1].hasImputationGlyph);
+    assert(selectedDrawPlan[1].colorName == "blue");
+    assert(closeEnough(selectedDrawPlan[1].labelAnchor.x, 31.0));
+    assert(closeEnough(selectedDrawPlan[1].labelAnchor.y, 30.0));
+    assert(!selectedDrawPlan[1].showLabel);
+    assert(selectedDrawPlan[2].caseId == 0);
+    assert(selectedDrawPlan[2].colorName.empty());
+    assert(selectedDrawPlan[2].fillAlpha == 0.22);
+    assert(selectedDrawPlan[3].caseId == 1);
+    assert(selectedDrawPlan[3].selected);
+    assert(selectedDrawPlan[3].colorName == "black");
+    assert(!selectedDrawPlan[3].hasExplicitColor);
+    assert(selectedDrawPlan[3].fillAlpha == 1.0);
+    assert(selectedDrawPlan[3].strokeAlpha == 0.90);
+    assert(selectedDrawPlan[3].radius == 3.0);
+    assert(selectedDrawPlan[3].hasHalo);
+    assert(selectedDrawPlan[3].haloRadius == 6.0);
+    assert(selectedDrawPlan[3].showLabel);
+    assert(selectedDrawPlan[3].label == "Case 1");
 
     std::vector<ScatterplotPointDrawItem> allLabelDrawPlan = BuildScatterplotPointDrawPlan(
         drawInputs,
@@ -272,6 +280,160 @@ int main()
     assert(imputedRenderPlan.points[1].showLabel);
     assert(imputedRenderPlan.points[1].label == "Case 2");
 
+    DataFrameModel manyImputations = imputed;
+    manyImputations.imputationCount = 50;
+    for (int version = 2; version < 50; ++version) {
+        manyImputations.columns[0].imputationValues.push_back(
+            version % 2 ? std::vector<std::string>{"18", "21"}
+                        : std::vector<std::string>{"18", "20"});
+        manyImputations.columns[1].imputationValues.push_back({"1", "2"});
+    }
+    ScatterplotRenderInput manyInput = imputedRenderInput;
+    manyInput.imputationDataFrame = &manyImputations;
+    manyInput.xColumn = &manyImputations.columns[0];
+    manyInput.yColumn = &manyImputations.columns[1];
+    manyInput.overlays = {ScatterplotOverlaySpec{"lm", "all", true}};
+    ScatterplotRenderPlan manyPlan = BuildScatterplotRenderPlan(manyInput);
+    assert(manyPlan.points.size() == 2 && manyPlan.points[1].selected);
+    assert(manyPlan.points[1].hasImputationGlyph);
+    assert(manyPlan.overlayLines.empty()); // Fitted lines come from R.
+    const auto manyHits = BuildScatterplotCaseGeometry(
+        manyInput.points, manyInput.viewport, manyInput.plotRect,
+        manyInput.imputationDataFrame, manyInput.xColumn, manyInput.yColumn,
+        manyInput.imputationUncertaintyMode);
+    assert(manyHits.size() == 2 && manyHits[1].hasGlyphRect);
+    assert(closeEnough(manyHits[1].glyphRect.x,
+                       manyPlan.points[1].imputationGlyph.rect.x));
+    const auto cachedDrawInputs = BuildScatterplotPointDrawInputs(
+        manyInput.points, manyInput.viewport, manyInput.plotRect,
+        manyInput.imputationDataFrame, manyInput.xColumn, manyInput.yColumn,
+        manyInput.imputationUncertaintyMode);
+    manyInput.precomputedPointDrawInputs = &cachedDrawInputs;
+    manyInput.selectedRows.clear();
+    const auto cachedPlan = BuildScatterplotRenderPlan(manyInput);
+    assert(cachedPlan.points.size() == manyPlan.points.size());
+    assert(!cachedPlan.points[1].selected && manyPlan.points[1].selected);
+    assert(cachedPlan.points[1].hasImputationGlyph);
+    assert(closeEnough(cachedPlan.points[1].imputationGlyph.rect.x,
+                       manyPlan.points[1].imputationGlyph.rect.x));
+
+    // Regression diagnostics use independently fitted per-imputation
+    // coordinates rather than worksheet columns. They must drive the same
+    // uncertainty glyph and viewport pipeline.
+    std::vector<ScatterplotPointImputationValues> diagnosticValues = {
+        {1, {{17.5, 0.8}, {18.5, 1.2}}},
+        {2, {{19.0, 1.5}, {21.0, 2.5}}}
+    };
+    auto diagnosticViewport = ScatterplotViewportIncludingPointImputations(
+        pointValues, diagnosticValues, "range");
+    assert(diagnosticViewport.has_value());
+    ScatterplotRenderInput diagnosticRenderInput = imputedRenderInput;
+    diagnosticRenderInput.imputationDataFrame = nullptr;
+    diagnosticRenderInput.xColumn = nullptr;
+    diagnosticRenderInput.yColumn = nullptr;
+    diagnosticRenderInput.pointImputationValues = &diagnosticValues;
+    diagnosticRenderInput.imputationUncertaintyMode = "range";
+    auto diagnosticRenderPlan = BuildScatterplotRenderPlan(diagnosticRenderInput);
+    assert(diagnosticRenderPlan.points.size() == 2);
+    assert(diagnosticRenderPlan.points[0].hasImputationGlyph);
+    assert(diagnosticRenderPlan.points[1].hasImputationGlyph);
+    assert(diagnosticRenderPlan.points[1].imputationGlyph.axisMask == 3);
+
+    // Derived regression-diagnostic axes are not worksheet columns.  Their
+    // per-imputation glyphs must nevertheless use the exact render geometry
+    // for linked brushing.
+    const auto diagnosticHitGeometry =
+        BuildScatterplotCaseGeometry(diagnosticRenderInput);
+    assert(diagnosticHitGeometry.size() == 2);
+    assert(diagnosticHitGeometry[0].caseId == 1);
+    assert(diagnosticHitGeometry[0].hasGlyphRect);
+    assert(diagnosticHitGeometry[1].caseId == 2);
+    assert(diagnosticHitGeometry[1].hasGlyphRect);
+    assert(SelectCasesInBrush(
+        diagnosticHitGeometry,
+        diagnosticHitGeometry[0].glyphRect,
+        0.0) == S({1}));
+
+    diagnosticRenderInput.distinguishDiagnosticImputationRows = true;
+    diagnosticRenderInput.directlyImputedModelRows = S({2});
+    diagnosticRenderPlan = BuildScatterplotRenderPlan(diagnosticRenderInput);
+    assert(diagnosticRenderPlan.points[0].hasExplicitColor);
+    assert(diagnosticRenderPlan.points[0].colorName == "black");
+    assert(diagnosticRenderPlan.points[1].hasExplicitColor);
+    assert(diagnosticRenderPlan.points[1].colorName == "red");
+
+    // A selected case remains the last painter layer even when an overlapping
+    // unselected diagnostic case carries the red direct-imputation encoding.
+    diagnosticRenderInput.directlyImputedModelRows = S({1});
+    diagnosticRenderPlan = BuildScatterplotRenderPlan(diagnosticRenderInput);
+    assert(diagnosticRenderPlan.points[0].caseId == 1);
+    assert(diagnosticRenderPlan.points[0].colorName == "red");
+    assert(!diagnosticRenderPlan.points[0].selected);
+    assert(diagnosticRenderPlan.points[1].caseId == 2);
+    assert(diagnosticRenderPlan.points[1].colorName == "black");
+    assert(diagnosticRenderPlan.points[1].selected);
+
+    const auto diagnosticPointSets =
+        BuildScatterplotImputationPointSets(diagnosticRenderInput);
+    assert(diagnosticPointSets.size() == 2);
+    assert(diagnosticPointSets[0].imputationIndex == 1);
+    assert(diagnosticPointSets[0].points.size() == 2);
+    assert(closeEnough(diagnosticPointSets[1].points[0].x, 18.5));
+
+    // Point filtering (for example, showing only direct-imputation glyphs)
+    // must not filter the complete point clouds used by overlays/smoothers.
+    std::vector<ScatterplotPointImputationValues> directDiagnosticValues = {
+        diagnosticValues[1]
+    };
+    diagnosticRenderInput.pointImputationValues = &directDiagnosticValues;
+    diagnosticRenderInput.completeImputationPointValues = &diagnosticValues;
+    const auto completeDiagnosticPointSets =
+        BuildScatterplotImputationPointSets(diagnosticRenderInput);
+    assert(completeDiagnosticPointSets.size() == 2);
+    assert(completeDiagnosticPointSets[0].points.size() == 2);
+    diagnosticRenderInput.completeImputationPointValues = nullptr;
+    diagnosticRenderInput.pointImputationValues = &diagnosticValues;
+
+    // Diagnostic line requests must send the exact derived coordinates to R,
+    // even when only one imputation is displayed. The axis captions are not
+    // worksheet-column names and cannot be used to reconstruct these points.
+    rlispstat::core::PlotModel diagnosticModel;
+    diagnosticModel.kind = "scatter";
+    diagnosticModel.isGLMDiagnostic = true;
+    diagnosticModel.glmDiagnosticKind = "residuals_fitted";
+    diagnosticModel.diagnosticImputationIndex = 7;
+    diagnosticModel.points = {
+        {4.0, -0.5, 1},
+        {5.0, 0.75, 2}
+    };
+    assert(RegressionDiagnosticSupportsAddedLines(diagnosticModel));
+    auto diagnosticSmoothSets =
+        BuildRegressionDiagnosticSmoothPointSets(diagnosticModel);
+    assert(diagnosticSmoothSets.size() == 1);
+    assert(diagnosticSmoothSets[0].imputationIndex == 7);
+    assert(diagnosticSmoothSets[0].points.size() == 2);
+    assert(closeEnough(diagnosticSmoothSets[0].points[1].x, 5.0));
+    assert(closeEnough(diagnosticSmoothSets[0].points[1].y, 0.75));
+
+    diagnosticModel.diagnosticShowImputationUncertainty = true;
+    diagnosticModel.diagnosticAllImputationValues = diagnosticValues;
+    diagnosticSmoothSets =
+        BuildRegressionDiagnosticSmoothPointSets(diagnosticModel);
+    assert(diagnosticSmoothSets.size() == 2);
+    assert(diagnosticSmoothSets[0].imputationIndex == 1);
+    assert(diagnosticSmoothSets[1].imputationIndex == 2);
+    assert(closeEnough(diagnosticSmoothSets[1].points[0].x, 18.5));
+
+    diagnosticModel.glmDiagnosticKind = "roc_curve";
+    assert(!RegressionDiagnosticSupportsAddedLines(diagnosticModel));
+    assert(BuildRegressionDiagnosticSmoothPointSets(diagnosticModel).empty());
+    diagnosticModel.glmDiagnosticKind = "residuals_fitted";
+    diagnosticModel.kind = "histogram";
+    assert(!RegressionDiagnosticSupportsAddedLines(diagnosticModel));
+    diagnosticModel.kind = "scatter";
+    diagnosticModel.isGLMDiagnostic = false;
+    assert(!RegressionDiagnosticSupportsAddedLines(diagnosticModel));
+
     DataFrameModel active = imputed;
     active.imputationDisplayMode = "version";
     assert(!ScatterplotViewportIncludingImputations(active, active.columns[0], active.columns[1], pointValues, "central80").has_value());
@@ -382,18 +544,27 @@ int main()
         "case_label",
         "selected",
         visibleOverlays,
-        true,
+        5,
+        3,
+        "all",
         "iqr");
     assert(menuState.variables.xOptions.size() == 3);
     assert(menuState.variables.xOptions[1].checked);
     assert(menuState.variables.xOptions[1].command == "CHANGE_X_VARIABLE|wt");
     assert(menuState.variables.yOptions[0].checked);
     assert(menuState.variables.openVariablesWindow.command == "OPEN_VARIABLES_WINDOW|cars");
-    assert(menuState.mouseModeOptions.back().command == "SET_MODE_ZOOM");
+    assert(menuState.mouseModeOptions.empty());
     assert(menuState.selectionModeOptions[2].command == "SET_SELECTION_SUBTRACT");
     assert(menuState.selectionActionOptions[1].command == "INVERT_SELECTION");
-    assert(menuState.brushOptions[0].command == "SET_MODE_BRUSH");
-    assert(menuState.viewOptions[0].command == "RESET_ZOOM");
+    assert(menuState.brushOptions.empty());
+    assert(menuState.viewOptions.empty());
+    assert(menuState.showImputationDisplayOptions);
+    assert(menuState.imputationDisplayTitle == "Imputations: All (m = 5)");
+    assert(menuState.imputationDisplayOptions.size() == 7);
+    assert(menuState.imputationDisplayOptions[2].title == "Imputation 3 of 5");
+    assert(!menuState.imputationDisplayOptions[2].checked);
+    assert(menuState.imputationDisplayOptions[5].checked);
+    assert(menuState.imputationDisplayOptions[5].command == "SET_IMPUTATION_DISPLAY|all");
     assert(menuState.showImputationUncertaintyOptions);
     assert(menuState.imputationUncertaintyOptions.size() == 4);
     assert(menuState.imputationUncertaintyOptions[1].checked);
@@ -404,19 +575,20 @@ int main()
     assert(menuState.overlayOptions[2].checked);
     assert(!menuState.overlayOptions[3].checked);
     assert(menuState.clearOverlays.command == "CLEAR_OVERLAYS");
-    assert(menuState.analysisOptions[0].title == "Correlation: mpg with wt");
-    assert(menuState.analysisOptions[1].title == "Linear model: mpg ~ wt");
+    assert(menuState.clearOverlays.title == "Remove all regression lines");
+    // Adaptive analysis options are now built from PlotAnalysisContext rather
+    // than duplicated in the scatterplot display-menu state.
     assert(menuState.plotOptions[2].command == "PLOT_NEW_TIME_SERIES");
     assert(menuState.plotOptions[4].command == "PLOT_NEW_PARALLEL_COORDINATES");
     assert(menuState.plotOptions[7].command == "PLOT_NEW_LINKED_BAR_CHART");
     assert(menuState.closePlot.command == "CLOSE_PLOT");
-    assert(ScatterplotMouseModeMenuOptions(false).size() == 5);
-    assert(ScatterplotMouseModeMenuOptions(true).back().command == "SET_MODE_ZOOM");
+    assert(ScatterplotMouseModeMenuOptions(false).empty());
+    assert(ScatterplotMouseModeMenuOptions(true).empty());
     assert(ScatterplotSelectionModeMenuOptions().front().command == "SET_SELECTION_REPLACE");
     assert(ScatterplotSelectionActionMenuOptions().front().title == "Clear selection");
     assert(ScatterplotSelectionActionMenuOptions().back().command == "SELECT_ALL_VISIBLE");
-    assert(ScatterplotBrushMenuOptions()[1].command == "BRUSH_LARGER");
-    assert(ScatterplotViewMenuOptions()[1].command == "RESCALE");
+    assert(ScatterplotBrushMenuOptions().empty());
+    assert(ScatterplotViewMenuOptions().empty());
     assert(ScatterplotChooseLabelColumnOption("").title == "Choose label column...");
     assert(ScatterplotChooseLabelColumnOption("id").title == "Label column: id");
     assert(ScatterplotLabelDisplayMenuOptions("all")[2].checked);
@@ -436,19 +608,52 @@ int main()
         ScatterplotOverlaySpec{"lm", "selected", true}
     };
     renderInput.selectedColorName = "purple";
+    SmoothCurveData rOverall;
+    rOverall.scope = SmoothCurveScope::Overall;
+    rOverall.fitMethod = "lm";
+    rOverall.groupId = ".";
+    rOverall.x = {0.0, 5.0};
+    rOverall.y = {1.0, 11.0};
+    rOverall.ok = true;
+    SmoothCurveData rSelected = rOverall;
+    rSelected.scope = SmoothCurveScope::Selection;
+    rSelected.y = {2.0, 10.0};
+    renderInput.smoothCurves = {rOverall, rSelected};
     ScatterplotRenderPlan renderPlan = BuildScatterplotRenderPlan(renderInput);
     assert(renderPlan.points.size() == 6);
-    assert(renderPlan.points[1].selected);
-    assert(renderPlan.points[1].showLabel);
-    assert(closeEnough(renderPlan.points[1].point.x, 100.0));
-    assert(closeEnough(renderPlan.points[1].point.y, 225.0));
-    assert(renderPlan.overlayLines.size() == 2);
-    assert(closeEnough(renderPlan.overlayLines[0].start.x, 0.0));
-    assert(closeEnough(renderPlan.overlayLines[0].start.y, 275.0));
-    assert(closeEnough(renderPlan.overlayLines[0].end.x, 500.0));
-    assert(closeEnough(renderPlan.overlayLines[0].end.y, 25.0));
-    assert(renderPlan.overlayLines[1].colorName == "purple");
-    assert(renderPlan.overlayLines[1].dashed);
+    assert(!renderPlan.points[0].selected);
+    assert(!renderPlan.points[1].selected);
+    assert(!renderPlan.points[2].selected);
+    assert(renderPlan.points[3].selected);
+    assert(renderPlan.points[3].showLabel);
+    assert(closeEnough(renderPlan.points[3].point.x, 100.0));
+    assert(closeEnough(renderPlan.points[3].point.y, 225.0));
+    assert(renderPlan.overlayLines.empty());
+    assert(renderPlan.smoothCurves.size() == 2);
+    assert(!renderPlan.smoothCurves[0].dashed);
+    assert(renderPlan.smoothCurves[1].dashed);
+
+    // In the all-imputations display the R task returns one fitted curve per
+    // completed point cloud; native code does not refit those observations.
+    ScatterplotRenderInput miOverlayInput = renderInput;
+    miOverlayInput.overlays = {ScatterplotOverlaySpec{"lm", "all", true}};
+    miOverlayInput.pointImputationValues = &diagnosticValues;
+    miOverlayInput.points = pointValues;
+    miOverlayInput.viewport = DataViewport{17.0, 22.0, 0.0, 3.0};
+    SmoothCurveData rImputation1 = rOverall;
+    rImputation1.groupId = std::string(".") + "\x1f" "mi:1";
+    rImputation1.x = {18.0, 21.0};
+    rImputation1.y = {1.0, 2.0};
+    SmoothCurveData rImputation2 = rOverall;
+    rImputation2.groupId = std::string(".") + "\x1f" "mi:2";
+    rImputation2.x = {18.0, 21.0};
+    rImputation2.y = {1.2, 2.2};
+    miOverlayInput.smoothCurves = {rImputation1, rImputation2};
+    ScatterplotRenderPlan miOverlayPlan = BuildScatterplotRenderPlan(miOverlayInput);
+    assert(miOverlayPlan.overlayLines.empty());
+    assert(miOverlayPlan.smoothCurves.size() == 2);
+    assert(miOverlayPlan.smoothCurves[0].alpha <= 0.52);
+    assert(miOverlayPlan.smoothCurves[1].alpha <= 0.52);
 
     SimpleLinearFitResult tooFew = FitSimpleLinearModel(fitPoints, S({1}), "selected", 4);
     assert(!tooFew.ok);
@@ -533,6 +738,26 @@ int main()
         assert(items[2].colorName == "blue");
     }
 
+    // Per-imputation suffixes retain the intended visual group while making
+    // the curve bundle lighter than a single fitted smooth.
+    {
+        SmoothCurveData c;
+        c.scope = SmoothCurveScope::ColorGroup;
+        c.groupId = std::string("red") + "\x1f" "mi:2";
+        c.ok = true;
+        c.x = {2.0, 4.0, 6.0};
+        c.y = {3.0, 5.0, 7.0};
+        curves.push_back(c);
+    }
+    {
+        std::vector<ScatterplotSmoothCurveDrawItem> items =
+            BuildSmoothCurveDrawItems(curves, kViewport, kPlotRect);
+        assert(items.size() == 4);
+        assert(items[3].colorName == "red");
+        assert(items[3].alpha <= 0.52);
+        assert(items[3].lineWidth <= 1.75);
+    }
+
     // curve with ok=false is skipped
     {
         SmoothCurveData c;
@@ -544,7 +769,7 @@ int main()
     }
     {
         std::vector<ScatterplotSmoothCurveDrawItem> items = BuildSmoothCurveDrawItems(curves, kViewport, kPlotRect);
-        assert(items.size() == 3);
+        assert(items.size() == 4);
     }
 
     // curve with non-finite values is skipped
@@ -558,7 +783,7 @@ int main()
     }
     {
         std::vector<ScatterplotSmoothCurveDrawItem> items = BuildSmoothCurveDrawItems(curves, kViewport, kPlotRect);
-        assert(items.size() == 3);
+        assert(items.size() == 4);
     }
 
     // curve with only 1 point is skipped
@@ -572,7 +797,7 @@ int main()
     }
     {
         std::vector<ScatterplotSmoothCurveDrawItem> items = BuildSmoothCurveDrawItems(curves, kViewport, kPlotRect);
-        assert(items.size() == 3);
+        assert(items.size() == 4);
     }
 
     // mismatched x/y sizes skipped
@@ -586,13 +811,80 @@ int main()
     }
     {
         std::vector<ScatterplotSmoothCurveDrawItem> items = BuildSmoothCurveDrawItems(curves, kViewport, kPlotRect);
-        assert(items.size() == 3);
+        assert(items.size() == 4);
     }
 
     // invalid viewport returns empty
     {
         std::vector<ScatterplotSmoothCurveDrawItem> items = BuildSmoothCurveDrawItems(curves, DataViewport{0, 0, 0, 10}, kPlotRect);
         assert(items.empty());
+    }
+
+    // curves are clipped to the plot rectangle instead of drawing through margins
+    {
+        SmoothCurveData c;
+        c.scope = SmoothCurveScope::Overall;
+        c.groupId = ".";
+        c.ok = true;
+        c.x = {-2.0, 5.0, 12.0};
+        c.y = {12.0, 5.0, -2.0};
+        auto items = BuildSmoothCurveDrawItems({c}, kViewport, kPlotRect);
+        assert(!items.empty());
+        for (auto const& item : items)
+            for (auto const& point : item.points) {
+                assert(point.x >= kPlotRect.x - 1e-6);
+                assert(point.x <= kPlotRect.x + kPlotRect.width + 1e-6);
+                assert(point.y >= kPlotRect.y - 1e-6);
+                assert(point.y <= kPlotRect.y + kPlotRect.height + 1e-6);
+            }
+    }
+
+    // Confidence bands are optional, use the R-returned limits, and remain
+    // absent by default.
+    {
+        SmoothCurveData c;
+        c.scope = SmoothCurveScope::Overall;
+        c.groupId = ".";
+        c.fitMethod = "lm";
+        c.ok = true;
+        c.x = {1.0, 5.0, 9.0};
+        c.y = {2.0, 5.0, 8.0};
+        c.confidenceLower = {1.0, 4.0, 7.0};
+        c.confidenceUpper = {3.0, 6.0, 9.0};
+        const auto hidden = BuildSmoothCurveDrawItems(
+            {c}, kViewport, kPlotRect, false);
+        assert(hidden.size() == 1);
+        assert(hidden.front().confidencePolygon.empty());
+        const auto shown = BuildSmoothCurveDrawItems(
+            {c}, kViewport, kPlotRect, true);
+        assert(shown.size() == 1);
+        assert(shown.front().confidencePolygon.size() == 6);
+        assert(shown.front().confidenceAlpha > 0.0);
+    }
+
+    // Linear and smoothed confidence intervals are independently visible.
+    {
+        SmoothCurveData linear;
+        linear.scope = SmoothCurveScope::Overall;
+        linear.groupId = ".";
+        linear.fitMethod = "lm";
+        linear.ok = true;
+        linear.x = {1.0, 5.0, 9.0};
+        linear.y = {2.0, 5.0, 8.0};
+        linear.confidenceLower = {1.0, 4.0, 7.0};
+        linear.confidenceUpper = {3.0, 6.0, 9.0};
+        SmoothCurveData smooth = linear;
+        smooth.fitMethod = "loess";
+        const auto linearOnly = BuildSmoothCurveDrawItems(
+            {linear, smooth}, kViewport, kPlotRect, true, false);
+        assert(linearOnly.size() == 2);
+        assert(!linearOnly[0].confidencePolygon.empty());
+        assert(linearOnly[1].confidencePolygon.empty());
+        const auto smoothOnly = BuildSmoothCurveDrawItems(
+            {linear, smooth}, kViewport, kPlotRect, false, true);
+        assert(smoothOnly.size() == 2);
+        assert(smoothOnly[0].confidencePolygon.empty());
+        assert(!smoothOnly[1].confidencePolygon.empty());
     }
 
     // SmoothCurveScope enum values
@@ -606,7 +898,7 @@ int main()
         testCurves.push_back(SmoothCurveData{SmoothCurveScope::Overall, "", {}, {}, true, ""});
         std::vector<ScatterplotOverlaySpec> emptyOverlays;
         ScatterplotMenuState menu = BuildScatterplotMenuState({}, "x", "y", "g", "", "none", emptyOverlays,
-                                                              false, "central80", testCurves);
+                                                              0, 1, "version", "central80", testCurves);
         assert(menu.smoothOptions.size() == 3);
         assert(menu.smoothOptions[0].value == "overall");
         assert(menu.smoothOptions[0].checked == true);
@@ -615,9 +907,84 @@ int main()
 
         testCurves.push_back(SmoothCurveData{SmoothCurveScope::Selection, ".", {}, {}, false, "needed"});
         ScatterplotMenuState pendingMenu = BuildScatterplotMenuState({}, "x", "y", "g", "", "none", emptyOverlays,
-                                                                     false, "central80", testCurves);
+                                                                     0, 1, "version", "central80", testCurves);
         assert(pendingMenu.smoothOptions[1].checked == true);
     }
+
+    // A fitted straight line must not make the LOESS command look enabled.
+    {
+        const std::vector<ScatterplotOverlaySpec> straight = {
+            {"lm", "all", true}
+        };
+        std::vector<SmoothCurveData> curves = {
+            PendingSmoothCurve(SmoothCurveScope::Overall, "lm")
+        };
+        auto menu = BuildScatterplotMenuState({}, "x", "y", "g", "", "none",
+            straight, 0, 1, "version", "", curves);
+        assert(menu.overlayOptions[0].checked);
+        assert(!menu.smoothOptions[0].checked);
+
+        curves.push_back(PendingSmoothCurve(SmoothCurveScope::Overall));
+        menu = BuildScatterplotMenuState({}, "x", "y", "g", "", "none",
+            straight, 0, 1, "version", "", curves);
+        assert(menu.overlayOptions[0].checked);
+        assert(menu.smoothOptions[0].checked);
+
+        ToggleSmoothCurveScopePending(curves, SmoothCurveScope::Overall);
+        menu = BuildScatterplotMenuState({}, "x", "y", "g", "", "none",
+            straight, 0, 1, "version", "", curves);
+        assert(menu.overlayOptions[0].checked);
+        assert(!menu.smoothOptions[0].checked);
+    }
+
+    // A selected MI version is explicit in the parent title and check mark;
+    // joint uncertainty choices only make sense in the all-imputation view.
+    {
+        std::vector<ScatterplotOverlaySpec> emptyOverlays;
+        ScatterplotMenuState versionMenu = BuildScatterplotMenuState(
+            {}, "x", "y", "g", "", "none", emptyOverlays,
+            5, 4, "version", "central80");
+        assert(versionMenu.showImputationDisplayOptions);
+        assert(versionMenu.imputationDisplayTitle == "Imputation: 4 of 5");
+        assert(versionMenu.imputationDisplayOptions.size() == 7);
+        assert(versionMenu.imputationDisplayOptions[3].checked);
+        assert(versionMenu.imputationDisplayOptions[3].value == "version:4");
+        assert(!versionMenu.showImputationUncertaintyOptions);
+        assert(versionMenu.imputationUncertaintyOptions.empty());
+
+        ScatterplotMenuState originalMenu = BuildScatterplotMenuState(
+            {}, "x", "y", "g", "", "none", emptyOverlays,
+            5, 4, "original", "sd");
+        assert(originalMenu.imputationDisplayTitle == "Imputations: Original data");
+        assert(originalMenu.imputationDisplayOptions.back().checked);
+        assert(!originalMenu.showImputationUncertaintyOptions);
+    }
+    }
+
+    {
+        using namespace rlispstat::core;
+        const auto counts = ScatterplotVisualOverlapCounts({{0,0},{1e-8,0},{5,0},{20,20},{NAN,0}});
+        assert((counts == std::vector<std::size_t>{3,3,3,1,1}));
+        // Dense stacks are processed once per occupied pixel cell.
+        std::vector<Point> dense(100000, Point{50,50});
+        const auto denseCounts = ScatterplotVisualOverlapCounts(dense);
+        assert(denseCounts.front()==100000 && denseCounts.back()==100000);
+        ScatterplotRenderInput input;
+        input.points = {{1,0,0},{2,1e-8,0},{3,.04,0},{4,1,1}};
+        input.viewport = {-1,2,-1,2}; input.plotRect = {0,0,300,300};
+        input.sizeByOverlap = true; input.sizeByVisualOverlap = true;
+        input.selectedRows = {2}; input.labelDisplayMode="selected"; input.rowLabels={{2,"Case two"}};
+        auto plan=BuildScatterplotRenderPlan(input);
+        for (const auto &point : plan.points) {
+            assert(std::abs(point.radius - (point.caseId==4 ? 3.0 : 3.0*std::sqrt(3.0))) < 1e-8);
+            if (point.caseId==2) assert(point.selected && point.showLabel && point.label=="Case two");
+        }
+        input.sizeByOverlap=false; plan=BuildScatterplotRenderPlan(input);
+        for (const auto &point : plan.points) assert(point.radius==3.0);
+        input.sizeByOverlap=true; input.viewport={-.01,.05,-.01,.05};
+        plan=BuildScatterplotRenderPlan(input);
+        for (const auto &point : plan.points)
+            if(point.caseId==3) assert(point.radius==3.0); // Zoom separates the visible overlap.
     }
 
     std::fprintf(stderr, "All scatterplot model tests PASSED\n");

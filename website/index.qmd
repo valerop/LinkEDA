@@ -12,10 +12,10 @@ title-block: false
 
 # See a case once. Follow it everywhere.
 
-LinkEDA is a native macOS application for exploratory data analysis. Data sheets, interactive plots and statistical analyses remain connected while R performs the statistical computation.
+LinkEDA is a native desktop application for exploratory data analysis. Data sheets, interactive plots and statistical analyses remain connected while R performs the statistical computation. Experimental installers are available for Apple Silicon macOS and 64 bit Windows.
 
 ::: {.hero-actions}
-[Download the experimental build](getting-started.qmd#download){.button .button-primary}
+[Download LinkEDA](getting-started.qmd#download){.button .button-primary}
 [Explore the plots](plots.qmd){.button .button-quiet}
 :::
 
@@ -28,7 +28,7 @@ LinkEDA is a native macOS application for exploratory data analysis. Data sheets
 :::::
 
 ::: {.experimental-banner}
-**Experimental preview.** LinkEDA is under active development. Its interface, analyses, file formats and R integration may change substantially in future versions. Do not rely on the current build for unattended or production-critical work.
+**Experimental releases.** The macOS build contains LinkEDA `0.0.120`; the Windows release `v0.0.113R` contains LinkEDA `0.0.113`. The interface, analyses, file formats and R integration may change in future versions. Keep copies of important data and verify consequential analyses from the exported R recipe.
 :::
 
 ::: {.section-intro}
@@ -56,7 +56,8 @@ Select or brush observations in a plot. Other linked views update using the shar
 <p class="card-index">03</p>
 ### Analyse
 
-Move from descriptive summaries and tests to regression, generalized and mixed models. Statistical fitting is delegated to R.
+Move from descriptive summaries and tests to linear, binary, count,
+positive-continuous and proportion models. Statistical fitting is delegated to R.
 :::
 ::::
 
@@ -93,5 +94,5 @@ Plot menus expose selection, analysis, export and display actions in context. Va
 ::: {.project-credit}
 ### Project
 
-LinkEDA is authored by **Pedro Valero-Mora** at the **Universitat de València**. The public interface is called LinkEDA; some source-code and repository identifiers retain earlier technical names for compatibility.
+LinkEDA is authored by **Pedro Valero-Mora** at the **Universitat de València**. The public interface, package and source repository are called LinkEDA.
 :::

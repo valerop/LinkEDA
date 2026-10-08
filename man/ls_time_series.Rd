@@ -7,12 +7,12 @@
 \usage{
 ls_time_series(data, time, value, series = NULL, group = NULL, title = NULL,
   identification = c("legend", "start_labels", "none"),
-  legend_position = c("top_right", "top_left", "bottom_right", "bottom_left"))
+  legend_position = c("top_right", "top_left", "bottom_right", "bottom_left", "left", "right", "top", "bottom"))
 
 ls_new_time_series(group = NULL, time = NULL, value = NULL,
   series = NULL, title = NULL, linked = TRUE,
   identification = c("legend", "start_labels", "none"),
-  legend_position = c("top_right", "top_left", "bottom_right", "bottom_left"))
+  legend_position = c("top_right", "top_left", "bottom_right", "bottom_left", "left", "right", "top", "bottom"))
 
 ls_time_series_group(plot, series = NULL)
 

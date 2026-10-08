@@ -255,78 +255,11 @@ double ChiSquareUpperTail(double chisq, double df)
     return RegularizedGammaQ(df / 2.0, chisq / 2.0);
 }
 
-PooledCorrelationScalar PoolCorrelationOnFisherZ(const std::vector<double> &rByImputation,
-                                                 const std::vector<int> &nByImputation)
-{
-    PooledCorrelationScalar out;
-    std::vector<double> z;
-    std::vector<double> u;
-    for (std::size_t i = 0; i < rByImputation.size() && i < nByImputation.size(); ++i) {
-        double r = rByImputation[i];
-        int n = nByImputation[i];
-        if (!std::isfinite(r) || n <= 3) continue;
-        r = std::max(-0.999999, std::min(0.999999, r));
-        z.push_back(std::atanh(r));
-        u.push_back(1.0 / (static_cast<double>(n) - 3.0));
-    }
-    std::size_t m = z.size();
-    if (m == 0) return out;
-
-    double qbar = 0.0, ubar = 0.0;
-    for (std::size_t i = 0; i < m; ++i) {
-        qbar += z[i];
-        ubar += u[i];
-    }
-    qbar /= static_cast<double>(m);
-    ubar /= static_cast<double>(m);
-
-    double b = 0.0;
-    if (m > 1) {
-        for (double value : z) {
-            double d = value - qbar;
-            b += d * d;
-        }
-        b /= static_cast<double>(m - 1);
-    }
-    double total = ubar + (1.0 + 1.0 / static_cast<double>(m)) * b;
-    if (!(total >= 0.0) || !std::isfinite(total)) return out;
-    double se = std::sqrt(total);
-    double riv = 0.0;
-    if (std::isfinite(ubar) && ubar > 0.0) {
-        riv = ((1.0 + 1.0 / static_cast<double>(m)) * b) / ubar;
-    } else if (b > 0.0) {
-        riv = INFINITY;
-    }
-    double df = INFINITY;
-    if (m > 1 && std::isfinite(riv) && riv > 0.0) {
-        df = (static_cast<double>(m) - 1.0) * std::pow(1.0 + 1.0 / riv, 2.0);
-    }
-    double statistic = (std::isfinite(se) && se > 0.0) ? qbar / se : NAN;
-    double p = NAN;
-    if (std::isfinite(statistic)) {
-        p = std::isfinite(df) ? FDistributionUpperTail(statistic * statistic, 1.0, df)
-                              : NormalTwoSidedP(statistic);
-    }
-    double lambda = (std::isfinite(total) && total > 0.0)
-        ? ((1.0 + 1.0 / static_cast<double>(m)) * b) / total
-        : NAN;
-    double fmi = (std::isfinite(riv) && std::isfinite(df))
-        ? (riv + 2.0 / (df + 3.0)) / (riv + 1.0)
-        : lambda;
-    out.valid = true;
-    out.qbar = qbar;
-    out.se = se;
-    out.df = df;
-    out.p = p;
-    out.fmi = fmi;
-    return out;
-}
-
 std::string CompareMeansTitle(const std::string &testType)
 {
-    if (testType == "one_sample_t") return "One-Sample t Test";
-    if (testType == "independent_t") return "Independent-Samples t Test";
-    if (testType == "paired_t") return "Paired-Samples t Test";
+    if (testType == "one_sample_t") return "One-Sample Tests";
+    if (testType == "independent_t") return "Two-Sample Tests";
+    if (testType == "paired_t") return "Paired-Samples Tests";
     if (testType == "oneway_anova") return "One-Way ANOVA";
     return "Compare Means";
 }
@@ -378,12 +311,12 @@ std::string PairedTNeedTwoNumericStatus()
 
 std::string OneWayAnovaNeedFactorStatus()
 {
-    return "Need one numeric and one factor variable.";
+    return "Need one continuous and one categorical variable.";
 }
 
 std::string RegressionModelComparisonTitle()
 {
-    return "Regression Model Comparison";
+    return "Compare Linear Models";
 }
 
 std::string MissingDataFieldLabel()
@@ -408,17 +341,17 @@ std::string CompareMeansWindowTitle()
 
 std::string OneSampleTTestWindowTitle()
 {
-    return "One-Sample t Test";
+    return "One-Sample Tests";
 }
 
 std::string IndependentSamplesTTestWindowTitle()
 {
-    return "Independent-Samples t Test";
+    return "Two-Sample Tests";
 }
 
 std::string PairedSamplesTTestWindowTitle()
 {
-    return "Paired-Samples t Test";
+    return "Paired-Samples Tests";
 }
 
 std::string OneWayANOVAWindowTitle()

@@ -1,0 +1,16 @@
+# Rscript tests/native/dendrogram_r_fixture.R /path/to/result.txt
+args <- commandArgs(TRUE); stopifnot(length(args)==1L)
+library(LinkEDA)
+input <- data.frame(a=c(1,4,7,9),b=c(7,2,4,1))
+ls_register_dataset("cluster-smoke",input)
+request <- c("DENDROGRAM_NEEDED","cluster-smoke-tree","cluster-smoke","1","1","1",
+             "all","euclidean","average","pairwise","2","a","b","0")
+ns <- asNamespace("LinkEDA"); original <- get(".rls_send",ns)
+unlockBinding(".rls_send",ns)
+assign(".rls_send",function(lines,...) {writeLines(lines,args[1]); "OK"},ns)
+lockBinding(".rls_send",ns)
+result <- LinkEDA:::.rls_handle_dendrogram_needed(request)
+unlockBinding(".rls_send",ns);assign(".rls_send",original,ns);lockBinding(".rls_send",ns)
+reference <- stats::hclust(stats::dist(base::scale(input)),method="average")
+stopifnot(identical(result$merge,reference$merge), identical(result$height,reference$height))
+cat("Public-R fixture verified against scale/dist/hclust.\n")

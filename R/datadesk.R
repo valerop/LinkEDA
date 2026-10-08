@@ -129,14 +129,16 @@ ls_model_add_term <- function(model, variable) {
 #' Set model scope
 #'
 #' @param model An `rlispstat_model` object or group name.
-#' @param scope One of `"all"`, `"selected"`, `"unselected"`, or
-#'   `"compare_selected_all"`.
+#' @param scope One of `"all"`, `"selected"`, or `"unselected"`.
 #' @return Invisibly returns the selected scope.
 #' @export
-ls_model_scope <- function(model, scope = c("all", "selected", "unselected", "compare_selected_all")) {
+ls_model_scope <- function(model, scope = c("all", "selected", "unselected")) {
   group <- .rls_model_group(model)
   scope <- match.arg(scope)
-  .rls_send(c("MODEL_SCOPE", group, scope))
+  # Legacy API now explicitly changes the dataset's global scope.
+  if(scope=="all") ls_use_all_observations(group) else if(scope=="selected")
+    ls_use_selected_as_analysis_scope(group) else
+    .rls_send(c("SET_ANALYSIS_SCOPE_UNSELECTED",group))
   invisible(scope)
 }
 
@@ -200,8 +202,7 @@ ls_model_open_observed_fitted <- function(model) {
 #' @param color Optional color/grouping variable name. Stored for future
 #'   DataDesk-style color mapping; not applied by the current native backend.
 #' @param openDiagnostics Logical. If `TRUE`, opens residuals vs fitted.
-#' @param scope Model scope: `"all"`, `"selected"`, `"unselected"`, or
-#'   `"compare_selected_all"`.
+#' @param scope Model scope: `"all"`, `"selected"`, or `"unselected"`.
 #' @return Invisibly returns a list with the plot and model handles.
 #' @export
 ls_workbench <- function(data,
@@ -211,7 +212,7 @@ ls_workbench <- function(data,
                          labels = NULL,
                          color = NULL,
                          openDiagnostics = FALSE,
-                         scope = c("all", "selected", "unselected", "compare_selected_all")) {
+                         scope = c("all", "selected", "unselected")) {
   if (!is.data.frame(data)) {
     stop("`data` must be a data.frame.", call. = FALSE)
   }

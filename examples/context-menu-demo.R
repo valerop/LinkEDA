@@ -5,4 +5,4 @@ p <- ls_scatter(mtcars, "wt", "mpg", group = "cars",
                 title = "Context menu demo")
 
 message("Right-click or two-finger-click inside the native plot window.")
-message("Use the context menu for modes, selection actions, reset, export, and close.")
+message("Use the context menu for modes, selection actions, export, and close.")

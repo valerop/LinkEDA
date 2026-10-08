@@ -177,6 +177,7 @@ ls_new_histogram <- function(group = NULL, x = NULL, bins = NULL,
   if (is.null(title) && identical(record$dataset_type %||% "data_frame", "multiple_imputation")) {
     title <- paste("Histogram of", x, .rls_mi_title_suffix(record))
   }
+  .rls_mi_warn_current_version(record, "Histogram")
   ls_histogram(data, x = x, group = record$group, bins = bins, binwidth = binwidth,
                breaks = breaks, title = title, linked = linked,
                show_counts = show_counts, show_points = show_points)

@@ -34,6 +34,7 @@ struct CorrelationMatrixState {
     bool showP = true;
     bool showPValue = false;
     bool showN = false;
+    std::string displayPart = "full";
     bool precomputed = false;
     bool multipleImputation = false;
     int imputationCount = 0;
@@ -43,9 +44,20 @@ struct CorrelationMatrixState {
     int selectedRow = -1;
     int selectedCol = -1;
     int modelVersion = 0;
+    std::uint64_t requestRevision = 0, sourceDataVersion = 0;
+    bool rFitPending = false;
     PlotModel seed;
     bool hasSeed = false;
+    AnalysisProvenance provenance;
 };
+
+struct CorrelationContextOption {
+    std::string section, title, command, value;
+    bool checked = false, enabled = true;
+};
+std::vector<CorrelationContextOption> CorrelationContextOptions(const CorrelationMatrixState &state);
+bool CorrelationCellIsVisible(const std::string &displayPart, int row, int column);
+std::string CorrelationDisplayedCellText(const CorrelationMatrixState &state, int row, int column);
 
 struct CorrelationSize {
     double width = 720.0;
@@ -64,6 +76,8 @@ struct CorrelationWindowLayout {
     Rect showPButtonRect;
     Rect showPValueButtonRect;
     Rect showNButtonRect;
+    Rect scopeLabelRect;
+    Rect scopePopupRect;
     Rect scrollViewRect;
     Rect statusRect;
 };
@@ -129,6 +143,7 @@ struct CorrelationVariableMenuState {
     bool locked = false;
     std::string variable;
     std::string addVariableTitle;
+    std::string replaceVariableTitle;
     std::string removeVariableTitle;
     std::string treatAsNumericTitle;
     std::string treatAsFactorTitle;
@@ -189,6 +204,7 @@ std::string CorrelationCellLabel(const CorrelationCellResult *cell,
 std::string CorrelationNoMoreNumericVariablesTitle();
 std::string CorrelationAddVariableMenuTitle();
 std::string CorrelationVariableMenuTitle();
+std::string CorrelationReplaceVariableTitle(const std::string &name);
 std::string CorrelationRemoveVariableTitle(const std::string &name);
 std::string CorrelationPooledAddVariableLockedTitle();
 std::string CorrelationPooledVariableEditLockedTitle();
@@ -215,7 +231,8 @@ Rect CorrelationMatrixCellRect(const CorrelationMatrixLayout &layout,
                                int row,
                                int column);
 CorrelationMatrixHit HitTestCorrelationMatrix(const CorrelationMatrixLayout &layout,
-                                              const Point &point);
+                                              const Point &point,
+                                              const std::string &displayPart = "full");
 CorrelationWindowLayout BuildCorrelationWindowLayout(double matrixWidth,
                                                      double matrixHeight,
                                                      double visibleWidth,
@@ -245,6 +262,11 @@ CorrelationVariableUpdateResult CorrelationVariablesAfterAdd(
     const std::vector<std::string> &currentVariables,
     const std::string &variable,
     const std::vector<std::string> &availableVariables);
+CorrelationVariableUpdateResult CorrelationVariablesAfterReplace(
+    const std::vector<std::string> &currentVariables,
+    std::size_t index,
+    const std::string &variable,
+    const std::vector<std::string> &availableVariables);
 CorrelationVariableUpdateResult CorrelationVariablesAfterRemove(
     const std::vector<std::string> &currentVariables,
     std::size_t index);
@@ -270,27 +292,8 @@ CorrelationMatrixRenderPlan BuildCorrelationMatrixRenderPlan(
     int selectedColumn,
     bool showP,
     bool showPValue,
-    bool showN);
-CorrelationCellResult ComputePearsonCorrelationForRows(
-    const std::string &xName,
-    const std::string &yName,
-    const std::vector<double> &xValues,
-    const std::vector<double> &yValues,
-    const std::vector<int> &rowsUsed);
-CorrelationCellResult ComputeCorrelationCellForDataFrameVersion(
-    const DataFrameModel &df,
-    const std::vector<std::string> &variables,
-    const std::string &xName,
-    const std::string &yName,
-    const std::string &missingMode,
-    int versionIndex);
-CorrelationCellResult ComputePooledCorrelationCell(
-    const DataFrameModel &df,
-    const std::vector<std::string> &variables,
-    const std::string &xName,
-    const std::string &yName,
-    const std::string &missingMode);
-
+    bool showN,
+    const std::string &displayPart = "full");
 std::vector<int> CompleteRowsForVariables(PlotModel *model, const std::vector<std::string> &variables);
 
 } // namespace core

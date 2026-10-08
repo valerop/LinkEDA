@@ -183,20 +183,26 @@ void DrawCoefficientTable(PDFSession &pdf,
             DrawCoefficientHeader(pdf, widths, model.logit);
         }
         NSMutableArray<NSString *> *cells = [NSMutableArray arrayWithObjects:
-            predictor, APANumber(row.estimate), APANumber(row.stdError), APANumber(row.statistic), APAPValue(row.pValue), nil];
-        if (model.logit) [cells addObject:APANumber(row.oddsRatio)];
-        [cells addObject:model.logit ? APAInterval(row.oddsRatioLower, row.oddsRatioUpper)
+            predictor, row.parent ? @"" : APANumber(row.estimate), row.parent ? @"" : APANumber(row.stdError), APANumber(row.statistic), APAPValue(row.pValue), nil];
+        if (model.logit) [cells addObject:row.parent ? @"" : APANumber(row.oddsRatio)];
+        [cells addObject:row.parent ? @"" : model.logit ? APAInterval(row.oddsRatioLower, row.oddsRatioUpper)
                                         : APAInterval(row.ciLower, row.ciUpper)];
         CGFloat x = pdf.margin;
         for (NSUInteger index = 0; index < cells.count; ++index) {
-            NSDictionary *attributes = AlignedAttributes(pdf.bodyAttributes, index == 0 ? NSTextAlignmentLeft : NSTextAlignmentRight);
+            NSDictionary *attributes = AlignedAttributes(
+                row.parent ? pdf.headerAttributes : pdf.bodyAttributes,
+                index == 0 ? NSTextAlignmentLeft : NSTextAlignmentRight);
             DrawText(cells[index], NSMakeRect(x, pdf.y, widths[index] - 4.0, rowHeight), attributes);
             x += widths[index];
         }
         pdf.y += rowHeight;
     }
     DrawRule(pdf.margin, pdf.pageWidth - pdf.margin, pdf.y, 0.9); pdf.y += 8.0;
-    NSString *note = MainNote(state);
+    NSMutableString *note = [NSMutableString stringWithString:MainNote(state)];
+    const std::string methodNote = core::GeneralizedGlobalTermTestMethodNote(state);
+    if (!methodNote.empty()) [note appendFormat:@" %@", Text(methodNote)];
+    const std::string hierarchyNote = core::GeneralizedGlobalTermTestHierarchyNote(state);
+    if (!hierarchyNote.empty()) [note appendFormat:@" %@", Text(hierarchyNote)];
     CGFloat noteHeight = [note boundingRectWithSize:NSMakeSize(available, 160.0)
         options:NSStringDrawingUsesLineFragmentOrigin attributes:pdf.noteAttributes].size.height + 3.0;
     CGFloat warningHeight = 0.0;
@@ -218,42 +224,11 @@ void DrawCoefficientTable(PDFSession &pdf,
     }
 }
 
-void DrawTermTests(PDFSession &pdf,
-                   const core::BinaryAPAReportModel &model,
-                   NSString *tableNumber)
-{
-    NSString *title = @"Likelihood-Ratio Tests of Model Terms";
-    pdf.beginPage(tableNumber, title, false);
-    const CGFloat available = pdf.pageWidth - 2 * pdf.margin;
-    const std::vector<CGFloat> widths = {available * 0.52, available * 0.19, available * 0.11, available * 0.18};
-    NSArray<NSString *> *headers = @[@"Predictor", @"LR \u03c7\u00b2", @"df", @"p"];
-    DrawRule(pdf.margin, pdf.pageWidth - pdf.margin, pdf.y, 0.9); pdf.y += 5.0;
-    CGFloat x = pdf.margin;
-    for (NSUInteger index = 0; index < headers.count; ++index) {
-        DrawText(headers[index], NSMakeRect(x, pdf.y, widths[index] - 4.0, 17.0),
-                 AlignedAttributes(pdf.headerAttributes, index == 0 ? NSTextAlignmentLeft : NSTextAlignmentRight));
-        x += widths[index];
-    }
-    pdf.y += 19.0; DrawRule(pdf.margin, pdf.pageWidth - pdf.margin, pdf.y); pdf.y += 5.0;
-    for (const core::BinaryTermTestRow &row : model.termTests) {
-        NSArray<NSString *> *cells = @[Text(row.term), APANumber(row.statistic),
-            [NSString stringWithFormat:@"%d", row.df], APAPValue(row.pValue)];
-        x = pdf.margin;
-        for (NSUInteger index = 0; index < cells.count; ++index) {
-            DrawText(cells[index], NSMakeRect(x, pdf.y, widths[index] - 4.0, 18.0),
-                     AlignedAttributes(pdf.bodyAttributes, index == 0 ? NSTextAlignmentLeft : NSTextAlignmentRight));
-            x += widths[index];
-        }
-        pdf.y += 19.0;
-    }
-    DrawRule(pdf.margin, pdf.pageWidth - pdf.margin, pdf.y, 0.9);
-}
-
 void DrawDetailedFit(PDFSession &pdf,
                      const core::GeneralizedGLMState &state,
                      NSString *tableNumber)
 {
-    NSString *title = @"Detailed Binary Regression Model Fit";
+    NSString *title = @"Detailed Binary Model Fit";
     pdf.beginPage(tableNumber, title, false);
     const CGFloat available = pdf.pageWidth - 2 * pdf.margin;
     const std::vector<CGFloat> widths = {available * 0.62, available * 0.38};
@@ -326,9 +301,6 @@ bool RenderBinaryRegressionAPAPDF(const core::GeneralizedGLMState &state,
     NSString *title = Text(options.title.empty() ? model.defaultTitle : options.title);
     DrawCoefficientTable(pdf, state, model, tableNumber, title);
     int secondary = 1;
-    if (options.includeTermTests) {
-        DrawTermTests(pdf, model, Text(SecondaryTableNumber(options.tableNumber.empty() ? "1" : options.tableNumber, secondary++)));
-    }
     if (options.includeDetailedFit) {
         DrawDetailedFit(pdf, state, Text(SecondaryTableNumber(options.tableNumber.empty() ? "1" : options.tableNumber, secondary++)));
     }
@@ -349,16 +321,15 @@ void ShowBinaryRegressionAPAExportPanel(const core::GeneralizedGLMState &state)
     NSTextField *titleField = [NSTextField textFieldWithString:Text(model.defaultTitle)];
     NSPopUpButton *orientation = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0, 0, 420, 26)];
     [orientation addItemsWithTitles:@[@"Automatic", @"Portrait", @"Landscape"]];
-    NSButton *termTests = [NSButton checkboxWithTitle:@"Include likelihood-ratio tests of terms" target:nil action:nil];
     NSButton *detailedFit = [NSButton checkboxWithTitle:@"Include detailed model-fit table" target:nil action:nil];
-    [termTests setState:NSControlStateValueOff]; [detailedFit setState:NSControlStateValueOff];
+    [detailedFit setState:NSControlStateValueOff];
     NSStackView *accessory = [[NSStackView alloc] initWithFrame:NSMakeRect(0, 0, 420, 216)];
     [accessory setOrientation:NSUserInterfaceLayoutOrientationVertical];
     [accessory setAlignment:NSLayoutAttributeLeading]; [accessory setSpacing:5.0];
     for (NSView *view in @[[NSTextField labelWithString:@"Table number"], numberField,
                            [NSTextField labelWithString:@"Table title"], titleField,
                            [NSTextField labelWithString:@"Orientation"], orientation,
-                           termTests, detailedFit]) [accessory addArrangedSubview:view];
+                           detailedFit]) [accessory addArrangedSubview:view];
     [[numberField widthAnchor] constraintEqualToConstant:420].active = YES;
     [[titleField widthAnchor] constraintEqualToConstant:420].active = YES;
     [alert setAccessoryView:accessory]; [alert addButtonWithTitle:@"Export"]; [alert addButtonWithTitle:@"Cancel"];
@@ -372,7 +343,6 @@ void ShowBinaryRegressionAPAExportPanel(const core::GeneralizedGLMState &state)
     options.title = [[titleField stringValue] UTF8String];
     options.orientation = [orientation indexOfSelectedItem] == 2 ? BinaryAPAPageOrientation::Landscape
         : ([orientation indexOfSelectedItem] == 1 ? BinaryAPAPageOrientation::Portrait : BinaryAPAPageOrientation::Automatic);
-    options.includeTermTests = [termTests state] == NSControlStateValueOn;
     options.includeDetailedFit = [detailedFit state] == NSControlStateValueOn;
     std::string message;
     if (!RenderBinaryRegressionAPAPDF(state, [[[panel URL] path] UTF8String], options, &message)) {

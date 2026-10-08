@@ -46,8 +46,8 @@ test_that("barplot preparation stores structured segment visual defaults", {
   expect_length(out$segment_alpha_overrides, 0L)
   expect_length(out$segment_pattern_overrides, 0L)
   expect_equal(out$default_segment_alpha, 0.7)
-  expect_true(out$show_patterns)
-  expect_equal(out$segment_encoding_mode, "transparent_color_pattern")
+  expect_false(out$show_patterns)
+  expect_equal(out$segment_encoding_mode, "transparent_color_only")
 })
 
 test_that("barplot structured tooltips contain denominator and percent details", {

@@ -8,15 +8,6 @@
 namespace rlispstat {
 namespace core {
 
-struct PooledCorrelationScalar {
-    bool valid = false;
-    double qbar = std::numeric_limits<double>::quiet_NaN();
-    double se = std::numeric_limits<double>::quiet_NaN();
-    double df = std::numeric_limits<double>::quiet_NaN();
-    double p = std::numeric_limits<double>::quiet_NaN();
-    double fmi = std::numeric_limits<double>::quiet_NaN();
-};
-
 struct NumericSummary {
     bool ok = false;
     int n = 0;
@@ -42,8 +33,6 @@ double NormalTwoSidedP(double z);
 double NormalQuantileApprox(double p);
 double FDistributionUpperTail(double f, double df1, double df2);
 double ChiSquareUpperTail(double chisq, double df);
-PooledCorrelationScalar PoolCorrelationOnFisherZ(const std::vector<double> &rByImputation,
-                                                 const std::vector<int> &nByImputation);
 std::string CompareMeansTitle(const std::string &testType);
 std::string MissingDataPairwiseMethodLabel();
 std::string MissingDataListwiseMethodLabel();

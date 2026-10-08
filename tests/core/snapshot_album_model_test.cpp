@@ -117,6 +117,46 @@ int main()
     SnapshotItem &storedTable = album.add(table);
     assert(std::get<FrozenTableContent>(storedTable.renderable_content).contains_all_source_rows == false);
     assert(std::get<FrozenTableContent>(storedTable.renderable_content).total_source_row_count == 32);
+
+    FrozenTableContent parsed = FrozenTableFromTabDelimited(
+        "Variable\tGroup A\tGroup B\r\nAge\t10.2\t11.8\r\nSex\t4 / 6\t5 / 5\r\n");
+    assert(parsed.column_headers.size() == 3);
+    assert(parsed.column_headers[0] == "Variable");
+    assert(parsed.rows.size() == 2);
+    assert(parsed.rows[0][1] == "10.2");
+    assert(parsed.source_row_count == 2);
+    assert(FrozenTableToTabDelimited(parsed) ==
+        "Variable\tGroup A\tGroup B\r\nAge\t10.2\t11.8\r\nSex\t4 / 6\t5 / 5\r\n");
+
+    FrozenTableContent structured;
+    structured.column_headers = {"Term", "Estimate", "95% CI"};
+    structured.rows = {{"Intercept", "1.25", "0.8, 1.7"}};
+    assert(FrozenTableToTabDelimited(structured) ==
+        "Term\tEstimate\t95% CI\nIntercept\t1.25\t0.8, 1.7");
+
+    SnapshotItem output;
+    output.content_kind = SnapshotContentKind::TextOutput;
+    output.metadata.title = "Console output";
+    output.renderable_content = FrozenTextContent{"Model converged successfully."};
+    SnapshotItem &storedOutput = album.add(output);
+    assert(std::get<FrozenTextContent>(storedOutput.renderable_content).plain_text ==
+        "Model converged successfully.");
+    assert(SnapshotContentKindName(storedOutput.content_kind) == "Text / Output");
+    assert(EstimateSnapshotMemoryBytes(storedOutput) > sizeof(SnapshotItem));
+
+    SnapshotItem vectorTable;
+    vectorTable.content_kind = SnapshotContentKind::StatisticalTable;
+    vectorTable.metadata.title = "Vector table";
+    vectorTable.renderable_content = FrozenSvgContent{
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>1.25</text></svg>",
+        640.0, 360.0 };
+    SnapshotItem &storedVector = album.add(vectorTable);
+    auto const& frozenVector = std::get<FrozenSvgContent>(
+        storedVector.renderable_content);
+    assert(frozenVector.svg.find("<text>1.25</text>") != std::string::npos);
+    assert(frozenVector.preferred_width == 640.0);
+    assert(EstimateSnapshotMemoryBytes(storedVector) >=
+        sizeof(SnapshotItem) + frozenVector.svg.size());
     album.clear();
     assert(album.empty());
     return 0;

@@ -16,24 +16,23 @@ LinkEDA is experimental software authored by **Pedro Valero-Mora** at the **Univ
 <span class="arch-arrow" aria-hidden="true">↓ local session protocol</span>
 <div><span class="arch-label">Portable C++ core</span><strong>Commands, plot models, panel layout, coordinate transforms, case identity and hit testing</strong></div>
 <span class="arch-arrow" aria-hidden="true">↓ platform adapter</span>
-<div><span class="arch-label">Native interface</span><strong>macOS windows, dialogs, menus, events and native drawing</strong></div>
+<div><span class="arch-label">Native interface</span><strong>Windows and macOS windows, dialogs, menus, events and native drawing</strong></div>
 :::
 
-The R call starts a separate native process. This prevents the application event loop from replacing the role of R and keeps the statistical engine explicit. Requests and results cross a local protocol; the core remains portable, while Cocoa/AppKit-specific behaviour stays in the macOS layer.
+The R call starts a separate native process. This prevents the application event loop from replacing the role of R and keeps the statistical engine explicit. Requests and results cross a local protocol; the core remains portable, while WinUI and Cocoa/AppKit behaviour stays in the corresponding platform layer.
 
 ## Current status
 
-The current `0.0.1` package is a development preview rather than a stable release. Some commands are more mature than others, optional analyses require additional R packages, multiple-imputation coverage differs by analysis, and the native application is not yet distributed through a signed/notarised installer. Windows portability is an architectural goal, not a claim that the downloadable macOS package runs on Windows.
+The current macOS build is LinkEDA `0.0.120`, validated on Apple Silicon with macOS 14 or later. It is distributed in a standalone edition with a private R 4.6 runtime, an application edition that uses an installed Apple Silicon R 4.6, and a binary package for current R users. The current Windows release is `v0.0.113R`, containing LinkEDA `0.0.113` for Windows 11 x64. Some commands are more mature than others, optional analyses require additional R packages, and multiple-imputation coverage differs by analysis. The two macOS application installers are not Developer ID signed or notarised, and the Windows installers are not code signed. The macOS R binary package is installed from R or RStudio and does not require the application-approval workflow.
 
 Interface names, result layouts, file compatibility and model options can change without a migration period. Keep original data and analysis scripts outside the application, and verify important results directly in R.
 
 ## Source and feedback
 
-The current code is available in the [project repository](https://github.com/valerop/LinkEDA), and reports can be filed through the [issue tracker](https://github.com/valerop/LinkEDA/issues). Useful reports include the exact LinkEDA version, R version, macOS version, data format or a minimal reproducible data set, and the precise steps that led to the problem.
+The current code is available in the [project repository](https://github.com/valerop/LinkEDA), and reports can be filed through the [issue tracker](https://github.com/valerop/LinkEDA/issues). Useful reports include the release tag, LinkEDA version, operating-system and R versions, installer edition, data format or a minimal reproducible data set, and the precise steps that led to the problem.
 
 ## Author
 
-**Pedro Valero-Mora**  
-**Universitat de València**
+**Pedro Valero-Mora**, **Universitat de València**
 
 No additional biographical or institutional claims are implied by this site.

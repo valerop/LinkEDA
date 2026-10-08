@@ -7,43 +7,41 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <set>
 #include <sstream>
 
 namespace rlispstat {
 namespace core {
 
-namespace {
-
-const DataColumn *CorrelationDataColumn(const DataFrameModel &df, const std::string &name)
+bool CorrelationCellIsVisible(const std::string &part, int row, int column)
 {
-    return FindDataColumnInDataFrame(df, name);
+    return row >= 0 && column >= 0 &&
+        (part == "lower" ? row >= column : part == "upper" ? row <= column : true);
 }
 
-double CorrelationDataValue(const DataFrameModel &df, const DataColumn &col,
-                            std::size_t row, int versionIndex)
+std::vector<CorrelationContextOption> CorrelationContextOptions(const CorrelationMatrixState &state)
 {
-    return NumericValueForDataFrameCellVersion(df, col, row, versionIndex);
+    return {
+        {"Display", "Full matrix", "CORR_SET_PART", "full", state.displayPart=="full"},
+        {"Display", "Lower triangle", "CORR_SET_PART", "lower", state.displayPart=="lower"},
+        {"Display", "Upper triangle", "CORR_SET_PART", "upper", state.displayPart=="upper"},
+        {"Display", "Stars", "CORR_TOGGLE_DISPLAY", "show_p", state.showP},
+        {"Display", "p-values", "CORR_TOGGLE_DISPLAY", "show_p_value", state.showPValue},
+        {"Display", "N", "CORR_TOGGLE_DISPLAY", "show_n", state.showN},
+        {"Missing data", "Pairwise", "CORR_SET_MISSING", "pairwise", state.missingMode=="pairwise", !state.precomputed},
+        {"Missing data", "Listwise", "CORR_SET_MISSING", "listwise", state.missingMode=="listwise", !state.precomputed}
+    };
 }
 
-std::string JoinUniqueStatuses(const std::vector<std::string> &statuses)
+std::string CorrelationDisplayedCellText(const CorrelationMatrixState &state, int row, int column)
 {
-    std::vector<std::string> unique;
-    for (const std::string &status : statuses) {
-        if (status.empty()) continue;
-        if (std::find(unique.begin(), unique.end(), status) == unique.end()) {
-            unique.push_back(status);
-        }
-    }
-    if (unique.empty()) return "invalid";
-    std::ostringstream out;
-    for (std::size_t i = 0; i < unique.size(); ++i) {
-        if (i) out << ",";
-        out << unique[i];
-    }
-    return out.str();
+    if (!CorrelationCellIsVisible(state.displayPart,row,column)) return "";
+    const auto *cell=CorrelationCellAt(state.cells,state.variables.size(),row,column);
+    auto text=CorrelationCellLabel(cell,state.showP,state.showPValue);
+    std::replace(text.begin(),text.end(),'\n',' ');
+    if (state.showN && cell && row!=column) text += "  N = " + std::to_string(cell->n);
+    return text;
 }
-
-} // namespace
 
 std::string CorrelationCellLabel(const CorrelationCellResult *cell,
                                  bool showP,
@@ -74,6 +72,11 @@ std::string CorrelationAddVariableMenuTitle()
 std::string CorrelationVariableMenuTitle()
 {
     return "Variable";
+}
+
+std::string CorrelationReplaceVariableTitle(const std::string &name)
+{
+    return "Replace " + name + " with";
 }
 
 std::string CorrelationRemoveVariableTitle(const std::string &name)
@@ -221,7 +224,8 @@ Rect CorrelationMatrixCellRect(const CorrelationMatrixLayout &layout,
 }
 
 CorrelationMatrixHit HitTestCorrelationMatrix(const CorrelationMatrixLayout &layout,
-                                              const Point &point)
+                                              const Point &point,
+                                              const std::string &displayPart)
 {
     CorrelationMatrixHit hit;
     if (PointInRect(point, layout.addVariableRect)) {
@@ -238,7 +242,7 @@ CorrelationMatrixHit HitTestCorrelationMatrix(const CorrelationMatrixLayout &lay
     }
     for (std::size_t row = 0; row < layout.cellRects.size(); ++row) {
         for (std::size_t column = 0; column < layout.cellRects[row].size(); ++column) {
-            if (PointInRect(point, layout.cellRects[row][column])) {
+            if (CorrelationCellIsVisible(displayPart,row,column) && PointInRect(point, layout.cellRects[row][column])) {
                 hit.kind = CorrelationMatrixHitKind::Cell;
                 hit.row = static_cast<int>(row);
                 hit.column = static_cast<int>(column);
@@ -262,6 +266,9 @@ static void ApplyCorrelationWindowContentLayout(CorrelationWindowLayout &layout,
     layout.showPButtonRect = Rect{252.0, height - 70.0, 96.0, 24.0};
     layout.showPValueButtonRect = Rect{360.0, height - 70.0, 118.0, 24.0};
     layout.showNButtonRect = Rect{490.0, height - 70.0, 70.0, 24.0};
+    layout.scopeLabelRect = Rect{16.0, height - 70.0, 46.0, 22.0};
+    layout.scopePopupRect = Rect{64.0, height - 74.0,
+                                 std::max(118.0, width - 80.0), 24.0};
     layout.scrollViewRect = Rect{12.0, 44.0, std::max(200.0, width - 24.0),
                                  std::max(140.0, height - 124.0)};
     layout.statusRect = Rect{16.0, 14.0, std::max(200.0, width - 32.0), 20.0};
@@ -316,7 +323,7 @@ CorrelationWindowControlState BuildCorrelationWindowControlState(
     state.showP = showP;
     state.showPValue = showPValue;
     state.showN = showN;
-    if ((precomputed || multipleImputation) && !note.empty()) {
+    if (!note.empty()) {
         state.status = note;
     } else {
         state.status = group + ": " + std::to_string(variables.size()) +
@@ -375,12 +382,43 @@ CorrelationVariableUpdateResult CorrelationVariablesAfterAdd(
     return result;
 }
 
+CorrelationVariableUpdateResult CorrelationVariablesAfterReplace(
+    const std::vector<std::string> &currentVariables,
+    std::size_t index,
+    const std::string &variable,
+    const std::vector<std::string> &availableVariables)
+{
+    CorrelationVariableUpdateResult result;
+    result.variables = currentVariables;
+    if (index >= result.variables.size()) {
+        result.status = "Variable index is out of range.";
+        return result;
+    }
+    if (!CorrelationVariableListContains(availableVariables, variable)) {
+        result.status = variable + " is not available as a numeric variable.";
+        return result;
+    }
+    if (CorrelationVariableListContains(result.variables, variable) &&
+        result.variables[index] != variable) {
+        result.status = variable + " is already in the matrix.";
+        return result;
+    }
+    result.changed = result.variables[index] != variable;
+    result.variables[index] = variable;
+    result.ok = true;
+    return result;
+}
+
 CorrelationVariableUpdateResult CorrelationVariablesAfterRemove(
     const std::vector<std::string> &currentVariables,
     std::size_t index)
 {
     CorrelationVariableUpdateResult result;
     result.variables = currentVariables;
+    if (result.variables.size() <= 2) {
+        result.status = "A correlation matrix must keep at least two variables.";
+        return result;
+    }
     if (index >= result.variables.size()) return result;
     result.variables.erase(result.variables.begin() + static_cast<std::ptrdiff_t>(index));
     result.ok = true;
@@ -414,9 +452,10 @@ CorrelationVariableMenuState BuildCorrelationVariableMenuState(
     state.locked = locked;
     state.variable = variables[index];
     state.addVariableTitle = "Add Variable...";
+    state.replaceVariableTitle = CorrelationReplaceVariableTitle(state.variable);
     state.removeVariableTitle = CorrelationRemoveVariableTitle(state.variable);
-    state.treatAsNumericTitle = "Treat as Numeric";
-    state.treatAsFactorTitle = "Treat as Factor";
+    state.treatAsNumericTitle = "Treat predictor as continuous";
+    state.treatAsFactorTitle = "Treat predictor as categorical";
     state.informationTitle = "Show Variable Information";
     state.lockedTitle = CorrelationPooledVariableEditLockedTitle();
     return state;
@@ -456,7 +495,8 @@ CorrelationMatrixRenderPlan BuildCorrelationMatrixRenderPlan(
     int selectedColumn,
     bool showP,
     bool showPValue,
-    bool showN)
+    bool showN,
+    const std::string &displayPart)
 {
     CorrelationMatrixRenderPlan plan;
     plan.layout = BuildCorrelationMatrixLayout(variables.size(), showPValue, showN);
@@ -510,6 +550,7 @@ CorrelationMatrixRenderPlan BuildCorrelationMatrixRenderPlan(
 
     for (std::size_t row = 0; row < variables.size(); ++row) {
         for (std::size_t column = 0; column < variables.size(); ++column) {
+            if (!CorrelationCellIsVisible(displayPart,row,column)) continue;
             const CorrelationCellResult *cell = CorrelationCellAt(
                 cells, variables.size(), static_cast<int>(row), static_cast<int>(column));
             Rect cellRect = plan.layout.cellRects[row][column];
@@ -578,198 +619,6 @@ CorrelationMatrixRenderPlan BuildCorrelationMatrixRenderPlan(
     }
 
     return plan;
-}
-
-CorrelationCellResult ComputePearsonCorrelationForRows(
-    const std::string &xName,
-    const std::string &yName,
-    const std::vector<double> &xValues,
-    const std::vector<double> &yValues,
-    const std::vector<int> &rowsUsed)
-{
-    CorrelationCellResult cell;
-    cell.xVariable = xName;
-    cell.yVariable = yName;
-    cell.rowsUsed = rowsUsed;
-    cell.n = static_cast<int>(rowsUsed.size());
-    if (cell.n < 3) {
-        cell.status = "insufficient_n";
-        return cell;
-    }
-
-    double sumX = 0.0, sumY = 0.0;
-    for (int row : rowsUsed) {
-        if (row <= 0) {
-            cell.status = "invalid_row";
-            return cell;
-        }
-        std::size_t i = static_cast<std::size_t>(row) - 1;
-        if (i >= xValues.size() || i >= yValues.size() ||
-            !std::isfinite(xValues[i]) || !std::isfinite(yValues[i])) {
-            cell.status = "invalid_row";
-            return cell;
-        }
-        sumX += xValues[i];
-        sumY += yValues[i];
-    }
-    double meanX = sumX / static_cast<double>(cell.n);
-    double meanY = sumY / static_cast<double>(cell.n);
-    double ssX = 0.0, ssY = 0.0, sp = 0.0;
-    for (int row : rowsUsed) {
-        std::size_t i = static_cast<std::size_t>(row) - 1;
-        double dx = xValues[i] - meanX;
-        double dy = yValues[i] - meanY;
-        ssX += dx * dx;
-        ssY += dy * dy;
-        sp += dx * dy;
-    }
-    if (ssX <= 0.0 || ssY <= 0.0) {
-        cell.status = "zero_variance";
-        return cell;
-    }
-    cell.r = std::max(-1.0, std::min(1.0, sp / std::sqrt(ssX * ssY)));
-    if (std::fabs(cell.r) >= 1.0) {
-        cell.p = 0.0;
-    } else {
-        double t2 = (cell.r * cell.r) * (cell.n - 2) / (1.0 - cell.r * cell.r);
-        cell.p = FDistributionUpperTail(t2, 1.0, static_cast<double>(cell.n) - 2.0);
-    }
-    cell.status = "valid";
-    return cell;
-}
-
-CorrelationCellResult ComputeCorrelationCellForDataFrameVersion(
-    const DataFrameModel &df,
-    const std::vector<std::string> &variables,
-    const std::string &xName,
-    const std::string &yName,
-    const std::string &missingMode,
-    int versionIndex)
-{
-    CorrelationCellResult cell;
-    cell.xVariable = xName;
-    cell.yVariable = yName;
-    const DataColumn *xCol = CorrelationDataColumn(df, xName);
-    const DataColumn *yCol = CorrelationDataColumn(df, yName);
-    if (!xCol || !yCol) {
-        cell.status = "missing_variable";
-        return cell;
-    }
-    if (xName == yName) {
-        std::vector<const DataColumn *> columns;
-        if (missingMode == "listwise") {
-            for (const std::string &name : variables) {
-                const DataColumn *col = CorrelationDataColumn(df, name);
-                if (col) columns.push_back(col);
-            }
-        } else {
-            columns.push_back(xCol);
-        }
-        cell.rowsUsed = CompleteRowsForDataColumns(df, columns, versionIndex);
-        cell.n = static_cast<int>(cell.rowsUsed.size());
-        cell.status = "diagonal";
-        return cell;
-    }
-
-    std::vector<const DataColumn *> columns;
-    if (missingMode == "listwise") {
-        for (const std::string &name : variables) {
-            const DataColumn *col = CorrelationDataColumn(df, name);
-            if (col) columns.push_back(col);
-        }
-    } else {
-        columns.push_back(xCol);
-        columns.push_back(yCol);
-    }
-    cell.rowsUsed = CompleteRowsForDataColumns(df, columns, versionIndex);
-    cell.n = static_cast<int>(cell.rowsUsed.size());
-    if (cell.n < 4) {
-        cell.status = "insufficient_n";
-        return cell;
-    }
-
-    double sumX = 0.0, sumY = 0.0;
-    for (int row : cell.rowsUsed) {
-        std::size_t i = static_cast<std::size_t>(row) - 1;
-        sumX += CorrelationDataValue(df, *xCol, i, versionIndex);
-        sumY += CorrelationDataValue(df, *yCol, i, versionIndex);
-    }
-    double meanX = sumX / static_cast<double>(cell.n);
-    double meanY = sumY / static_cast<double>(cell.n);
-    double ssX = 0.0, ssY = 0.0, sp = 0.0;
-    for (int row : cell.rowsUsed) {
-        std::size_t i = static_cast<std::size_t>(row) - 1;
-        double dx = CorrelationDataValue(df, *xCol, i, versionIndex) - meanX;
-        double dy = CorrelationDataValue(df, *yCol, i, versionIndex) - meanY;
-        ssX += dx * dx;
-        ssY += dy * dy;
-        sp += dx * dy;
-    }
-    if (ssX <= 0.0 || ssY <= 0.0) {
-        cell.status = "zero_variance";
-        return cell;
-    }
-    cell.r = std::max(-1.0, std::min(1.0, sp / std::sqrt(ssX * ssY)));
-    cell.status = "valid";
-    return cell;
-}
-
-CorrelationCellResult ComputePooledCorrelationCell(
-    const DataFrameModel &df,
-    const std::vector<std::string> &variables,
-    const std::string &xName,
-    const std::string &yName,
-    const std::string &missingMode)
-{
-    CorrelationCellResult cell;
-    cell.xVariable = xName;
-    cell.yVariable = yName;
-    int imputationCount = std::max(1, df.imputationCount);
-    std::vector<double> rByImputation;
-    std::vector<int> nByImputation;
-    std::vector<std::string> statuses;
-    std::vector<int> firstRows;
-
-    for (int version = 0; version < imputationCount; ++version) {
-        CorrelationCellResult current = ComputeCorrelationCellForDataFrameVersion(
-            df, variables, xName, yName, missingMode, version);
-        if (version == 0) firstRows = current.rowsUsed;
-        nByImputation.push_back(current.n);
-        statuses.push_back(current.status);
-        rByImputation.push_back(current.r);
-    }
-    cell.rowsUsed = firstRows;
-    if (!nByImputation.empty()) {
-        double nSum = 0.0;
-        for (int n : nByImputation) nSum += static_cast<double>(n);
-        cell.n = static_cast<int>(std::llround(nSum / static_cast<double>(nByImputation.size())));
-    }
-
-    if (xName == yName) {
-        cell.status = "diagonal";
-        cell.detail = "Multiple imputation matrix; m = " + std::to_string(imputationCount) + "; diagonal cell.";
-        return cell;
-    }
-
-    PooledCorrelationScalar pooled = PoolCorrelationOnFisherZ(rByImputation, nByImputation);
-    if (!pooled.valid) {
-        cell.status = JoinUniqueStatuses(statuses);
-        return cell;
-    }
-    cell.r = std::tanh(pooled.qbar);
-    cell.p = pooled.p;
-    cell.status = "valid";
-    std::ostringstream detail;
-    detail << "m = " << imputationCount
-           << "; pooling = Fisher z transformation plus Rubin's rules"
-           << "; SE(z) = " << FormatDouble(pooled.se, 3)
-           << "; df = " << (std::isfinite(pooled.df) ? FormatDouble(pooled.df, 1) : std::string("Inf"));
-    if (std::isfinite(pooled.fmi)) {
-        detail << "; FMI = " << FormatDouble(100.0 * pooled.fmi, 1) << "%";
-    }
-    detail << ". Scatterplots opened from this cell display the active imputation.";
-    cell.detail = detail.str();
-    return cell;
 }
 
 std::string CorrelationWindowTitle()

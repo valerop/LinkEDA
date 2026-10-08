@@ -27,7 +27,8 @@ std::vector<std::string> Levels(const DataColumn *column)
 {
     if (!column) return {};
     std::vector<std::string> values = column->definedLevels;
-    for (const std::string &value : column->values) {
+    for (std::size_t row = 0; row < column->values.size(); ++row) {
+        const std::string value = DisplayValueForCell(*column, row);
         if (DataCellIsMissing(value)) continue;
         if (std::find(values.begin(), values.end(), value) == values.end()) values.push_back(value);
     }
@@ -242,7 +243,7 @@ bool SetModelTrellisConditioningVariable(ModelTrellisSpecification &specificatio
         }
         const DataColumn *column = FindColumn(data, *variable);
         if (!column || !VariableTypeIsFactorLike(column->type) || Levels(column).size() < 2) {
-            if (error) *error = "Conditioning variables must be categorical and have at least two effective levels.";
+            if (error) *error = "Conditioning variables must be categorical and have at least two effective categories.";
             return false;
         }
         const auto &other = dimension == ModelTrellisDimension::Rows
@@ -334,8 +335,10 @@ std::vector<ModelTrellisPanelResult> BuildModelTrellisPanels(
         panel.effectiveTerms = effective;
         panel.omittedTerms = omitted;
         for (int index = 0; index < data.rows; ++index) {
-            if (rowColumn && (index >= (int)rowColumn->values.size() || rowColumn->values[index] != rowLevel)) continue;
-            if (columnColumn && (index >= (int)columnColumn->values.size() || columnColumn->values[index] != columnLevel)) continue;
+            if (rowColumn && (index >= (int)rowColumn->values.size() ||
+                DisplayValueForCell(*rowColumn, static_cast<std::size_t>(index)) != rowLevel)) continue;
+            if (columnColumn && (index >= (int)columnColumn->values.size() ||
+                DisplayValueForCell(*columnColumn, static_cast<std::size_t>(index)) != columnLevel)) continue;
             const int rowId = index + 1;
             if (!ScopeContainsRow(specification.baseModel.scope, rowId, selection)) continue;
             panel.candidateOriginalRows.push_back(rowId);

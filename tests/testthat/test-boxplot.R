@@ -16,6 +16,27 @@ test_that("boxplot summaries use Tukey whiskers by group", {
   expect_true("b" %in% s$category)
 })
 
+test_that("boxplot preparation supports ordered nested grouping variables", {
+  data <- data.frame(
+    outer = c("A", "A", "B", "B"),
+    inner = c("one", "two", "one", "two"),
+    y = c(1, 2, 3, 4)
+  )
+  prepared <- LinkEDA:::.rls_prepare_boxplot_data(
+    data, "y", c("outer", "inner"), "nested"
+  )
+  expect_identical(prepared$x_names, c("outer", "inner"))
+  expect_identical(prepared$x_name, "outer + inner")
+  expect_identical(prepared$category, c(
+    "outer=A · inner=one", "outer=A · inner=two",
+    "outer=B · inner=one", "outer=B · inner=two"
+  ))
+  expect_error(
+    LinkEDA:::.rls_prepare_boxplot_data(data, "y", c("outer", "outer")),
+    "unique"
+  )
+})
+
 test_that("new boxplot uses active dataset validation", {
   ls_register_dataset("box_active", data.frame(g = c("a", "b"), y = c(1, 2)))
   on.exit(ls_unregister_dataset("box_active"), add = TRUE)

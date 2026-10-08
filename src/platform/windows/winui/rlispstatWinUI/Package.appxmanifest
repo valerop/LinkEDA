@@ -11,7 +11,7 @@
   <Identity
     Name="a456de96-bf6e-4e49-abf7-3a6c27f81367"
     Publisher="CN=valerop"
-    Version="1.0.0.0" />
+    Version="1.0.0.69" />
 
   <mp:PhoneIdentity PhoneProductId="a456de96-bf6e-4e49-abf7-3a6c27f81367" PhonePublisherId="00000000-0000-0000-0000-000000000000"/>
 
@@ -37,18 +37,16 @@
       <uap:VisualElements
         DisplayName="LinkEDA"
         Description="LinkEDA"
-        BackgroundColor="transparent"
+        BackgroundColor="#071A3D"
         Square150x150Logo="Assets\Square150x150Logo.png"
         Square44x44Logo="Assets\Square44x44Logo.png">
         <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
-        <uap:SplashScreen Image="Assets\SplashScreen.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#071A3D" />
       </uap:VisualElements>
     </Application>
   </Applications>
 
   <Capabilities>
-    <Capability Name="internetClientServer" />
-    <Capability Name="privateNetworkClientServer" />
     <rescap:Capability Name="runFullTrust" />
     <systemai:Capability Name="systemAIModels"/>
   </Capabilities>

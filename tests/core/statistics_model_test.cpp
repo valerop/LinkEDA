@@ -23,8 +23,6 @@ using rlispstat::core::NormalTwoSidedP;
 using rlispstat::core::NumericSummary;
 using rlispstat::core::PairedFiniteSampleSDs;
 using rlispstat::core::PairedSampleSDsResult;
-using rlispstat::core::PooledCorrelationScalar;
-using rlispstat::core::PoolCorrelationOnFisherZ;
 using rlispstat::core::SummarizeFiniteValues;
 using rlispstat::core::DescriptiveStatisticsWindowTitle;
 using rlispstat::core::FrequencyTableWindowTitle;
@@ -101,19 +99,9 @@ int main()
     assert(closeEnough(ChiSquareUpperTail(5.99146454710798, 2.0), 0.050000, 1.0e-5));
     assert(!std::isfinite(ChiSquareUpperTail(1.0, nan)));
 
-    PooledCorrelationScalar pooled = PoolCorrelationOnFisherZ({0.30, 0.40, 0.50}, {50, 50, 50});
-    assert(pooled.valid);
-    assert(closeEnough(std::tanh(pooled.qbar), 0.403223, 1.0e-5));
-    assert(std::isfinite(pooled.se));
-    assert(std::isfinite(pooled.p));
-    assert(std::isfinite(pooled.fmi));
-
-    PooledCorrelationScalar invalid = PoolCorrelationOnFisherZ({nan, 0.3}, {20, 3});
-    assert(!invalid.valid);
-
-    assert(CompareMeansTitle("one_sample_t") == "One-Sample t Test");
-    assert(CompareMeansTitle("independent_t") == "Independent-Samples t Test");
-    assert(CompareMeansTitle("paired_t") == "Paired-Samples t Test");
+    assert(CompareMeansTitle("one_sample_t") == "One-Sample Tests");
+    assert(CompareMeansTitle("independent_t") == "Two-Sample Tests");
+    assert(CompareMeansTitle("paired_t") == "Paired-Samples Tests");
     assert(CompareMeansTitle("oneway_anova") == "One-Way ANOVA");
     assert(CompareMeansTitle("unknown") == "Compare Means");
 
@@ -128,13 +116,13 @@ int main()
     assert(OneSampleTNoNumericStatus() == "No numeric variable available.");
     assert(IndependentTNeedGroupingStatus() == "Need one numeric and one grouping variable.");
     assert(PairedTNeedTwoNumericStatus() == "Need at least two numeric variables.");
-    assert(OneWayAnovaNeedFactorStatus() == "Need one numeric and one factor variable.");
+    assert(OneWayAnovaNeedFactorStatus() == "Need one continuous and one categorical variable.");
     assert(DescriptiveStatisticsWindowTitle() == "Descriptive Statistics");
     assert(FrequencyTableWindowTitle() == "Frequency Table");
     assert(CompareMeansWindowTitle() == "Compare Means");
-    assert(OneSampleTTestWindowTitle() == "One-Sample t Test");
-    assert(IndependentSamplesTTestWindowTitle() == "Independent-Samples t Test");
-    assert(PairedSamplesTTestWindowTitle() == "Paired-Samples t Test");
+    assert(OneSampleTTestWindowTitle() == "One-Sample Tests");
+    assert(IndependentSamplesTTestWindowTitle() == "Two-Sample Tests");
+    assert(PairedSamplesTTestWindowTitle() == "Paired-Samples Tests");
     assert(OneWayANOVAWindowTitle() == "One-Way ANOVA");
     assert(QuickClusterWindowTitle() == "Quick Cluster");
     assert(RowsUsedExcludedWindowTitle() == "Rows Used/Excluded");

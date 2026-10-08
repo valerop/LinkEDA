@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <unordered_map>
 
 namespace rlispstat {
 namespace core {
@@ -80,6 +82,45 @@ std::set<CaseId> SelectCasesForGesture(const std::vector<ScatterplotCaseGeometry
     return selected;
 }
 
+std::vector<std::size_t> ScatterplotVisualOverlapCounts(const std::vector<Point> &positions)
+{
+    // Pixel cells coalesce dense stacks before neighbourhood lookup. Work is
+    // bounded by occupied cells, not by all pairs of observations.
+    using Key = std::uint64_t;
+    auto key = [](int x, int y) -> Key {
+        return (static_cast<Key>(static_cast<std::uint32_t>(x)) << 32) |
+            static_cast<std::uint32_t>(y);
+    };
+    auto usable = [](const Point &p) {
+        return std::isfinite(p.x) && std::isfinite(p.y) &&
+            std::abs(p.x) < 1e9 && std::abs(p.y) < 1e9;
+    };
+    struct Cell { int x, y; std::size_t count = 0, overlap = 0; };
+    std::unordered_map<Key, Cell> cells;
+    for (const auto &p : positions) {
+        if (!usable(p)) continue;
+        const int x = static_cast<int>(std::lround(p.x)), y = static_cast<int>(std::lround(p.y));
+        auto inserted = cells.emplace(key(x, y), Cell{x, y});
+        ++inserted.first->second.count;
+    }
+    for (auto &entry : cells) {
+        auto &cell = entry.second;
+        // Two ordinary circles touch when their centres are six points apart.
+        // Do not let the enlarged marks recursively create extra overlap.
+        for (int dx = -6; dx <= 6; ++dx) for (int dy = -6; dy <= 6; ++dy) {
+            if (dx * dx + dy * dy > 36) continue;
+            const auto neighbour = cells.find(key(cell.x + dx, cell.y + dy));
+            if (neighbour != cells.end()) cell.overlap += neighbour->second.count;
+        }
+    }
+    std::vector<std::size_t> result; result.reserve(positions.size());
+    for (const auto &p : positions) {
+        result.push_back(usable(p) ? cells.at(key(static_cast<int>(std::lround(p.x)),
+            static_cast<int>(std::lround(p.y)))).overlap : 1U);
+    }
+    return result;
+}
+
 std::vector<ScatterplotPointDrawItem> BuildScatterplotPointDrawPlan(
     const std::vector<ScatterplotPointDrawInput> &points,
     const std::set<CaseId> &selectedRows,
@@ -123,7 +164,10 @@ std::vector<ScatterplotPointDrawItem> BuildScatterplotPointDrawPlan(
             item.colorName = hasRowColor ? colorIt->second : "black";
             item.fillAlpha = 1.0;
             item.strokeAlpha = 0.90;
-            item.radius = 3.6;
+            // Selection is expressed by an exterior ring.  Preserve the
+            // point's ordinary size so linked plots do not appear to encode
+            // a larger quantitative value.
+            item.radius = hasRowColor ? 3.1 : 3.0;
             item.strokeWidth = 0.8;
             item.hasHalo = true;
             item.haloRadius = 6.0;
@@ -151,6 +195,13 @@ std::vector<ScatterplotPointDrawItem> BuildScatterplotPointDrawPlan(
 
         plan.push_back(item);
     }
+
+    // The vector is the painter's order used by every native and exported
+    // scatter renderer. Keep background observations first so coincident
+    // unselected cases can never cover a selected case or its selection ring.
+    std::stable_partition(
+        plan.begin(), plan.end(),
+        [](const ScatterplotPointDrawItem &item) { return !item.selected; });
 
     return plan;
 }
@@ -214,6 +265,100 @@ std::optional<DataViewport> ScatterplotViewportIncludingImputations(
     };
 }
 
+static NumericImputationRange DiagnosticPointAxisRange(
+    const ScatterplotPointImputationValues &values,
+    bool xAxis,
+    const std::string &uncertaintyMode)
+{
+    std::vector<double> axisValues;
+    axisValues.reserve(values.values.size());
+    for (const Point &value : values.values) {
+        const double coordinate = xAxis ? value.x : value.y;
+        if (std::isfinite(coordinate)) axisValues.push_back(coordinate);
+    }
+    if (axisValues.size() < 2) return {};
+    const auto limits = std::minmax_element(axisValues.begin(), axisValues.end());
+    if (std::fabs(*limits.second - *limits.first) <= 1.0e-12) return {};
+    return NumericImputationRangeForValues(std::move(axisValues), uncertaintyMode);
+}
+
+std::optional<DataViewport> ScatterplotViewportIncludingPointImputations(
+    const std::vector<ScatterplotPointValue> &points,
+    const std::vector<ScatterplotPointImputationValues> &imputationValues,
+    const std::string &uncertaintyMode)
+{
+    if (points.empty() || imputationValues.empty()) return std::nullopt;
+    std::map<CaseId, const ScatterplotPointImputationValues *> byRow;
+    for (const auto &values : imputationValues) byRow[values.row] = &values;
+    NumericImputationRange xRange;
+    NumericImputationRange yRange;
+    for (const ScatterplotPointValue &point : points) {
+        auto found = byRow.find(point.caseId);
+        NumericImputationRange xi;
+        NumericImputationRange yi;
+        if (found != byRow.end()) {
+            xi = DiagnosticPointAxisRange(*found->second, true, uncertaintyMode);
+            yi = DiagnosticPointAxisRange(*found->second, false, uncertaintyMode);
+        }
+        if (xi.any) {
+            NumericRangeInclude(xRange, xi.min);
+            NumericRangeInclude(xRange, xi.max);
+        } else NumericRangeInclude(xRange, point.x);
+        if (yi.any) {
+            NumericRangeInclude(yRange, yi.min);
+            NumericRangeInclude(yRange, yi.max);
+        } else NumericRangeInclude(yRange, point.y);
+    }
+    if (!xRange.any || !yRange.any) return std::nullopt;
+    if (xRange.min == xRange.max) { xRange.min -= 0.5; xRange.max += 0.5; }
+    if (yRange.min == yRange.max) { yRange.min -= 0.5; yRange.max += 0.5; }
+    const double xPad = (xRange.max - xRange.min) * 0.05;
+    const double yPad = (yRange.max - yRange.min) * 0.05;
+    return DataViewport{xRange.min - xPad, xRange.max + xPad,
+                        yRange.min - yPad, yRange.max + yPad};
+}
+
+static ScatterplotImputationGlyph ScatterplotGlyphForRanges(
+    const NumericImputationRange &xi,
+    const NumericImputationRange &yi,
+    const ScatterplotPointValue &point,
+    const DataViewport &viewport,
+    const Rect &plotRect,
+    double singleAxisMinimumSize,
+    double twoAxisMinimumSize)
+{
+    ScatterplotImputationGlyph glyph;
+    if ((!xi.any && !yi.any) || !IsValidViewport(viewport) || !IsValidRect(plotRect)) {
+        return glyph;
+    }
+    glyph.axisMask = (xi.any ? 1 : 0) | (yi.any ? 2 : 0);
+    const double centerX = xi.any ? xi.center : point.x;
+    const double centerY = yi.any ? yi.center : point.y;
+    if (!std::isfinite(centerX) || !std::isfinite(centerY)) return {};
+    Point center = DataToScreen({centerX, centerY}, viewport, plotRect, true);
+    if (!std::isfinite(center.x) || !std::isfinite(center.y)) return {};
+    const bool twoAxisGlyph = xi.any && yi.any;
+    const double minimumSize = std::max(
+        0.0, twoAxisGlyph ? twoAxisMinimumSize : singleAxisMinimumSize);
+    double width = minimumSize;
+    double height = minimumSize;
+    if (xi.any) {
+        Point lo = DataToScreen({xi.min, centerY}, viewport, plotRect, true);
+        Point hi = DataToScreen({xi.max, centerY}, viewport, plotRect, true);
+        if (std::isfinite(lo.x) && std::isfinite(hi.x))
+            width = std::max(std::fabs(hi.x - lo.x), minimumSize);
+    }
+    if (yi.any) {
+        Point lo = DataToScreen({centerX, yi.min}, viewport, plotRect, true);
+        Point hi = DataToScreen({centerX, yi.max}, viewport, plotRect, true);
+        if (std::isfinite(lo.y) && std::isfinite(hi.y))
+            height = std::max(std::fabs(hi.y - lo.y), minimumSize);
+    }
+    glyph.hasImputation = true;
+    glyph.rect = {center.x - width / 2.0, center.y - height / 2.0, width, height};
+    return glyph;
+}
+
 ScatterplotImputationGlyph ScatterplotImputationGlyphForPoint(
     const DataFrameModel &df,
     const DataColumn &xColumn,
@@ -236,46 +381,23 @@ ScatterplotImputationGlyph ScatterplotImputationGlyphForPoint(
     const std::size_t row = static_cast<std::size_t>(point.caseId - 1);
     NumericImputationRange xi = NumericImputationRangeForCell(df, xColumn, row, uncertaintyMode);
     NumericImputationRange yi = NumericImputationRangeForCell(df, yColumn, row, uncertaintyMode);
-    if (!xi.any && !yi.any) {
-        return glyph;
-    }
+    return ScatterplotGlyphForRanges(xi, yi, point, viewport, plotRect,
+                                     singleAxisMinimumSize, twoAxisMinimumSize);
+}
 
-    glyph.axisMask = (xi.any ? 1 : 0) | (yi.any ? 2 : 0);
-    const double centerX = xi.any ? xi.center : point.x;
-    const double centerY = yi.any ? yi.center : point.y;
-    if (!std::isfinite(centerX) || !std::isfinite(centerY)) {
-        glyph.axisMask = 0;
-        return glyph;
-    }
-
-    Point center = DataToScreen({centerX, centerY}, viewport, plotRect, true);
-    if (!std::isfinite(center.x) || !std::isfinite(center.y)) {
-        glyph.axisMask = 0;
-        return glyph;
-    }
-
-    const bool twoAxisGlyph = xi.any && yi.any;
-    const double minimumSize = std::max(0.0, twoAxisGlyph ? twoAxisMinimumSize : singleAxisMinimumSize);
-    double width = minimumSize;
-    double height = minimumSize;
-    if (xi.any) {
-        Point lo = DataToScreen({xi.min, centerY}, viewport, plotRect, true);
-        Point hi = DataToScreen({xi.max, centerY}, viewport, plotRect, true);
-        if (std::isfinite(lo.x) && std::isfinite(hi.x)) {
-            width = std::max(std::fabs(hi.x - lo.x), minimumSize);
-        }
-    }
-    if (yi.any) {
-        Point lo = DataToScreen({centerX, yi.min}, viewport, plotRect, true);
-        Point hi = DataToScreen({centerX, yi.max}, viewport, plotRect, true);
-        if (std::isfinite(lo.y) && std::isfinite(hi.y)) {
-            height = std::max(std::fabs(hi.y - lo.y), minimumSize);
-        }
-    }
-
-    glyph.hasImputation = true;
-    glyph.rect = {center.x - width / 2.0, center.y - height / 2.0, width, height};
-    return glyph;
+ScatterplotImputationGlyph ScatterplotImputationGlyphForPointValues(
+    const ScatterplotPointImputationValues &values,
+    const ScatterplotPointValue &point,
+    const DataViewport &viewport,
+    const Rect &plotRect,
+    const std::string &uncertaintyMode,
+    double singleAxisMinimumSize,
+    double twoAxisMinimumSize)
+{
+    return ScatterplotGlyphForRanges(
+        DiagnosticPointAxisRange(values, true, uncertaintyMode),
+        DiagnosticPointAxisRange(values, false, uncertaintyMode),
+        point, viewport, plotRect, singleAxisMinimumSize, twoAxisMinimumSize);
 }
 
 std::vector<ScatterplotPointDrawInput> BuildScatterplotPointDrawInputs(
@@ -350,6 +472,24 @@ std::vector<ScatterplotCaseGeometry> BuildScatterplotCaseGeometry(
         if (entry.hasGlyphRect) {
             entry.glyphRect = input.imputationGlyph.rect;
         }
+        geometry.push_back(entry);
+    }
+    return geometry;
+}
+
+std::vector<ScatterplotCaseGeometry> BuildScatterplotCaseGeometry(
+    const ScatterplotRenderInput &input)
+{
+    const ScatterplotRenderPlan plan = BuildScatterplotRenderPlan(input);
+    std::vector<ScatterplotCaseGeometry> geometry;
+    geometry.reserve(plan.points.size());
+    for (const ScatterplotPointDrawItem &item : plan.points) {
+        ScatterplotCaseGeometry entry;
+        entry.caseId = item.caseId;
+        entry.point = item.point;
+        entry.hasGlyphRect = item.hasImputationGlyph &&
+            item.imputationGlyph.hasImputation;
+        if (entry.hasGlyphRect) entry.glyphRect = item.imputationGlyph.rect;
         geometry.push_back(entry);
     }
     return geometry;
@@ -522,62 +662,241 @@ std::vector<ScatterplotOverlayLineItem> BuildScatterplotOverlayLinePlan(
     return plan;
 }
 
+std::vector<ScatterplotImputationPointSet> BuildScatterplotImputationPointSets(
+    const ScatterplotRenderInput &input)
+{
+    std::vector<ScatterplotImputationPointSet> sets;
+
+    // Regression diagnostic plots already carry the exact point generated by
+    // each separately fitted imputation.  Use those values directly.
+    const std::vector<ScatterplotPointImputationValues> *completeValues =
+        input.completeImputationPointValues &&
+        !input.completeImputationPointValues->empty()
+            ? input.completeImputationPointValues
+            : input.pointImputationValues;
+    if (completeValues && !completeValues->empty()) {
+        std::size_t count = 0;
+        for (const ScatterplotPointImputationValues &values :
+             *completeValues) {
+            if (count == 0) count = values.values.size();
+            else count = std::min(count, values.values.size());
+        }
+        if (count > 1) {
+            sets.resize(count);
+            for (std::size_t index = 0; index < count; ++index)
+                sets[index].imputationIndex = static_cast<int>(index + 1);
+            for (const ScatterplotPointImputationValues &values :
+                 *completeValues) {
+                for (std::size_t index = 0; index < count; ++index) {
+                    const Point point = values.values[index];
+                    if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
+                    sets[index].points.push_back(
+                        ScatterplotPointValue{values.row, point.x, point.y});
+                }
+            }
+            return sets;
+        }
+    }
+
+    // Ordinary MI scatterplots reconstruct each completed dataset from the
+    // worksheet's sparse imputation storage.  Fully observed cells naturally
+    // contribute the same value to every completed dataset.
+    if (!input.imputationDataFrame || !input.xColumn || !input.yColumn ||
+        !DataFrameShowsAllImputations(*input.imputationDataFrame) ||
+        input.imputationDataFrame->imputationCount <= 1) {
+        return sets;
+    }
+    const DataFrameModel &df = *input.imputationDataFrame;
+    sets.resize(static_cast<std::size_t>(df.imputationCount));
+    for (int version = 0; version < df.imputationCount; ++version) {
+        ScatterplotImputationPointSet &set = sets[static_cast<std::size_t>(version)];
+        set.imputationIndex = version + 1;
+        set.points.reserve(input.points.size());
+        for (const ScatterplotPointValue &base : input.points) {
+            if (base.caseId <= 0 || base.caseId > df.rows) continue;
+            const std::size_t row = static_cast<std::size_t>(base.caseId - 1);
+            const double x = NumericValueForDataFrameCellVersion(
+                df, *input.xColumn, row, version);
+            const double y = NumericValueForDataFrameCellVersion(
+                df, *input.yColumn, row, version);
+            if (!std::isfinite(x) || !std::isfinite(y)) continue;
+            set.points.push_back(ScatterplotPointValue{base.caseId, x, y});
+        }
+    }
+    return sets;
+}
+
+std::vector<ScatterplotImputationPointSet>
+BuildRegressionDiagnosticSmoothPointSets(const PlotModel &model)
+{
+    std::vector<ScatterplotImputationPointSet> sets;
+    if (!RegressionDiagnosticSupportsAddedLines(model)) return sets;
+
+    if (model.diagnosticShowImputationUncertainty &&
+        (!model.diagnosticAllImputationValues.empty() ||
+         !model.diagnosticImputationValues.empty())) {
+        ScatterplotRenderInput input;
+        input.points.reserve(model.points.size());
+        for (const DataPoint &point : model.points)
+            input.points.push_back({point.row, point.x, point.y});
+        input.pointImputationValues = &model.diagnosticImputationValues;
+        input.completeImputationPointValues =
+            &model.diagnosticAllImputationValues;
+        sets = BuildScatterplotImputationPointSets(input);
+        if (!sets.empty()) return sets;
+    }
+
+    ScatterplotImputationPointSet displayed;
+    displayed.imputationIndex = std::max(1, model.diagnosticImputationIndex);
+    displayed.points.reserve(model.points.size());
+    for (const DataPoint &point : model.points) {
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
+        displayed.points.push_back({point.row, point.x, point.y});
+    }
+    if (!displayed.points.empty()) sets.push_back(std::move(displayed));
+    return sets;
+}
+
+bool RegressionDiagnosticSupportsAddedLines(const PlotModel &model)
+{
+    return model.isGLMDiagnostic && model.kind == "scatter" &&
+        model.glmDiagnosticKind != "roc_curve";
+}
+
 ScatterplotRenderPlan BuildScatterplotRenderPlan(const ScatterplotRenderInput &input)
 {
     ScatterplotRenderPlan plan;
-    std::vector<ScatterplotPointDrawInput> drawInputs =
-        BuildScatterplotPointDrawInputs(input.points,
-                                        input.viewport,
-                                        input.plotRect,
-                                        input.imputationDataFrame,
-                                        input.xColumn,
-                                        input.yColumn,
-                                        input.imputationUncertaintyMode,
-                                        input.skipNonCaseRows);
-    plan.points = BuildScatterplotPointDrawPlan(drawInputs,
+    std::vector<ScatterplotPointDrawInput> computedDrawInputs;
+    if (!input.precomputedPointDrawInputs) {
+        computedDrawInputs = BuildScatterplotPointDrawInputs(
+            input.points, input.viewport, input.plotRect,
+            input.imputationDataFrame, input.xColumn, input.yColumn,
+            input.imputationUncertaintyMode, input.skipNonCaseRows);
+    } else if (input.pointImputationValues && !input.pointImputationValues->empty()) {
+        // Diagnostic glyphs override worksheet glyphs below. Keep the caller's
+        // cached geometry immutable when that override is active.
+        computedDrawInputs = *input.precomputedPointDrawInputs;
+    }
+    std::vector<ScatterplotPointDrawInput> &drawInputs = computedDrawInputs;
+    if (input.pointImputationValues && !input.pointImputationValues->empty()) {
+        std::map<CaseId, const ScatterplotPointImputationValues *> byRow;
+        for (const auto &values : *input.pointImputationValues) byRow[values.row] = &values;
+        for (std::size_t index = 0; index < drawInputs.size() && index < input.points.size(); ++index) {
+            auto found = byRow.find(input.points[index].caseId);
+            if (found == byRow.end()) continue;
+            ScatterplotImputationGlyph glyph = ScatterplotImputationGlyphForPointValues(
+                *found->second, input.points[index], input.viewport, input.plotRect,
+                input.imputationUncertaintyMode);
+            if (glyph.hasImputation) {
+                drawInputs[index].hasImputationGlyph = true;
+                drawInputs[index].imputationGlyph = glyph;
+            }
+        }
+    }
+    const std::vector<ScatterplotPointDrawInput> &effectiveDrawInputs =
+        input.precomputedPointDrawInputs &&
+        !(input.pointImputationValues && !input.pointImputationValues->empty())
+            ? *input.precomputedPointDrawInputs : drawInputs;
+    plan.points = BuildScatterplotPointDrawPlan(effectiveDrawInputs,
                                                 input.selectedRows,
                                                 input.rowColors,
                                                 input.rowLabels,
                                                 input.labelDisplayMode,
                                                 input.skipNonCaseRows);
-    std::vector<ScatterplotOverlayLineItem> overlayLines =
-        BuildScatterplotOverlayLinePlan(input.points,
-                                        input.overlays,
-                                        input.selectedRows,
-                                        input.rowColors,
-                                        input.selectedColorName,
-                                        input.viewport);
-    plan.overlayLines.reserve(overlayLines.size());
-    for (const ScatterplotOverlayLineItem &line : overlayLines) {
-        Point start = DataToScreen(line.start, input.viewport, input.plotRect, true);
-        Point end = DataToScreen(line.end, input.viewport, input.plotRect, true);
-        if (!ClipLineToRect(start, end, input.plotRect)) continue;
-        plan.overlayLines.push_back(ScatterplotOverlayDrawItem{
-            start,
-            end,
-            line.colorName,
-            line.alpha,
-            line.lineWidth,
-            line.dashed,
-            line.useDefaultDarkColor
-        });
+    std::map<std::pair<double, double>, std::size_t> overlapCounts;
+    if (input.sizeByOverlap && !input.sizeByVisualOverlap) {
+        for (const auto &item : plan.points)
+            if (!item.hasImputationGlyph && std::isfinite(item.point.x) && std::isfinite(item.point.y))
+                ++overlapCounts[{item.point.x, item.point.y}];
     }
+    std::vector<std::size_t> visualCounts;
+    if (input.sizeByOverlap && input.sizeByVisualOverlap) {
+        std::vector<Point> positions; positions.reserve(plan.points.size());
+        for (const auto &item : plan.points)
+            positions.push_back(item.hasImputationGlyph ? Point{NAN, NAN} : item.point);
+        visualCounts = ScatterplotVisualOverlapCounts(positions);
+    }
+    std::size_t pointIndex = 0;
+    for (ScatterplotPointDrawItem &item : plan.points) {
+        if (input.sizeByOverlap && !item.hasImputationGlyph &&
+            std::isfinite(item.point.x) && std::isfinite(item.point.y)) {
+            // Area, rather than radius, represents the number of coincident cases.
+            // Keep every case in the plan for linked selection and labels.
+            const auto count = input.sizeByVisualOverlap ? visualCounts[pointIndex]
+                : overlapCounts.at({item.point.x, item.point.y});
+            item.radius = 3.0 * std::sqrt(static_cast<double>(count));
+        }
+        ++pointIndex;
+        item.shadeOverlap = input.shadeOverlap;
+        // Density must not appear or disappear when an unrelated case is selected.
+        if (item.shadeOverlap && !item.selected && !item.hasImputationGlyph) {
+            item.fillAlpha = 0.35;
+            item.strokeAlpha = 0.35;
+        }
+    }
+    if (input.distinguishDiagnosticImputationRows) {
+        for (ScatterplotPointDrawItem &item : plan.points) {
+            const bool directlyImputed =
+                input.directlyImputedModelRows.find(item.caseId) !=
+                input.directlyImputedModelRows.end();
+            item.colorName = directlyImputed ? "red" : "black";
+            item.hasExplicitColor = true;
+        }
+        // Selection remains the outer painter layer. Within each selection
+        // state, directly imputed cases are drawn after fitted-propagation
+        // glyphs so their red semantic layer remains visible too.
+        std::stable_sort(
+            plan.points.begin(), plan.points.end(),
+            [](const ScatterplotPointDrawItem &left,
+               const ScatterplotPointDrawItem &right) {
+                if (left.selected != right.selected)
+                    return !left.selected;
+                const bool leftDirect = left.colorName == "red";
+                const bool rightDirect = right.colorName == "red";
+                return leftDirect != rightDirect && !leftDirect;
+            });
+    }
+    // Fitted lines are returned by R in smoothCurves. Reconstructing every
+    // completed imputation here only to discard the native line calculation
+    // added a second cases-by-imputations pass on every selection repaint.
     plan.smoothCurves = BuildSmoothCurveDrawItems(input.smoothCurves,
                                                   input.viewport,
-                                                  input.plotRect);
+                                                  input.plotRect,
+                                                  input.showFitConfidenceIntervals,
+                                                  input.showSmoothConfidenceIntervals);
     return plan;
 }
 
 std::vector<ScatterplotSmoothCurveDrawItem> BuildSmoothCurveDrawItems(
     const std::vector<SmoothCurveData> &curves,
     const DataViewport &viewport,
-    const Rect &plotRect)
+    const Rect &plotRect,
+    bool showConfidenceIntervals)
+{
+    return BuildSmoothCurveDrawItems(curves, viewport, plotRect,
+                                     showConfidenceIntervals,
+                                     showConfidenceIntervals);
+}
+
+std::vector<ScatterplotSmoothCurveDrawItem> BuildSmoothCurveDrawItems(
+    const std::vector<SmoothCurveData> &curves,
+    const DataViewport &viewport,
+    const Rect &plotRect,
+    bool showLinearConfidenceIntervals,
+    bool showSmoothConfidenceIntervals)
 {
     std::vector<ScatterplotSmoothCurveDrawItem> items;
     if (!IsValidViewport(viewport) || !IsValidRect(plotRect)) {
         return items;
     }
     items.reserve(curves.size());
+    std::size_t colouredIntervalCount = 0;
+    for (const SmoothCurveData &curve : curves) {
+        if (curve.ok && curve.confidenceLower.size() == curve.x.size() &&
+            curve.confidenceUpper.size() == curve.x.size() &&
+            !curve.groupId.empty() && curve.groupId != ".")
+            ++colouredIntervalCount;
+    }
     for (const SmoothCurveData &curve : curves) {
         if (!curve.ok || curve.x.empty() || curve.y.empty()) {
             continue;
@@ -596,28 +915,88 @@ std::vector<ScatterplotSmoothCurveDrawItem> BuildSmoothCurveDrawItems(
         if (hasNonFinite) {
             continue;
         }
-        ScatterplotSmoothCurveDrawItem item;
-        item.points.reserve(n);
-        item.colorName = curve.groupId;
-        if (curve.groupId == "." || curve.groupId.empty()) {
-            item.colorName = "";
-        }
+        ScatterplotSmoothCurveDrawItem style;
+        std::string displayGroup = curve.groupId;
+        const std::size_t imputationMarker = displayGroup.find("\x1f" "mi:");
+        const bool isImputationCurve = imputationMarker != std::string::npos;
+        if (isImputationCurve) displayGroup.resize(imputationMarker);
+        style.colorName = displayGroup;
+        if (displayGroup == "." || displayGroup.empty()) style.colorName = "";
         if (curve.scope == SmoothCurveScope::Selection) {
-            item.colorName = "gray";
-            item.alpha = 0.95;
-            item.lineWidth = 2.6;
-            item.dashed = true;
+            style.colorName = "gray";
+            style.alpha = 0.95;
+            style.lineWidth = 2.6;
+            style.dashed = true;
         }
+        if (isImputationCurve) {
+            style.alpha = std::min(style.alpha, 0.52);
+            style.lineWidth = std::min(style.lineWidth, 1.75);
+        }
+        style.confidenceAlpha = colouredIntervalCount > 1
+            ? std::max(0.055, 0.20 / std::sqrt(static_cast<double>(colouredIntervalCount)))
+            : 0.16;
+        if (curve.scope == SmoothCurveScope::Selection)
+            style.confidenceAlpha = std::min(style.confidenceAlpha, 0.12);
+        if (isImputationCurve)
+            style.confidenceAlpha = std::min(style.confidenceAlpha, 0.055);
+        const bool showConfidenceIntervals = curve.fitMethod == "loess"
+            ? showSmoothConfidenceIntervals
+            : showLinearConfidenceIntervals;
+        if (showConfidenceIntervals &&
+            curve.confidenceLower.size() == n && curve.confidenceUpper.size() == n) {
+            std::vector<Point> lower;
+            std::vector<Point> upper;
+            lower.reserve(n); upper.reserve(n);
+            for (size_t i = 0; i < n; ++i) {
+                if (!std::isfinite(curve.confidenceLower[i]) ||
+                    !std::isfinite(curve.confidenceUpper[i])) continue;
+                Point lo = DataToScreen({curve.x[i], curve.confidenceLower[i]},
+                                        viewport, plotRect, true);
+                Point hi = DataToScreen({curve.x[i], curve.confidenceUpper[i]},
+                                        viewport, plotRect, true);
+                if (!std::isfinite(lo.x) || !std::isfinite(lo.y) ||
+                    !std::isfinite(hi.x) || !std::isfinite(hi.y)) continue;
+                lo.x = std::max(plotRect.x, std::min(plotRect.x + plotRect.width, lo.x));
+                lo.y = std::max(plotRect.y, std::min(plotRect.y + plotRect.height, lo.y));
+                hi.x = std::max(plotRect.x, std::min(plotRect.x + plotRect.width, hi.x));
+                hi.y = std::max(plotRect.y, std::min(plotRect.y + plotRect.height, hi.y));
+                lower.push_back(lo); upper.push_back(hi);
+            }
+            if (lower.size() >= 2 && lower.size() == upper.size()) {
+                style.confidencePolygon = lower;
+                for (auto it = upper.rbegin(); it != upper.rend(); ++it)
+                    style.confidencePolygon.push_back(*it);
+            }
+        }
+        std::vector<Point> screenPoints;
+        screenPoints.reserve(n);
         for (size_t i = 0; i < n; ++i) {
             Point screen = DataToScreen({curve.x[i], curve.y[i]}, viewport, plotRect, true);
             if (!std::isfinite(screen.x) || !std::isfinite(screen.y)) {
                 continue;
             }
-            item.points.push_back(screen);
+            screenPoints.push_back(screen);
         }
-        if (item.points.size() >= 2) {
-            items.push_back(item);
+        ScatterplotSmoothCurveDrawItem run = style;
+        auto flush = [&]() {
+            if (run.points.size() >= 2) items.push_back(run);
+            run = style;
+        };
+        for (size_t i = 1; i < screenPoints.size(); ++i) {
+            Point start = screenPoints[i - 1];
+            Point end = screenPoints[i];
+            if (!ClipLineToRect(start, end, plotRect)) {
+                flush();
+                continue;
+            }
+            const bool contiguous = !run.points.empty() &&
+                std::fabs(run.points.back().x - start.x) < 1e-6 &&
+                std::fabs(run.points.back().y - start.y) < 1e-6;
+            if (!contiguous) flush();
+            if (run.points.empty()) run.points.push_back(start);
+            run.points.push_back(end);
         }
+        flush();
     }
     return items;
 }
@@ -667,20 +1046,10 @@ ScatterplotVariableMenuState BuildScatterplotVariableMenuState(
     return state;
 }
 
-std::vector<ScatterplotMenuOption> ScatterplotMouseModeMenuOptions(bool includePanZoom)
+std::vector<ScatterplotMenuOption> ScatterplotMouseModeMenuOptions(bool)
 {
-    std::vector<ScatterplotMenuOption> options = {
-        {"Pointer / None", "none", "SET_MODE_NONE"},
-        {"Select", "select", "SET_MODE_SELECT"},
-        {"Brush", "brush", "SET_MODE_BRUSH"},
-        {"Identify", "identify", "SET_MODE_IDENTIFY"},
-        {"Label", "label", "SET_MODE_LABEL"}
-    };
-    if (includePanZoom) {
-        options.push_back({"Pan", "pan", "SET_MODE_PAN"});
-        options.push_back({"Zoom", "zoom", "SET_MODE_ZOOM"});
-    }
-    return options;
+    // Native views use direct click/rectangle selection. Keep the API for clients.
+    return {};
 }
 
 std::vector<ScatterplotMenuOption> ScatterplotSelectionModeMenuOptions()
@@ -719,19 +1088,12 @@ std::vector<ScatterplotMenuOption> ScatterplotSelectionActionMenuOptions()
 
 std::vector<ScatterplotMenuOption> ScatterplotBrushMenuOptions()
 {
-    return {
-        {"Brush mode", "brush", "SET_MODE_BRUSH"},
-        {"Increase brush size", "larger", "BRUSH_LARGER"},
-        {"Decrease brush size", "smaller", "BRUSH_SMALLER"}
-    };
+    return {};
 }
 
 std::vector<ScatterplotMenuOption> ScatterplotViewMenuOptions()
 {
-    return {
-        {"Reset zoom", "reset_zoom", "RESET_ZOOM"},
-        {"Rescale to data", "rescale", "RESCALE"}
-    };
+    return {};
 }
 
 ScatterplotMenuOption ScatterplotChooseLabelColumnOption(const std::string &labelColumn)
@@ -776,6 +1138,59 @@ std::vector<ScatterplotMenuOption> ScatterplotImputationUncertaintyMenuOptions(
     return options;
 }
 
+std::string ScatterplotImputationDisplayMenuTitle(
+    int imputationCount,
+    int activeImputationVersion,
+    const std::string &displayMode)
+{
+    const int count = std::max(1, imputationCount);
+    const int active = std::max(1, std::min(count, activeImputationVersion));
+    if (displayMode == "all") {
+        return "Imputations: All (m = " + std::to_string(count) + ")";
+    }
+    if (displayMode == "original") {
+        return "Imputations: Original data";
+    }
+    return "Imputation: " + std::to_string(active) + " of " +
+        std::to_string(count);
+}
+
+std::vector<ScatterplotMenuOption> ScatterplotImputationDisplayMenuOptions(
+    int imputationCount,
+    int activeImputationVersion,
+    const std::string &displayMode)
+{
+    std::vector<ScatterplotMenuOption> options;
+    if (imputationCount <= 0) return options;
+    const int active = std::max(1, std::min(imputationCount, activeImputationVersion));
+    options.reserve(static_cast<std::size_t>(imputationCount) + 2);
+    for (int version = 1; version <= imputationCount; ++version) {
+        options.push_back({
+            "Imputation " + std::to_string(version) + " of " +
+                std::to_string(imputationCount),
+            "version:" + std::to_string(version),
+            "SET_IMPUTATION_DISPLAY|version:" + std::to_string(version),
+            true,
+            displayMode == "version" && version == active
+        });
+    }
+    options.push_back({
+        "All imputations (m = " + std::to_string(imputationCount) + ")",
+        "all",
+        "SET_IMPUTATION_DISPLAY|all",
+        true,
+        displayMode == "all"
+    });
+    options.push_back({
+        "Original incomplete data",
+        "original",
+        "SET_IMPUTATION_DISPLAY|original",
+        true,
+        displayMode == "original"
+    });
+    return options;
+}
+
 std::vector<ScatterplotMenuOption> ScatterplotPlotMenuOptions()
 {
     std::vector<ScatterplotMenuOption> options;
@@ -797,12 +1212,9 @@ ScatterplotMenuOption ScatterplotClosePlotOption()
 static bool ScatterplotHasSmoothScope(const std::vector<SmoothCurveData> &curves,
                                        SmoothCurveScope scope)
 {
-    for (const SmoothCurveData &c : curves) {
-        if (c.scope == scope) {
-            return true;
-        }
-    }
-    return false;
+    // A straight lm line and a LOESS curve can share a scope.  The smooth
+    // menu must reflect only its own curve, including a pending R fit.
+    return SmoothCurveScopeIsPresent(curves, scope);
 }
 
 ScatterplotMenuState BuildScatterplotMenuState(
@@ -813,7 +1225,9 @@ ScatterplotMenuState BuildScatterplotMenuState(
     const std::string &labelColumn,
     const std::string &labelDisplayMode,
     const std::vector<ScatterplotOverlaySpec> &overlays,
-    bool hasMultipleImputation,
+    int imputationCount,
+    int activeImputationVersion,
+    const std::string &imputationDisplayMode,
     const std::string &imputationUncertaintyMode,
     const std::vector<SmoothCurveData> &smoothCurves)
 {
@@ -824,8 +1238,16 @@ ScatterplotMenuState BuildScatterplotMenuState(
     state.selectionActionOptions = ScatterplotSelectionActionMenuOptions();
     state.brushOptions = ScatterplotBrushMenuOptions();
     state.viewOptions = ScatterplotViewMenuOptions();
-    state.showImputationUncertaintyOptions = hasMultipleImputation;
-    if (hasMultipleImputation) {
+    state.showImputationDisplayOptions = imputationCount > 0;
+    if (state.showImputationDisplayOptions) {
+        state.imputationDisplayTitle = ScatterplotImputationDisplayMenuTitle(
+            imputationCount, activeImputationVersion, imputationDisplayMode);
+        state.imputationDisplayOptions = ScatterplotImputationDisplayMenuOptions(
+            imputationCount, activeImputationVersion, imputationDisplayMode);
+    }
+    state.showImputationUncertaintyOptions =
+        state.showImputationDisplayOptions && imputationDisplayMode == "all";
+    if (state.showImputationUncertaintyOptions) {
         state.imputationUncertaintyOptions =
             ScatterplotImputationUncertaintyMenuOptions(imputationUncertaintyMode);
     }
@@ -841,7 +1263,7 @@ ScatterplotMenuState BuildScatterplotMenuState(
         {"Linear regression - by point color", "color", "TOGGLE_LM_COLOR", true,
             ScatterplotHasOverlaySource(overlays, "color")}
     };
-    state.clearOverlays = {"Remove all overlays", "clear", "CLEAR_OVERLAYS"};
+    state.clearOverlays = {"Remove all regression lines", "clear", "CLEAR_OVERLAYS"};
     state.smoothOptions = {
         {"Smooth curve - overall", "overall", "TOGGLE_SMOOTH_OVERALL", true,
             ScatterplotHasSmoothScope(smoothCurves, SmoothCurveScope::Overall)},
@@ -849,11 +1271,6 @@ ScatterplotMenuState BuildScatterplotMenuState(
             ScatterplotHasSmoothScope(smoothCurves, SmoothCurveScope::Selection)},
         {"Smooth curve - by point color", "color", "TOGGLE_SMOOTH_COLOR", true,
             ScatterplotHasSmoothScope(smoothCurves, SmoothCurveScope::ColorGroup)}
-    };
-    state.analysisOptions = {
-        {"Correlation: " + currentY + " with " + currentX, "correlation", "CONTEXT_CORRELATION_XY"},
-        {"Linear model: " + currentY + " ~ " + currentX, "linear_model", "CONTEXT_LINEAR_MODEL_XY"},
-        {"Descriptives: " + currentX + " and " + currentY, "descriptives", "CONTEXT_DESCRIPTIVES_XY"}
     };
     state.plotOptions = ScatterplotPlotMenuOptions();
     state.closePlot = ScatterplotClosePlotOption();
@@ -931,6 +1348,22 @@ void ComputeRanges(PlotModel &model)
     points.reserve(model.points.size());
     for (const DataPoint &p : model.points) {
         points.push_back(Point{p.x, p.y});
+    }
+    // Hidden intervals must not determine the visible viewport.  Keeping them
+    // in the model is still useful for an instantaneous display toggle, but a
+    // point-only effect plot should be scaled from the geometry it actually
+    // shows.  The native adapters recompute the range when intervals are
+    // toggled back on.
+    if (model.kind == "glm_interaction" &&
+        model.regressionConfidenceIntervalsVisible) {
+        for (const InteractionPlotLine &line : model.interactionPlotLines) {
+            for (const DataPoint &p : line.confidenceLower) {
+                if (std::isfinite(p.x) && std::isfinite(p.y)) points.push_back({p.x, p.y});
+            }
+            for (const DataPoint &p : line.confidenceUpper) {
+                if (std::isfinite(p.x) && std::isfinite(p.y)) points.push_back({p.x, p.y});
+            }
+        }
     }
     DataViewport viewport = DataViewportForPoints(points);
     model.dataXmin = viewport.xmin;

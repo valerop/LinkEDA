@@ -34,6 +34,11 @@ using rlispstat::core::ScatterMatrixVariablesAvailableForReplacement;
 using rlispstat::core::ScatterMatrixVariablesForInputs;
 using rlispstat::core::ScatterMatrixVariableSeries;
 using rlispstat::core::ScatterMatrixVisibleRows;
+using rlispstat::core::ScatterMatrixFitPanelId;
+using rlispstat::core::InvalidateScatterMatrixFits;
+using rlispstat::core::AddOverlaySource;
+using rlispstat::core::RemoveOverlaySource;
+using rlispstat::core::PlotModel;
 using rlispstat::core::SelectScatterMatrixCasesForGesture;
 
 static std::set<CaseId> S(std::initializer_list<CaseId> values)
@@ -43,6 +48,19 @@ static std::set<CaseId> S(std::initializer_list<CaseId> values)
 
 int main()
 {
+    PlotModel fitModel;
+    fitModel.kind = "scatter_matrix";
+    AddOverlaySource(fitModel, "all");
+    assert(fitModel.scatterMatrixFitsPending);
+    assert(fitModel.smoothCurves.empty());
+    const std::string oldPanel = ScatterMatrixFitPanelId(fitModel, 0, 1);
+    fitModel.scatterMatrixFitsPending = false;
+    InvalidateScatterMatrixFits(fitModel);
+    assert(fitModel.scatterMatrixFitsPending);
+    assert(ScatterMatrixFitPanelId(fitModel, 0, 1) != oldPanel);
+    RemoveOverlaySource(fitModel, "all");
+    assert(!fitModel.scatterMatrixFitsPending);
+
     ScatterMatrixCreationDialogState creationDialog = BuildScatterMatrixCreationDialogState();
     assert(creationDialog.title == "Scatterplot Matrix");
     assert(creationDialog.informativeText ==
@@ -272,6 +290,31 @@ int main()
     assert(unselectedPointPlan[0].label == "Case 1");
     assert(unselectedPointPlan[1].colorName == "orange");
     assert(unselectedPointPlan[1].alpha == 0.78);
+
+    // Selection may reorder cases for drawing, but each case must keep the
+    // same cell order so an existing visual can be restyled in place.
+    const std::vector<ScatterMatrixCaseGeometry> repeatedCases = {
+        {1, 0, 1, {10.0, 20.0}}, {2, 0, 1, {15.0, 25.0}},
+        {1, 1, 0, {20.0, 10.0}}, {3, 1, 0, {25.0, 15.0}},
+        {1, 0, 2, {30.0, 40.0}}, {2, 0, 2, {35.0, 45.0}}
+    };
+    const auto beforeSelection = BuildScatterMatrixPointDrawPlan(
+        repeatedCases, S({}), {}, {}, "none", 3);
+    const auto afterSelection = BuildScatterMatrixPointDrawPlan(
+        repeatedCases, S({1}), {}, {}, "none", 3);
+    std::vector<std::pair<std::size_t, std::size_t>> beforeCells;
+    std::vector<std::pair<std::size_t, std::size_t>> afterCells;
+    for (const auto& item : beforeSelection)
+        if (item.caseId == 1) beforeCells.emplace_back(item.row, item.column);
+    for (const auto& item : afterSelection)
+        if (item.caseId == 1) {
+            afterCells.emplace_back(item.row, item.column);
+            assert(item.selected && item.alpha == 1.0);
+        }
+    assert(beforeCells == afterCells);
+    assert(beforeCells.size() == 3);
+    for (const auto& item : afterSelection)
+        if (item.caseId == 2) assert(!item.selected && item.alpha == 0.22);
 
     return 0;
 }

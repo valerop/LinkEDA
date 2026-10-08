@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <iomanip>
 #include <random>
 #include <regex>
@@ -92,6 +93,114 @@ void MoveWindowStickyNoteAnchor(WindowStickyNote &note, double x, double y)
 {
     note.anchor_x = x;
     note.anchor_y = y;
+}
+
+void SetWindowStickyNoteReferenceSize(WindowStickyNote &note,
+                                      double width, double height)
+{
+    note.reference_width = width > 0.0 ? width : 0.0;
+    note.reference_height = height > 0.0 ? height : 0.0;
+}
+
+void SetWindowStickyNoteAnchorReferenceRect(WindowStickyNote &note,
+                                            double x, double y,
+                                            double width, double height)
+{
+    note.anchor_reference_x = x;
+    note.anchor_reference_y = y;
+    note.anchor_reference_width = width > 0.0 ? width : 0.0;
+    note.anchor_reference_height = height > 0.0 ? height : 0.0;
+}
+
+void SetWindowStickyNoteCollapsed(WindowStickyNote &note, bool collapsed)
+{
+    note.collapsed = collapsed;
+}
+
+WindowStickyNote WindowStickyNoteForCanvas(const WindowStickyNote &note,
+                                           double width, double height)
+{
+    return WindowStickyNoteForCanvas(note, width, height,
+                                     0.0, 0.0, 0.0, 0.0);
+}
+
+WindowStickyNote WindowStickyNoteForCanvas(const WindowStickyNote &note,
+                                           double width, double height,
+                                           double anchorReferenceX,
+                                           double anchorReferenceY,
+                                           double anchorReferenceWidth,
+                                           double anchorReferenceHeight)
+{
+    WindowStickyNote result = note;
+    if (!(width > 0.0) || !(height > 0.0)) return result;
+    if (note.reference_width > 0.0 && note.reference_height > 0.0 &&
+        (std::abs(note.reference_width - width) > 0.01 ||
+         std::abs(note.reference_height - height) > 0.01)) {
+        const double scaleX = width / note.reference_width;
+        const double scaleY = height / note.reference_height;
+        result.x *= scaleX;
+        result.y *= scaleY;
+        result.width *= scaleX;
+        result.height *= scaleY;
+        result.anchor_x *= scaleX;
+        result.anchor_y *= scaleY;
+    }
+    const bool hasSourceAnchorReference =
+        note.anchor_reference_width > 0.0 && note.anchor_reference_height > 0.0;
+    const bool hasTargetAnchorReference =
+        anchorReferenceWidth > 0.0 && anchorReferenceHeight > 0.0;
+    if (hasSourceAnchorReference && hasTargetAnchorReference) {
+        const double relativeX = (note.anchor_x - note.anchor_reference_x) /
+            note.anchor_reference_width;
+        const double relativeY = (note.anchor_y - note.anchor_reference_y) /
+            note.anchor_reference_height;
+        // Only anchors that actually target the graph's plotting area use the
+        // plot-area transform.  Free-standing pointers continue to follow the
+        // full canvas.
+        if (relativeX >= -0.02 && relativeX <= 1.02 &&
+            relativeY >= -0.02 && relativeY <= 1.02) {
+            result.anchor_x = anchorReferenceX + relativeX * anchorReferenceWidth;
+            result.anchor_y = anchorReferenceY + relativeY * anchorReferenceHeight;
+        }
+    }
+    result.x = std::clamp(result.x, 0.0, std::max(0.0, width - result.width));
+    result.y = std::clamp(result.y, 0.0, std::max(0.0, height - result.height));
+    result.anchor_x = std::clamp(result.anchor_x, 0.0, width);
+    result.anchor_y = std::clamp(result.anchor_y, 0.0, height);
+    result.reference_width = width;
+    result.reference_height = height;
+    if (hasTargetAnchorReference) {
+        result.anchor_reference_x = anchorReferenceX;
+        result.anchor_reference_y = anchorReferenceY;
+        result.anchor_reference_width = anchorReferenceWidth;
+        result.anchor_reference_height = anchorReferenceHeight;
+    }
+    return result;
+}
+
+void RelayoutWindowStickyNoteForCanvasResize(WindowStickyNote &note,
+                                             double oldWidth, double oldHeight,
+                                             double newWidth, double newHeight)
+{
+    if (!(oldWidth > 0.0) || !(oldHeight > 0.0) ||
+        !(newWidth > 0.0) || !(newHeight > 0.0)) return;
+
+    const double scaleX = newWidth / oldWidth;
+    const double scaleY = newHeight / oldHeight;
+    const double centreX = (note.x + note.width / 2.0) * scaleX;
+    const double centreY = (note.y + note.height / 2.0) * scaleY;
+    const double maximumX = std::max(0.0, newWidth - note.width);
+    const double maximumY = std::max(0.0, newHeight - note.height);
+    note.x = std::clamp(centreX - note.width / 2.0, 0.0, maximumX);
+    note.y = std::clamp(centreY - note.height / 2.0, 0.0, maximumY);
+    note.anchor_x = std::clamp(note.anchor_x * scaleX, 0.0, newWidth);
+    note.anchor_y = std::clamp(note.anchor_y * scaleY, 0.0, newHeight);
+    note.anchor_reference_x *= scaleX;
+    note.anchor_reference_y *= scaleY;
+    note.anchor_reference_width *= scaleX;
+    note.anchor_reference_height *= scaleY;
+    note.reference_width = newWidth;
+    note.reference_height = newHeight;
 }
 
 void SetWindowNoteText(WindowNote &note, const std::string &text, WindowNoteTimePoint now)
@@ -236,6 +345,45 @@ std::string ComposeSvgDocumentWithWindowStickyNotes(
     if (stickers.empty()) return svg;
     const std::size_t closing = svg.rfind("</svg>");
     if (closing == std::string::npos) return svg;
+    double canvasWidth = 0.0, canvasHeight = 0.0;
+    std::smatch viewBox;
+    const std::regex viewBoxPattern(
+        R"(viewBox\s*=\s*['\"]\s*[-+0-9.eE]+\s+[-+0-9.eE]+\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*['\"])");
+    if (std::regex_search(svg, viewBox, viewBoxPattern)) {
+        canvasWidth = std::stod(viewBox[1].str());
+        canvasHeight = std::stod(viewBox[2].str());
+    }
+    double plotX = 0.0, plotY = 0.0, plotWidth = 0.0, plotHeight = 0.0;
+    const bool hasPlotAnchoredSticker = std::any_of(
+        stickers.begin(), stickers.end(), [](const WindowStickyNote &sticker) {
+            if (!(sticker.anchor_reference_width > 0.0) ||
+                !(sticker.anchor_reference_height > 0.0) ||
+                !(sticker.reference_width > 0.0) ||
+                !(sticker.reference_height > 0.0)) return false;
+            return std::abs(sticker.anchor_reference_x) > 0.5 ||
+                std::abs(sticker.anchor_reference_y) > 0.5 ||
+                std::abs(sticker.anchor_reference_width - sticker.reference_width) > 0.5 ||
+                std::abs(sticker.anchor_reference_height - sticker.reference_height) > 0.5;
+        });
+    if (hasPlotAnchoredSticker && canvasWidth > 0.0 && canvasHeight > 0.0) {
+        const std::regex rectanglePattern(
+            R"(<rect\s+x=['\"]([-+0-9.eE]+)['\"]\s+y=['\"]([-+0-9.eE]+)['\"]\s+width=['\"]([-+0-9.eE]+)['\"]\s+height=['\"]([-+0-9.eE]+)['\"])");
+        for (std::sregex_iterator it(svg.begin(), svg.end(), rectanglePattern), end;
+             it != end; ++it) {
+            const double x = std::stod((*it)[1].str());
+            const double y = std::stod((*it)[2].str());
+            const double width = std::stod((*it)[3].str());
+            const double height = std::stod((*it)[4].str());
+            const bool fullCanvas = std::abs(x) < 0.5 && std::abs(y) < 0.5 &&
+                std::abs(width - canvasWidth) < 0.5 &&
+                std::abs(height - canvasHeight) < 0.5;
+            if (!fullCanvas && width >= canvasWidth * 0.45 &&
+                height >= canvasHeight * 0.45) {
+                plotX = x; plotY = y; plotWidth = width; plotHeight = height;
+                break;
+            }
+        }
+    }
     const auto fillForColor = [](StickyNoteColor color) {
         switch (color) {
         case StickyNoteColor::Pink: return "#ffb8d6";
@@ -248,30 +396,39 @@ std::string ComposeSvgDocumentWithWindowStickyNotes(
     };
     std::ostringstream group;
     group << "<g id='linkeda-snapshot-stickers' font-family='sans-serif'>\n";
-    for (const WindowStickyNote &sticker : stickers) {
+    for (const WindowStickyNote &stored : stickers) {
+        const WindowStickyNote sticker = plotWidth > 0.0 && plotHeight > 0.0
+            ? WindowStickyNoteForCanvas(stored, canvasWidth, canvasHeight,
+                plotX, plotY, plotWidth, plotHeight)
+            : WindowStickyNoteForCanvas(stored, canvasWidth, canvasHeight);
         if (!sticker.has_content) continue;
-        const double centerX = sticker.x + sticker.width / 2.0;
-        const double centerY = sticker.y + sticker.height / 2.0;
+        const double displayedWidth = sticker.collapsed ? 32.0 : sticker.width;
+        const double displayedHeight = sticker.collapsed ? 28.0 : sticker.height;
+        const double centerX = sticker.x + displayedWidth / 2.0;
+        const double centerY = sticker.y + displayedHeight / 2.0;
         group << "<line x1='" << centerX << "' y1='" << centerY
               << "' x2='" << sticker.anchor_x << "' y2='" << sticker.anchor_y
               << "' stroke='#383838' stroke-opacity='.72' stroke-width='1.5'/>\n"
               << "<circle cx='" << sticker.anchor_x << "' cy='" << sticker.anchor_y
               << "' r='5' fill='#333333' fill-opacity='.9'/>\n"
               << "<rect x='" << sticker.x << "' y='" << sticker.y
-              << "' width='" << sticker.width << "' height='" << sticker.height
+              << "' width='" << displayedWidth << "' height='" << displayedHeight
               << "' rx='5' fill='" << fillForColor(sticker.color)
-              << "' stroke='#555555' stroke-opacity='.3'/>\n"
-              << "<rect x='" << sticker.x << "' y='" << sticker.y
-              << "' width='" << sticker.width << "' height='28' rx='5' fill='#000000' fill-opacity='.07'/>\n"
-              << "<text x='" << (sticker.x + 8.0) << "' y='" << (sticker.y + 18.0)
-              << "' font-size='11' font-weight='600' fill='#242424'>Sticker</text>\n";
+              << "' stroke='#555555' stroke-opacity='.3'/>\n";
+        if (sticker.collapsed) {
+            group << "<text x='" << (sticker.x + displayedWidth / 2.0)
+                  << "' y='" << (sticker.y + 19.0)
+                  << "' text-anchor='middle' font-size='17' font-weight='700'"
+                  << " fill='#292929'>…</text>\n";
+            continue;
+        }
         const std::size_t columns = std::max<std::size_t>(12,
             static_cast<std::size_t>(std::max(1.0, sticker.width - 24.0) / 7.0));
         std::vector<std::string> lines = WrapSvgNote(sticker.plain_text, columns);
         const std::size_t maxLines = std::max<std::size_t>(1,
-            static_cast<std::size_t>(std::max(1.0, sticker.height - 48.0) / 17.0));
+            static_cast<std::size_t>(std::max(1.0, sticker.height - 24.0) / 17.0));
         if (lines.size() > maxLines) lines.resize(maxLines);
-        group << "<text x='" << (sticker.x + 12.0) << "' y='" << (sticker.y + 51.0)
+        group << "<text x='" << (sticker.x + 12.0) << "' y='" << (sticker.y + 24.0)
               << "' font-size='13' fill='#1a1a1a'>\n";
         for (std::size_t index = 0; index < lines.size(); ++index) {
             group << "<tspan x='" << (sticker.x + 12.0) << "' dy='"

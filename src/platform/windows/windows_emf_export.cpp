@@ -1,7 +1,12 @@
 #include "windows_emf_export.h"
+#include "../../core/format_model.h"
+#include "../../core/scatterplot_model.h"
 
 #ifdef _WIN32
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -32,20 +37,72 @@ void DrawTextUtf8(HDC dc, const std::string &text, int x, int y, UINT alignment)
     TextOutW(dc, x, y, wide.c_str(), static_cast<int>(wide.size()));
 }
 
-bool FinishAndCopyMetafile(HDC metafile, std::string *error)
+void FillVectorRect(HDC dc, const RECT &rect, HBRUSH brush)
+{
+    // FillRect may be encoded by some GDI drivers as EMR_BITBLT, which makes
+    // an otherwise vector-only EMF contain a raster operation.  Rectangle
+    // with a NULL_PEN records an explicit EMR_RECTANGLE instead.
+    HGDIOBJ oldBrush = SelectObject(dc, brush);
+    HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Rectangle(dc, rect.left, rect.top, rect.right, rect.bottom);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+}
+
+bool SetClipboardBytes(UINT format, const void *bytes, std::size_t size)
+{
+    HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, size);
+    if (!data) return false;
+    void *destination = GlobalLock(data);
+    if (!destination) {
+        GlobalFree(data);
+        return false;
+    }
+    CopyMemory(destination, bytes, size);
+    GlobalUnlock(data);
+    if (!SetClipboardData(format, data)) {
+        GlobalFree(data);
+        return false;
+    }
+    return true;
+}
+
+bool FinishAndCopyMetafile(HDC metafile, const std::string *svg,
+                           bool includeSvgText, std::string *error)
 {
     HENHMETAFILE handle = CloseEnhMetaFile(metafile);
     if (!handle) {
         if (error) *error = "The Enhanced Metafile could not be finalized.";
         return false;
     }
-    if (!OpenClipboard(nullptr)) {
+    bool clipboardOpen = false;
+    for (int attempt = 0; attempt < 20 && !clipboardOpen; ++attempt) {
+        clipboardOpen = OpenClipboard(nullptr) != FALSE;
+        if (!clipboardOpen) Sleep(5);
+    }
+    if (!clipboardOpen) {
         DeleteEnhMetaFile(handle);
         if (error) *error = "The Windows clipboard is unavailable.";
         return false;
     }
     bool copied = false;
-    if (EmptyClipboard()) copied = SetClipboardData(CF_ENHMETAFILE, handle) != nullptr;
+    if (EmptyClipboard()) {
+        copied = SetClipboardData(CF_ENHMETAFILE, handle) != nullptr;
+        if (copied && svg && !svg->empty()) {
+            const UINT svgFormat = RegisterClipboardFormatW(L"image/svg+xml");
+            if (svgFormat != 0) {
+                std::string terminated = *svg;
+                terminated.push_back('\0');
+                (void)SetClipboardBytes(svgFormat, terminated.data(), terminated.size());
+            }
+            if (includeSvgText) {
+                std::wstring wide = Utf8ToWide(*svg);
+                wide.push_back(L'\0');
+                (void)SetClipboardBytes(CF_UNICODETEXT, wide.data(),
+                    wide.size() * sizeof(wchar_t));
+            }
+        }
+    }
     CloseClipboard();
     if (!copied) {
         DeleteEnhMetaFile(handle);
@@ -58,9 +115,11 @@ bool FinishAndCopyMetafile(HDC metafile, std::string *error)
 
 } // namespace
 
-bool CopyPlotAsEnhancedMetafile(const core::PlotModel &plot,
-                                const core::ExportDimensions &dimensions,
-                                std::string *error)
+static bool CopyPlotClipboardImpl(const core::PlotModel &plot,
+                                  const core::ExportDimensions &dimensions,
+                                  const std::string *svg,
+                                  bool includeSvgText,
+                                  std::string *error)
 {
     if (!std::isfinite(dimensions.widthPoints) || !std::isfinite(dimensions.heightPoints) ||
         dimensions.widthPoints <= 0.0 || dimensions.heightPoints <= 0.0) {
@@ -94,7 +153,7 @@ bool CopyPlotAsEnhancedMetafile(const core::PlotModel &plot,
 
     HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
     RECT background{0, 0, width, height};
-    FillRect(metafile, &background, white);
+    FillVectorRect(metafile, background, white);
     DeleteObject(white);
 
     HFONT titleFont = CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -116,8 +175,6 @@ bool CopyPlotAsEnhancedMetafile(const core::PlotModel &plot,
     const core::DataViewport viewport = core::DataViewportForPoints(dataPoints);
     HPEN gridPen = CreatePen(PS_SOLID, 1, RGB(220, 224, 228));
     HPEN axisPen = CreatePen(PS_SOLID, 1, RGB(48, 54, 58));
-    HPEN pointPen = CreatePen(PS_SOLID, 1, RGB(50, 50, 50));
-    HBRUSH pointBrush = CreateSolidBrush(RGB(50, 50, 50));
     HGDIOBJ oldPen = SelectObject(metafile, gridPen);
     for (int tick = 0; tick <= 5; ++tick) {
         const int x = static_cast<int>(std::llround(plotRect.x + plotRect.width * tick / 5.0));
@@ -135,16 +192,49 @@ bool CopyPlotAsEnhancedMetafile(const core::PlotModel &plot,
     SaveDC(metafile);
     IntersectClipRect(metafile, static_cast<int>(plotRect.x), static_cast<int>(plotRect.y),
         static_cast<int>(plotRect.x + plotRect.width), static_cast<int>(plotRect.y + plotRect.height));
-    SelectObject(metafile, pointPen);
-    HGDIOBJ oldBrush = SelectObject(metafile, pointBrush);
+    for (const core::ScatterplotSmoothCurveDrawItem &curve :
+         core::BuildSmoothCurveDrawItems(plot.smoothCurves, viewport, plotRect)) {
+        const core::PlotRGBA rgba = curve.colorName.empty()
+            ? core::PlotColorForNameOrHex("black")
+            : core::PlotColorForNameOrHex(curve.colorName);
+        HPEN curvePen = CreatePen(curve.dashed ? PS_DASH : PS_SOLID,
+            std::max(1, static_cast<int>(std::llround(curve.lineWidth))),
+            RGB(static_cast<int>(rgba.r * 255.0), static_cast<int>(rgba.g * 255.0),
+                static_cast<int>(rgba.b * 255.0)));
+        HGDIOBJ previous = SelectObject(metafile, curvePen);
+        if (!curve.points.empty()) {
+            MoveToEx(metafile, static_cast<int>(std::llround(curve.points.front().x)),
+                     static_cast<int>(std::llround(curve.points.front().y)), nullptr);
+            for (std::size_t index = 1; index < curve.points.size(); ++index)
+                LineTo(metafile, static_cast<int>(std::llround(curve.points[index].x)),
+                       static_cast<int>(std::llround(curve.points[index].y)));
+        }
+        SelectObject(metafile, previous);
+        DeleteObject(curvePen);
+    }
     for (const core::DataPoint &point : plot.points) {
         if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
         const core::Point screen = core::DataToScreen({point.x, point.y}, viewport, plotRect, true);
         const int x = static_cast<int>(std::llround(screen.x));
         const int y = static_cast<int>(std::llround(screen.y));
+        core::PlotRGBA rgba = core::PlotColorForNameOrHex("black");
+        auto color = plot.frozenRowColors.find(point.row);
+        if (color != plot.frozenRowColors.end() && !color->second.empty())
+            rgba = core::PlotColorForNameOrHex(color->second);
+        HPEN pointPen = CreatePen(PS_SOLID, 1,
+            RGB(static_cast<int>(rgba.r * 255.0), static_cast<int>(rgba.g * 255.0),
+                static_cast<int>(rgba.b * 255.0)));
+        HBRUSH pointBrush = CreateSolidBrush(
+            RGB(static_cast<int>(rgba.r * 255.0), static_cast<int>(rgba.g * 255.0),
+                static_cast<int>(rgba.b * 255.0)));
+        HGDIOBJ previousPen = SelectObject(metafile, pointPen);
+        HGDIOBJ previousBrush = SelectObject(metafile, pointBrush);
         Ellipse(metafile, x - 3, y - 3, x + 4, y + 4);
+        SelectObject(metafile, previousBrush);
+        SelectObject(metafile, previousPen);
+        DeleteObject(pointBrush);
+        DeleteObject(pointPen);
     }
-    SelectObject(metafile, oldBrush);
     RestoreDC(metafile, -1);
     DrawTextUtf8(metafile, plot.xLabel, width / 2, height - 24, TA_CENTER);
     DrawTextUtf8(metafile, plot.yLabel, 8, height / 2, TA_LEFT);
@@ -153,12 +243,26 @@ bool CopyPlotAsEnhancedMetafile(const core::PlotModel &plot,
     SelectObject(metafile, oldFont);
     DeleteObject(gridPen);
     DeleteObject(axisPen);
-    DeleteObject(pointPen);
-    DeleteObject(pointBrush);
     DeleteObject(titleFont);
     DeleteObject(labelFont);
 
-    return FinishAndCopyMetafile(metafile, error);
+    return FinishAndCopyMetafile(metafile, svg, includeSvgText, error);
+}
+
+bool CopyPlotAsEnhancedMetafile(const core::PlotModel &plot,
+                                const core::ExportDimensions &dimensions,
+                                std::string *error)
+{
+    return CopyPlotClipboardImpl(plot, dimensions, nullptr, false, error);
+}
+
+bool CopyPlotWithOfficeClipboardFormats(const core::PlotModel &plot,
+                                        const core::ExportDimensions &dimensions,
+                                        const std::string &svg,
+                                        bool includeSvgText,
+                                        std::string *error)
+{
+    return CopyPlotClipboardImpl(plot, dimensions, &svg, includeSvgText, error);
 }
 
 bool CopyTableAsEnhancedMetafile(const std::string &title,
@@ -190,7 +294,7 @@ bool CopyTableAsEnhancedMetafile(const std::string &title,
     SetTextColor(metafile, RGB(24, 24, 24));
     HBRUSH white = CreateSolidBrush(RGB(255, 255, 255));
     RECT background{0, 0, width, height};
-    FillRect(metafile, &background, white);
+    FillVectorRect(metafile, background, white);
     DeleteObject(white);
 
     HFONT titleFont = CreateFontW(-16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -218,7 +322,7 @@ bool CopyTableAsEnhancedMetafile(const std::string &title,
             RECT headerRect{static_cast<LONG>(layout.margin), y,
                 width - static_cast<LONG>(layout.margin),
                 y + static_cast<LONG>(layout.rowHeight)};
-            FillRect(metafile, &headerRect, headerBrush);
+            FillVectorRect(metafile, headerRect, headerBrush);
             DeleteObject(headerBrush);
         }
         SelectObject(metafile, row == 0 ? headerFont : bodyFont);
@@ -245,7 +349,7 @@ bool CopyTableAsEnhancedMetafile(const std::string &title,
     DeleteObject(headerFont);
     DeleteObject(bodyFont);
     DeleteObject(rulePen);
-    return FinishAndCopyMetafile(metafile, error);
+    return FinishAndCopyMetafile(metafile, nullptr, false, error);
 }
 
 } // namespace windows

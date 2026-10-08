@@ -5,7 +5,7 @@
 \alias{ls_regression_comparison_set_term}
 \alias{ls_regression_comparison_open_diagnostic}
 \alias{ls_regression_comparison_state}
-\title{Native regression model comparison}
+\title{Native General Linear Model comparison}
 \usage{
 ls_new_regression_comparison(data = NULL, response = NULL, models = NULL,
   scope = "all", name = NULL, native = TRUE)
@@ -37,7 +37,7 @@ for the new model column.}
 \item{type}{Diagnostic plot type.}
 }
 \description{
-Creates a native, side-by-side ordinary linear regression model comparison
+Creates a native, side-by-side General Linear Model comparison
 window. Rows are aligned terms, columns are alternative models, coefficient
 cells show unstandardized coefficients with significance stars, and global fit
 statistics are shown below the coefficient block.

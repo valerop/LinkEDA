@@ -23,14 +23,14 @@ ls_model_info(model)
 ls_model_set_y(model, variable)
 ls_model_add_term(model, variable)
 ls_model_remove_term(model, variable)
-ls_model_scope(model, scope = c("all", "selected", "unselected", "compare_selected_all"))
+ls_model_scope(model, scope = c("all", "selected", "unselected"))
 ls_model_fit(model)
 ls_model_open_diagnostics(model)
 ls_model_open_residuals_fitted(model)
 ls_model_open_observed_fitted(model)
 ls_workbench(data, group = "data", y = NULL, terms = NULL, labels = NULL,
   color = NULL, openDiagnostics = FALSE,
-  scope = c("all", "selected", "unselected", "compare_selected_all"))
+  scope = c("all", "selected", "unselected"))
 }
 \arguments{
 \item{group}{Linked group name. If omitted, the only active group is used.}

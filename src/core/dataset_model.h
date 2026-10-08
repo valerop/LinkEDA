@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "provenance_model.h"
+
 namespace rlispstat {
 namespace core {
 
@@ -25,6 +27,24 @@ struct DataColumn {
     std::vector<std::vector<std::string>> imputationValues;
     std::map<std::size_t, std::string> imputationOriginalSparse;
     std::vector<std::map<std::size_t, std::string>> imputationValuesSparse;
+    // Exact labels retained only while a binary factor is temporarily exposed
+    // as numeric 0/1. This metadata is dormant for numeric rendering and
+    // analysis, and permits a lossless change back to factor.
+    std::vector<std::string> reversibleFactorLevels;
+    // Statistical meaning and R storage are deliberately separate. `type`
+    // remains the stable persisted semantic identifier; storageType records
+    // the representation used to transport the values to R.
+    std::string storageType;
+    std::map<std::string, std::string> numericMapping;
+    std::string reversibleCategoryType;
+    bool binary = false;
+};
+
+struct VariableTypeConversionSpecification {
+    std::map<std::string, std::string> numericMapping;
+    std::vector<std::string> categoryOrder;
+    bool invertBinary = false;
+    bool useOrdinalPositions = true;
 };
 
 struct DataFrameModel {
@@ -37,6 +57,18 @@ struct DataFrameModel {
     int imputationCount = 0;
     int activeImputationVersion = 1;
     std::string imputationDisplayMode = "version";
+    // Opaque compressed R serialization of the original mids and name map.
+    // Native code transports it; only R validates and interprets the contents.
+    std::string imputationProcess;
+    // Stable identity is independent of the visible row order. Data version
+    // advances for every material data or metadata mutation.
+    std::vector<std::string> stableRowIds;
+    std::uint64_t dataVersion = 1;
+    // Runtime-only R-session identity. It is intentionally absent from documents.
+    std::string syncSessionToken;
+    DataProvenance provenance;
+    // Only verification bundles use this frozen RDS; ordinary exports do not.
+    std::string verificationPreparedRds;
 };
 
 struct VariableViewRow {
@@ -67,6 +99,7 @@ struct MissingDataImputationDialogState {
     std::string title = "Multiple Imputation";
     std::string failedTitle = "Imputation Failed";
     std::string informativeText = "Runs mice on the selected dataset and creates a linked multiple-imputation data sheet with imputed cells marked.";
+    std::string automaticModelNote = "General-purpose imputation model. You can choose methods and predictors here. By default, selected predictors are used across the other imputation models. This may be unsuitable for your study, cause convergence problems, or use unnecessary computing resources. Advanced model design (separate predictor sets, interactions, blocks and constraints) should be prepared in mice in R; import the original mids object.";
     std::string runButtonTitle = "Run imputation";
     std::string cancelButtonTitle = "Cancel";
     std::string noImputeVariablesStatus = "Select at least one variable with missing values to impute.";
@@ -81,7 +114,7 @@ struct MissingDataImputationDialogState {
     std::string deselectAllTitle = "Deselect all";
     std::string deselectPredictorsTitle = "Deselect predictors";
     std::string instructionHint = "Select variables to impute, choose a mice method, and select predictors. ID-like columns are left unchecked by default.";
-    std::string methodHint = "Methods: numeric pmm/norm/cart; binary factors logreg; multi-level factors polyreg/cart.";
+    std::string methodHint = "Methods: numeric pmm/norm/cart; binary categorical variables logreg; multi-category variables polyreg/cart.";
     std::string imputeColumnTitle = "Impute";
     std::string typeMissingColumnTitle = "Type / missing";
     std::string methodColumnTitle = "Method";
@@ -100,9 +133,21 @@ std::string CsvEscape(const std::string &value);
 bool WriteDataFrameCSV(std::ostream &out,
                        const DataFrameModel &df,
                        const std::vector<int> &includeRows = {});
+// Writes a user-facing CSV rather than the internal R transport format.
+// Ordinary datasets contain only their data columns. Multiple-imputation
+// datasets use mice-compatible long form: .imp, .id, followed by the data
+// columns, including .imp = 0 for the original incomplete data.
+bool WriteDataExportCSV(std::ostream &out, const DataFrameModel &df);
+// Writes column semantics used when converting the user-facing CSV through R.
+// Factor and ordered levels are stored explicitly so statistical-package
+// exports retain their categorical coding instead of becoming plain strings.
+bool WriteDataExportMetadataCSV(std::ostream &out, const DataFrameModel &df);
 DataFrameModel SubsetDataFrame(const DataFrameModel &source,
                                const std::vector<int> &originalRowIds,
                                const std::string &newGroup);
+DataFrameModel SubsetDataFrameColumns(const DataFrameModel &source,
+                                     const std::vector<std::string> &columnNames,
+                                     const std::string &newGroup);
 std::string NativeImportRScript();
 std::string NativeMiceImputationRScript();
 std::string NativePooledAnalysisRScript();
@@ -116,6 +161,19 @@ struct NativeImportFileFilter {
 };
 std::vector<NativeImportFileFilter> NativeImportFileFilters();
 std::vector<std::string> NativeImportAllowedFileExtensions();
+struct NativeDataExportFileFilter {
+    std::string identifier;
+    std::string title;
+    std::string extension;
+};
+std::vector<NativeDataExportFileFilter> NativeDataExportFileFilters();
+std::string NativeDataExportFormatForExtension(const std::string &extension);
+std::string NativeDataExportRScript();
+std::string NativeDataExportTemporaryFileFailedStatus();
+std::string NativeDataExportRscriptLaunchFailedStatus();
+std::string NativeDataExportRscriptFailedStatus();
+std::string NativeDataExportSuccessStatus(const std::string &format,
+                                          bool multipleImputation);
 std::string NativeImportTemporaryScriptFailedStatus();
 std::string NativeImportRscriptLaunchFailedStatus();
 std::string NativeImportRscriptFailedStatus();
@@ -124,6 +182,7 @@ std::string NativeImportDatasetLoadedStatus(const std::string &group);
 std::string NativeImportDatasetLoadedStatus(const std::string &group,
                                             int rows,
                                             std::size_t variableCount);
+std::string ImportedVariableTypeReviewWarning(const DataFrameModel &dataframe);
 std::string NativeRDataPayloadTemporaryFileFailedStatus();
 std::string NativeMiceTemporaryScriptFailedStatus();
 std::string NativeMiceRscriptLaunchFailedStatus();
@@ -138,6 +197,10 @@ std::string NativePooledAnalysisOpenedStatus();
 
 std::string NormalizeVariableType(const std::string &type);
 bool VariableTypeIsSupported(const std::string &type);
+bool VariableTypeIsNumeric(const std::string &type);
+bool VariableTypeIsCategorical(const std::string &type);
+bool VariableTypeIsOrdinal(const std::string &type);
+bool VariableTypeIsText(const std::string &type);
 bool VariableTypeIsFactorLike(const std::string &type);
 std::string VariableTypeDisplayName(const std::string &type);
 std::string VariableRoleDisplayName(const std::string &role);
@@ -168,10 +231,15 @@ bool DataColumnHasMissing(const DataColumn &col);
 bool DataColumnAllMissing(const DataColumn &col);
 bool DataColumnSupportedForMice(const DataColumn &col);
 bool DataColumnLooksLikeId(const DataColumn &col);
+bool DataColumnLooksLikeAnalysisId(const DataColumn &col);
 bool DataColumnLooksBinaryNumeric(const DataColumn &col);
+bool DataColumnIsBinaryCategorical(const DataColumn &col);
+std::string DataColumnStorageType(const DataColumn &col);
 bool DataColumnLooksGroupingCandidate(const DataColumn &col, int rows);
 int DataColumnMissingCount(const DataColumn &col);
 int DataColumnObservedLevelCount(const DataColumn &col);
+std::vector<std::string> DataColumnObservedLevels(const DataColumn &col);
+std::vector<std::string> DataColumnFactorLevels(const DataColumn &col);
 std::string DefaultMiceMethod(const DataColumn &col);
 std::vector<std::string> MiceMethodOptions(const DataColumn &col);
 std::string MiceVariableStatusText(const DataColumn &col, int rowCount);
@@ -182,7 +250,9 @@ std::string MiceDatasetSummaryText(const DataFrameModel &df,
                                    int imputeColumnCount);
 std::string MiceSelectionSummaryText(std::size_t imputeCount,
                                      std::size_t predictorCount);
-bool SetDataColumnType(DataColumn &col, const std::string &type, std::string *message = nullptr);
+bool SetDataColumnType(DataColumn &col, const std::string &type,
+                       std::string *message = nullptr,
+                       const VariableTypeConversionSpecification *conversion = nullptr);
 bool SetDataColumnDescription(DataColumn &col, const std::string &description);
 bool SetDataColumnDecimals(DataColumn &col, int decimals, std::string *message = nullptr);
 bool IsValidVariableName(const std::string &name, std::string *message = nullptr);
@@ -200,6 +270,10 @@ bool AddDerivedDataColumn(DataFrameModel &df,
                           const std::map<int, std::string> &rowColors,
                           std::string *createdName = nullptr,
                           std::string *message = nullptr);
+bool BuildMissingDataPatternColumn(const DataFrameModel &df,
+                                   const std::vector<std::string> &variables,
+                                   DataColumn &column,
+                                   std::string *message = nullptr);
 std::string VariableInformationText(const DataFrameModel &df,
                                     const std::string &variable);
 bool RenameDataFrameColumn(DataFrameModel &df,
@@ -211,6 +285,15 @@ bool SetDataFrameCellValue(DataFrameModel &df,
                            std::size_t row,
                            const std::string &value,
                            std::string *message = nullptr);
+void EnsureDataFrameProvenance(DataFrameModel &df,
+                               RCodeOrigin origin = RCodeOrigin::Unavailable,
+                               const std::string &originCode = {},
+                               const std::string &originDescription = {});
+void RecordDataFrameTransformation(DataFrameModel &df,
+                                   TransformationStep step);
+void RecordDataFrameMetadataChange(DataFrameModel &df,
+                                   const std::string &column,
+                                   const std::string &label);
 std::vector<VariableViewRow> VariableViewRowsForDataFrame(const DataFrameModel &df);
 
 DataColumn *FindDataColumnInDataFrame(DataFrameModel &df, const std::string &name);
@@ -248,7 +331,13 @@ NumericImputationRange NumericImputationRangeForCell(const DataFrameModel &df,
                                                      const DataColumn &col,
                                                      std::size_t row,
                                                      const std::string &uncertaintyMode);
+NumericImputationRange NumericImputationRangeForValues(
+    std::vector<double> values,
+    const std::string &uncertaintyMode);
 bool DataFrameShowsAllImputations(const DataFrameModel &df);
+std::string PlotImputationDisplayStatus(const DataFrameModel &df,
+                                        bool summarizesAllImputations);
+std::string PooledEffectPlotImputationStatus(const DataFrameModel &df);
 std::string DataFrameStatusText(const DataFrameModel &df,
                                 std::size_t selectedCount);
 std::string DataFrameImputationTooltipText(const DataFrameModel &df,

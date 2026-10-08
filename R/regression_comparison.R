@@ -2,12 +2,28 @@
   id <- if (inherits(comparison, "rlispstat_regression_comparison")) comparison$id else comparison
   id <- .rls_validate_protocol_name(id, "comparison")
   if (!exists(id, envir = .rls_state$regression_comparisons, inherits = FALSE)) {
-    stop("Unknown regression comparison.", call. = FALSE)
+    stop("Unknown General Linear Model comparison.", call. = FALSE)
   }
   get(id, envir = .rls_state$regression_comparisons)
 }
 
 .rls_assign_regcmp <- function(record) {
+  if (length(record$models %||% list()) &&
+      all(vapply(record$models, function(model) !is.null(model$fit), logical(1L)))) {
+    verification <- .rls_regression_comparison_verification_r_code(record)
+    record <- .rls_attach_analysis_provenance(
+      record,
+      .rls_regression_comparison_executed_r_code(record),
+      title = "General Linear Model Comparison",
+      output_code = list(
+        comparison = "comparison_table <- comparisons",
+        models = "model_summaries <- lapply(models, summary)"
+      ),
+      verification_code = list(comparison = verification$code),
+      verification_variables = verification$variables,
+      verification_warnings = verification$warnings
+    )
+  }
   assign(record$id, record, envir = .rls_state$regression_comparisons)
   structure(list(id = record$id, group = record$group), class = "rlispstat_regression_comparison")
 }
@@ -18,11 +34,15 @@
     labels <- rep("", length(models))
   }
   labels[is.na(labels)] <- ""
-  next_untitled <- 1L
+  next_model <- 1L
   for (i in seq_along(labels)) {
     if (!nzchar(labels[[i]])) {
-      labels[[i]] <- paste("Untitled", next_untitled)
-      next_untitled <- next_untitled + 1L
+      repeat {
+        candidate <- paste("Model", next_model)
+        next_model <- next_model + 1L
+        if (!candidate %in% labels) break
+      }
+      labels[[i]] <- candidate
     }
   }
   labels
@@ -40,12 +60,12 @@
   paste0(prefix, if (length(serials)) max(serials) + 1L else 1L)
 }
 
-.rls_regcmp_next_untitled_label <- function(record) {
+.rls_regcmp_next_model_label <- function(record) {
   labels <- vapply(record$models, `[[`, character(1L), "label")
-  serials <- suppressWarnings(as.integer(sub("^Untitled ", "", labels[grepl("^Untitled [0-9]+$", labels)])))
+  serials <- suppressWarnings(as.integer(sub("^Model ", "", labels[grepl("^Model [0-9]+$", labels)])))
   next_index <- if (length(serials)) max(serials) + 1L else 1L
   repeat {
-    candidate <- paste("Untitled", next_index)
+    candidate <- paste("Model", next_index)
     if (!candidate %in% labels) return(candidate)
     next_index <- next_index + 1L
   }
@@ -77,7 +97,31 @@
   term
 }
 
+.rls_regcmp_refresh_mi_pooling_semantics <- function(record) {
+  if (!identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+    record$mi_pooling_required <- FALSE
+    record$mi_imputed_input_variables <- character()
+    return(record)
+  }
+  dataset <- .rls_dataset_record(record$group)
+  rows <- record$comparison_rows %||% .rls_mi_original_row_ids(dataset)
+  imputed <- unique(unlist(lapply(record$models, function(model) {
+    response <- if (isTRUE(record$uses_shared_response)) record$response else
+      model$response %||% record$response
+    .rls_mi_imputed_model_variables(
+      dataset,
+      response,
+      model$terms %||% character(),
+      original_rows = rows
+    )
+  }), use.names = FALSE))
+  record$mi_imputed_input_variables <- imputed
+  record$mi_pooling_required <- length(imputed) > 0L
+  record
+}
+
 .rls_regcmp_fit_model <- function(record, index) {
+  record <- .rls_regcmp_refresh_mi_pooling_semantics(record)
   model <- record$models[[index]]
   response <- if (isTRUE(record$uses_shared_response)) record$response else model$response %||% record$response
   glm_record <- list(
@@ -88,17 +132,38 @@
     predictors = model$terms,
     scope = record$scope,
     selected_rows = record$selected_rows %||% integer(),
-    term_types = record$term_types %||% list(),
+    comparison_rows = record$comparison_rows %||% integer(),
+    term_types = model$term_types %||% record$term_types %||% list(),
+    centered_predictors = model$centered_predictors %||% character(),
+    factor_reference_levels = model$factor_reference_levels %||% list(),
     analysis_backend = record$analysis_backend %||% "ordinary"
   )
-  if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+  if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation") &&
+      isTRUE(record$mi_pooling_required)) {
     extracted <- .rls_mi_fit_linear_model_record(glm_record)
   } else {
     fit_record <- glm_record
-    fit_record$data <- .rls_glm_data_for_fit(glm_record)
+    fit_record$data <- if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+      .rls_mi_completed_datasets(.rls_dataset_record(record$group))[[1L]]
+    } else {
+      .rls_glm_data_for_fit(glm_record)
+    }
+    fit_record$data <- .rls_model_data_for_term_types(
+      fit_record$data, glm_record$term_types, response = response
+    )
+    fit_record$data <- .rls_glm_apply_factor_references(
+      fit_record$data, glm_record$factor_reference_levels
+    )
     complete <- .rls_glm_complete_data(fit_record)
+    complete <- .rls_glm_center_complete_data(complete, glm_record$centered_predictors)
     fit <- stats::lm(.rls_glm_formula_object(fit_record), data = complete$data)
     extracted <- .rls_glm_extract_fit(fit_record, fit, complete)
+    if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+      extracted$status <- paste(
+        "Multiple-imputation dataset, but every response and predictor value used by",
+        "this comparison is observed; Rubin pooling is not required."
+      )
+    }
   }
   model$response <- response
   model$fit <- extracted$fit
@@ -120,31 +185,43 @@
 }
 
 .rls_regcmp_ordinary_nested_test <- function(previous, current) {
-  if (is.null(previous$fit) || is.null(current$fit)) {
-    return(list(method = "Nested F test", status = "not_fitted", df1 = NA_real_, df2 = NA_real_, delta = NA_real_, F = NA_real_, p = NA_real_))
-  }
+  unavailable <- function(status, detail) list(method = "Nested F test", status = status,
+    detail = detail, df1 = NA_real_, df2 = NA_real_, delta = NA_real_, F = NA_real_, p = NA_real_)
+  if (is.null(previous$fit) || is.null(current$fit))
+    return(unavailable("not_fitted", "Fit both models before comparing them."))
+  left <- stats::model.frame(previous$fit)
+  right <- stats::model.frame(current$fit)
+  if (!identical(rownames(left), rownames(right)) ||
+      (!is.null(previous$rows_used) && !is.null(current$rows_used) &&
+       !identical(previous$rows_used, current$rows_used)))
+    return(unavailable("different_cases", "The models use different observations. Refit them on the same cases before comparing them."))
+  if (!identical(stats::formula(previous$fit)[[2L]], stats::formula(current$fit)[[2L]]) ||
+      !isTRUE(all.equal(stats::model.response(left), stats::model.response(right), tolerance = 0)) ||
+      !identical(stats::model.weights(left), stats::model.weights(right)) ||
+      !identical(stats::model.offset(left), stats::model.offset(right)))
+    return(unavailable("incompatible_models", "Nested F tests require the same response, weights and offset."))
+  x1 <- stats::model.matrix(previous$fit)
+  x2 <- stats::model.matrix(current$fit)
+  rank1 <- qr(x1)$rank; rank2 <- qr(x2)$rank
+  joint_rank <- qr(cbind(if (rank1 > rank2) x1 else x2, if (rank1 > rank2) x2 else x1))$rank
+  if (joint_rank != max(rank1, rank2))
+    return(unavailable("not_nested", "The model matrices are not nested; no nested F-test p-value is reported."))
+  if (rank1 == rank2)
+    return(unavailable("unchanged", "The models span the same fitted space; there are no additional degrees of freedom to test."))
   test <- tryCatch(stats::anova(previous$fit, current$fit), error = function(e) NULL)
-  if (is.null(test) || nrow(test) < 2L) {
-    return(list(method = "Nested F test", status = "unavailable", df1 = NA_real_, df2 = NA_real_, delta = NA_real_, F = NA_real_, p = NA_real_))
-  }
-  delta_df <- suppressWarnings(as.numeric(test$Df[[2L]]))
-  delta_ss <- suppressWarnings(as.numeric(test$`Sum of Sq`[[2L]]))
-  stat <- suppressWarnings(as.numeric(test$F[[2L]]))
-  p <- suppressWarnings(as.numeric(test$`Pr(>F)`[[2L]]))
-  df2 <- suppressWarnings(as.numeric(stats::df.residual(current$fit)))
-  list(
-    method = "Nested F test",
-    status = if (is.finite(stat) && is.finite(p)) "ok" else "unavailable",
-    df1 = delta_df,
-    df2 = df2,
-    delta = delta_ss,
-    F = stat,
-    p = p
-  )
+  if (is.null(test) || nrow(test) < 2L)
+    return(unavailable("unavailable", "R could not calculate this nested F test."))
+  stat <- as.numeric(test$F[[2L]]); p <- as.numeric(test$`Pr(>F)`[[2L]])
+  list(method = "Nested F test", status = if (is.finite(stat) && is.finite(p)) "ok" else "unavailable",
+    df1 = abs(as.numeric(test$Df[[2L]])),
+    df2 = as.numeric(stats::df.residual(if (rank1 > rank2) previous$fit else current$fit)),
+    delta = as.numeric(test$`Sum of Sq`[[2L]]), F = stat, p = p)
 }
 
 .rls_regcmp_update_ordinary_nested_tests <- function(record) {
-  if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+  record <- .rls_regcmp_refresh_mi_pooling_semantics(record)
+  if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation") &&
+      isTRUE(record$mi_pooling_required)) {
     return(record)
   }
   tests <- vector("list", length(record$models))
@@ -154,9 +231,17 @@
     } else {
       .rls_regcmp_ordinary_nested_test(record$models[[i - 1L]], record$models[[i]])
     }
+    if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+      tests[[i]]$method <- "Nested F test (Rubin pooling not required)"
+      tests[[i]]$detail <- paste(
+        "No response or predictor value used by the compared models was imputed;",
+        "the ordinary nested F test is identical across completed datasets."
+      )
+    }
     record$models[[i]]$comparison_vs_previous <- tests[[i]]
     record$models[[i]]$summary$comparison_method <- tests[[i]]$method
     record$models[[i]]$summary$comparison_status <- tests[[i]]$status
+    record$models[[i]]$summary$comparison_detail <- tests[[i]]$detail %||% ""
     record$models[[i]]$summary$comparison_df1 <- tests[[i]]$df1
     record$models[[i]]$summary$comparison_df2 <- tests[[i]]$df2
     record$models[[i]]$summary$comparison_delta <- tests[[i]]$delta
@@ -164,9 +249,13 @@
     record$models[[i]]$summary$comparison_p <- tests[[i]]$p
   }
   record$model_comparison_tests <- list(
-    method = "Nested F test",
+    method = if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation"))
+      "Nested F test (Rubin pooling not required)" else "Nested F test",
     status = "ok",
-    comparisons = tests
+    comparisons = tests,
+    detail = if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation"))
+      "All model inputs are fully observed in the analyzed rows; Rubin's rules were not applied."
+    else "Ordinary nested F tests."
   )
   record
 }
@@ -224,7 +313,8 @@
     "t = ", .rls_regcmp_format_number(row$t_value[[1L]], 2L), "; ",
     "p", if (startsWith(.rls_regcmp_format_p(row$p_value[[1L]]), "<")) " " else " = ",
     .rls_regcmp_format_p(row$p_value[[1L]]), "; ",
-    "Partial R\u00b2 = ", .rls_regcmp_format_percent(row$partial_r2[[1L]])
+    "Partial r = ", .rls_regcmp_format_number(row$partial_r[[1L]], 3L), "; ",
+    "\u0394R\u00b2 = ", .rls_regcmp_format_number(row$delta_r2[[1L]], 3L)
   )
 }
 
@@ -239,6 +329,8 @@
     if (is.na(model_index)) next
     model <- record$models[[model_index]]
     plot$displayed_fit_version <- model$fit_version
+    plot$displayed_diagnostics_version <- model$fit_version
+    plot$is_stale <- FALSE
     plot$data <- model$diagnostics
     assign(id, plot, envir = .rls_state$glm_diagnostic_plots)
   }
@@ -246,6 +338,34 @@
 }
 
 .rls_regcmp_fit_models <- function(record, indices = seq_along(record$models), force = FALSE) {
+  previous_scope <- record$data_scope
+  record <- .rls_apply_scope_to_model_request(record, .rls_dataset_record(record$group))
+  if (!identical(previous_scope$rows,record$data_scope$rows)) {
+    indices <- seq_along(record$models); force <- TRUE
+  }
+  if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+    dataset <- .rls_dataset_record(record$group)
+    specs <- lapply(record$models, function(model) list(
+      response = if (isTRUE(record$uses_shared_response)) record$response else
+        model$response %||% record$response,
+      terms = model$terms %||% character(),
+      term_types = model$term_types %||% record$term_types %||% list(),
+      centered_predictors = model$centered_predictors %||% character(),
+      factor_reference_levels = model$factor_reference_levels %||% list(),
+      scope = record$scope %||% "all",
+      count_regression = FALSE,
+      exposure = ""
+    ))
+    common_rows <- .rls_mi_common_model_rows(
+      dataset, specs, record$selected_rows %||% integer()
+    )
+    if (!identical(record$comparison_rows, common_rows)) {
+      record$comparison_rows <- common_rows
+      indices <- seq_along(record$models)
+      force <- TRUE
+    }
+    record <- .rls_regcmp_refresh_mi_pooling_semantics(record)
+  }
   for (i in indices) {
     if (isTRUE(force) || isTRUE(record$models[[i]]$is_stale) || is.null(record$models[[i]]$fit)) {
       record <- .rls_regcmp_fit_model(record, i)
@@ -255,65 +375,52 @@
 }
 
 .rls_regcmp_mi_nested_test <- function(previous, current) {
-  added_terms <- setdiff(current$terms, previous$terms)
-  if (!length(added_terms)) {
-    return(list(
-      method = "D1 pooled Wald",
-      status = "unchanged",
-      detail = "No terms were added relative to the previous model.",
-      df1 = NA_real_, df2 = NA_real_, F = NA_real_, p = NA_real_
-    ))
+  unavailable <- function(status, detail) list(method = "mice::D1", status = status,
+    detail = detail, df1 = NA_real_, df2 = NA_real_, F = NA_real_, p = NA_real_)
+  left <- previous$fits_by_imputation %||% list()
+  right <- current$fits_by_imputation %||% list()
+  if (length(left) < 2L || length(left) != length(right) ||
+      any(vapply(c(left, right), is.null, logical(1L))))
+    return(unavailable("insufficient_data", "Both models require a fit for every imputation."))
+  sizes <- vapply(left, function(fit) length(stats::coef(fit)), integer(1L)) -
+    vapply(right, function(fit) length(stats::coef(fit)), integer(1L))
+  if (all(sizes == 0L)) {
+    identical_spaces <- vapply(seq_along(left), function(i) {
+      .rls_regcmp_ordinary_nested_test(list(fit = left[[i]]), list(fit = right[[i]]))$status == "unchanged"
+    }, logical(1L))
+    return(if (all(identical_spaces)) unavailable("unchanged", "Both models span the same fitted space in every imputation.") else
+      unavailable("incompatible_models", "The models differ without forming a proper nested comparison."))
   }
-  fits <- current$fits_by_imputation %||% list()
-  ref_indices <- which(!vapply(fits, is.null, logical(1L)))
-  if (!length(ref_indices)) {
-    return(list(
-      method = "D1 pooled Wald",
-      status = "insufficient_data",
-      detail = "The current model has no fitted imputations.",
-      df1 = NA_real_, df2 = NA_real_, F = NA_real_, p = NA_real_
-    ))
-  }
-  ref_index <- ref_indices[[1L]]
-  coefficient_names <- .rls_mi_term_coefficient_names(fits[[ref_index]], added_terms)
-  if (!length(coefficient_names)) {
-    return(list(
-      method = "D1 pooled Wald",
-      status = "unsupported",
-      detail = "Could not identify model-matrix columns for the terms added relative to the previous model.",
-      terms = added_terms,
-      df1 = NA_real_, df2 = NA_real_, F = NA_real_, p = NA_real_
-    ))
-  }
-  pool <- .rls_mi_pool_wald_for_fits(fits, coefficient_names, term_names = added_terms)
-  list(
-    method = pool$method,
-    status = if (isTRUE(pool$ok)) "ok" else "insufficient_data",
-    detail = sprintf(
-      "MI nested-model test vs previous model for added terms: %s. Method: %s; coefficients: %s.",
-      paste(added_terms, collapse = ", "),
-      pool$method,
-      paste(coefficient_names, collapse = ", ")
-    ),
-    terms = added_terms,
-    coefficient_names = coefficient_names,
-    df1 = pool$df1,
-    df2 = pool$df2,
-    F = pool$F,
-    p = pool$p,
-    pooled_result = pool
-  )
+  if (!all(sizes > 0L) && !all(sizes < 0L))
+    return(unavailable("incompatible_models", "Nesting direction must be the same in every imputation."))
+  removing <- all(sizes > 0L)
+  full <- if (removing) previous else current
+  reduced <- if (removing) current else previous
+  changed_terms <- setdiff(full$terms, reduced$terms)
+  pool <- tryCatch(.rls_mi_pool_d1(full$fits_by_imputation, reduced$fits_by_imputation,
+    term_names = changed_terms), error = function(e) e)
+  if (inherits(pool, "error"))
+    return(unavailable("incompatible_models", conditionMessage(pool)))
+  list(method = pool$method, status = if (isTRUE(pool$ok)) "ok" else "insufficient_data",
+    detail = sprintf("MI nested-model test for terms %s relative to the previous model: %s. Method: %s.",
+      if (removing) "removed" else "added", paste(changed_terms, collapse = ", "), pool$method),
+    terms = changed_terms, direction = if (removing) "removed" else "added",
+    coefficient_names = setdiff(names(stats::coef(full$fits_by_imputation[[1L]])),
+                                names(stats::coef(reduced$fits_by_imputation[[1L]]))),
+    df1 = pool$df1, df2 = pool$df2, F = pool$F, p = pool$p, pooled_result = pool)
 }
 
 .rls_regcmp_update_mi_nested_tests <- function(record) {
-  if (!identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
+  record <- .rls_regcmp_refresh_mi_pooling_semantics(record)
+  if (!identical(record$analysis_backend %||% "ordinary", "multiple_imputation") ||
+      !isTRUE(record$mi_pooling_required)) {
     return(record)
   }
   tests <- vector("list", length(record$models))
   for (i in seq_along(record$models)) {
     if (i == 1L) {
       tests[[i]] <- list(
-        method = "D1 pooled Wald",
+        method = "mice::D1",
         status = "not_applicable",
         detail = "First model has no previous model for comparison.",
         df1 = NA_real_, df2 = NA_real_, F = NA_real_, p = NA_real_
@@ -329,11 +436,12 @@
     record$models[[i]]$summary$comparison_f <- tests[[i]]$F
     record$models[[i]]$summary$comparison_p <- tests[[i]]$p
   }
+  comparison_methods <- unique(vapply(tests[-1L], function(test) test$method %||% "mice::D1", character(1L)))
   record$model_comparison_tests <- list(
-    method = "D1 pooled Wald",
+    method = if (length(comparison_methods)) paste(comparison_methods, collapse = "; ") else "mice::D1",
     status = "ok",
     comparisons = tests,
-    detail = "Each MI comparison tests the current model against the immediately previous model using a pooled Wald/D1-style test. No F statistics or p-values are averaged."
+    detail = "Each MI comparison passes the larger model and its nested smaller model to mice::D1, including comparisons that remove terms. If D1 has undefined denominator degrees of freedom (notably for very small m), LinkEDA uses mice::D3 as an explicit nested-model fallback. D2 is not used because it pools test statistics rather than performing the intended full/reduced model comparison. No statistics or p-values are averaged."
   )
   record
 }
@@ -390,24 +498,33 @@
         !any(vapply(record$models, .rls_regcmp_model_includes_source, logical(1L), source = level_parent))) {
       next
     }
-    if (!identical(level_parent, source) && identical(record$term_types[[level_parent]] %||% NA_character_, "numeric")) {
-      next
-    }
     visible_source <- .rls_model_term_display_name(source)
-    source_type <- record$term_types[[source]] %||% NA_character_
-    source_rows <- if (identical(source_type, "numeric")) {
-      data.frame()
-    } else {
-      do.call(rbind, lapply(record$models, function(model) {
+    relevant_models <- Filter(function(model) {
+      .rls_regcmp_model_includes_source(model, source)
+    }, record$models)
+    source_rows <- if (length(relevant_models)) {
+      do.call(rbind, lapply(relevant_models, function(model) {
         model$coefficient_rows[model$coefficient_rows$source_term %in% c(source, visible_source), , drop = FALSE]
       }))
+    } else {
+      data.frame()
     }
-    if (!is.null(source_rows) && nrow(source_rows)) {
-      for (i in seq_len(nrow(source_rows))) {
-        add_row(as.list(source_rows[i, , drop = FALSE]))
+    factor_rows <- if (!is.null(source_rows) && nrow(source_rows)) {
+      source_rows[source_rows$row_type %in%
+                    c("factor_parent", "reference", "factor_level"), , drop = FALSE]
+    } else data.frame()
+    if (nrow(factor_rows)) {
+      # A comparison row may be numeric in one model and categorical in
+      # another.  Use the fitted factor rows to define the shared row tree;
+      # each model still supplies its own value for the parent row.
+      parent <- factor_rows[factor_rows$row_type == "factor_parent", , drop = FALSE]
+      if (nrow(parent)) add_row(as.list(parent[1L, , drop = FALSE]))
+      for (i in which(factor_rows$row_type != "factor_parent")) {
+        add_row(as.list(factor_rows[i, , drop = FALSE]))
       }
     } else {
-      add_row(list(term = source, display_label = source, row_type = "coefficient", source_term = source))
+      add_row(list(term = source, display_label = visible_source,
+                   row_type = "coefficient", source_term = visible_source))
     }
   }
   data.frame(
@@ -424,8 +541,9 @@
   lapply(seq_along(models), function(i) {
     spec <- models[[i]]
     if (is.list(spec) && (!is.null(spec$response) || !is.null(spec$terms))) {
-      model_response <- spec$response %||% response
-      if (is.null(model_response)) {
+      model_response <- as.character(spec$response %||% "")[[1L]]
+      if (!nzchar(model_response)) model_response <- response
+      if (is.null(model_response) || !nzchar(as.character(model_response)[[1L]])) {
         stop("Each model must provide `response` when no shared `response` is supplied.", call. = FALSE)
       }
       terms <- spec$terms %||% character()
@@ -442,19 +560,31 @@
       .rls_model_hierarchical_terms(record$data, term, response = model_response)
     }), use.names = FALSE)
     terms <- if (length(terms)) unique(as.character(terms)) else character()
-    list(label = labels[[i]], response = model_response, terms = terms)
+    centered <- if (is.list(spec)) spec$centered_predictors %||% character() else character()
+    centered <- unique(as.character(centered[nzchar(centered)]))
+    term_types <- if (is.list(spec)) spec$term_types %||% list() else list()
+    if (!is.list(term_types)) term_types <- as.list(term_types)
+    term_variables <- if (length(terms)) all.vars(stats::reformulate(terms)) else character()
+    term_types <- term_types[names(term_types) %in% term_variables]
+    term_types <- lapply(term_types, function(type) {
+      type <- as.character(type)[[1L]]
+      if (type %in% c("numeric", "factor")) type else "numeric"
+    })
+    factor_references <- if (is.list(spec)) spec$factor_reference_levels %||% list() else list()
+    if (!is.list(factor_references)) factor_references <- as.list(factor_references)
+    factor_references <- factor_references[names(factor_references) %in% term_variables]
+    factor_references <- lapply(factor_references, function(level) as.character(level)[[1L]])
+    list(label = labels[[i]], response = model_response, terms = terms,
+         term_types = term_types,
+         centered_predictors = intersect(centered, term_variables),
+         factor_reference_levels = factor_references)
   })
 }
 
 .rls_regcmp_sync_native_open <- function(record) {
   .rls_start_backend()
   dataset <- .rls_dataset_record(record$group)
-  .rls_send(c(
-    "REGISTER_DATASET",
-    record$group,
-    .rls_variable_payload(record$data, dataset$variable_metadata),
-    .rls_dataframe_payload(record$data, dataset$variable_metadata, dataset_record = dataset)
-  ))
+  .rls_register_native_dataset_if_needed(dataset, record$data, visible = TRUE)
   payload <- c(
     "REGCMP_OPEN2", record$id, record$group, record$response, record$scope,
     if (isTRUE(record$auto_refit)) "TRUE" else "FALSE",
@@ -466,7 +596,7 @@
   .rls_parse_records(.rls_send(payload))[[1L]]
 }
 
-#' Create a native regression model comparison window
+#' Create a native General Linear Model comparison window
 #'
 #' @param data Registered dataset name, a data frame, or `NULL` for the active dataset.
 #' @param response Numeric response variable.
@@ -527,6 +657,9 @@ ls_new_regression_comparison <- function(data = NULL, response = NULL, models = 
       label = model_specs[[i]]$label,
       response = model_specs[[i]]$response,
       terms = terms,
+      term_types = model_specs[[i]]$term_types %||% list(),
+      centered_predictors = model_specs[[i]]$centered_predictors %||% character(),
+      factor_reference_levels = model_specs[[i]]$factor_reference_levels %||% list(),
       fit = NULL,
       fitted_lm = NULL,
       coefficients = data.frame(),
@@ -566,7 +699,7 @@ ls_regression_comparison_add_model <- function(comparison, terms = NULL, label =
     .rls_model_hierarchical_terms(record$data, term, response = response)
   }), use.names = FALSE)
   terms <- if (length(terms)) unique(as.character(terms)) else character()
-  label <- label %||% .rls_regcmp_next_untitled_label(record)
+  label <- label %||% .rls_regcmp_next_model_label(record)
   model <- list(
     id = .rls_regcmp_next_model_id(record),
     label = label,
@@ -687,6 +820,8 @@ ls_regression_comparison_open_diagnostic <- function(comparison, model, type = c
     native_plot_id = native_id,
     type = type,
     displayed_fit_version = model_record$fit_version,
+    displayed_diagnostics_version = model_record$fit_version,
+    is_stale = FALSE,
     data = model_record$diagnostics
   )
   assign(id, plot, envir = .rls_state$glm_diagnostic_plots)

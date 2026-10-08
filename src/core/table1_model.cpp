@@ -27,7 +27,7 @@ Table1ContextMenuTitles DefaultTable1ContextMenuTitles()
         "PDF...",
         "Add variable",
         "No available variables",
-        "Change variable",
+        "Replace variable",
         "Show variable information",
         "Grouping variable",
         "Clear grouping variable"
@@ -37,6 +37,11 @@ Table1ContextMenuTitles DefaultTable1ContextMenuTitles()
 std::string Table1RemoveVariableTitle(const std::string &variable)
 {
     return "Remove " + variable;
+}
+
+std::string Table1ReplaceVariableTitle(const std::string &variable)
+{
+    return "Replace " + variable + " with...";
 }
 
 std::string Table1TypeMenuTitle(const std::string &type)
@@ -61,6 +66,34 @@ std::string Table1BoxplotMenuTitle(const std::string &variable,
         return "Boxplot of " + variable;
     }
     return "Boxplot of " + variable + " by " + groupVariable;
+}
+
+std::string Table1VariableAnalysisType(const Table1DisplayState &state,
+                                       const std::string &variable)
+{
+    const auto override = state.variableTypes.find(variable);
+    if (override != state.variableTypes.end() && !override->second.empty())
+        return override->second;
+    for (const Table1DisplayRow &row : state.rows) {
+        if (row.variable != variable) continue;
+        if (row.rowType.find("categorical") != std::string::npos) return "categorical";
+        if (row.rowType.find("ordinal") != std::string::npos) return "ordinal";
+    }
+    return "numeric";
+}
+
+std::vector<Table1PlotMenuOption> Table1PlotMenuOptions(
+    const std::string &variable,
+    const std::string &analysisType,
+    const std::string &groupVariable)
+{
+    if (analysisType == "categorical" || analysisType == "ordinal") {
+        return {{"TABLE1_OPEN_BARPLOT", Table1BarChartMenuTitle(variable)}};
+    }
+    return {
+        {"TABLE1_OPEN_HISTOGRAM", Table1HistogramMenuTitle(variable)},
+        {"TABLE1_OPEN_BOXPLOT", Table1BoxplotMenuTitle(variable, groupVariable)}
+    };
 }
 
 namespace {
@@ -115,6 +148,43 @@ double Table1Mean(const std::vector<double> &values)
     double sum = 0.0;
     for (double value : values) sum += value;
     return sum / static_cast<double>(values.size());
+}
+
+double Table1TCritical95(std::size_t sampleSize)
+{
+    if (sampleSize < 2) return NAN;
+    const double df = static_cast<double>(sampleSize - 1);
+    const double z = NormalQuantileApprox(0.975);
+    const double z2 = z * z;
+    const double z3 = z2 * z;
+    const double z5 = z3 * z2;
+    const double z7 = z5 * z2;
+    return z + (z3 + z) / (4.0 * df) +
+        (5.0 * z5 + 16.0 * z3 + 3.0 * z) / (96.0 * df * df) +
+        (3.0 * z7 + 19.0 * z5 + 17.0 * z3 - 15.0 * z) /
+            (384.0 * df * df * df);
+}
+
+std::map<std::string, std::string> Table1NumericComponents(
+    const std::vector<double> &values)
+{
+    std::map<std::string, std::string> parts;
+    if (values.empty()) return parts;
+    const double mean = Table1Mean(values);
+    const double sd = std::sqrt(Table1Variance(values));
+    const double se = std::isfinite(sd) ? sd / std::sqrt(static_cast<double>(values.size())) : NAN;
+    const double critical = Table1TCritical95(values.size());
+    parts["mean"] = FormatDoubleOrDash(mean, 1);
+    parts["sd"] = FormatDoubleOrDash(sd, 1);
+    parts["se"] = FormatDoubleOrDash(se, 1);
+    parts["ci95"] = (std::isfinite(critical) && std::isfinite(se))
+        ? "[" + FormatDoubleOrDash(mean - critical * se, 1) + ", " +
+            FormatDoubleOrDash(mean + critical * se, 1) + "]"
+        : "\u2014";
+    parts["median"] = FormatDoubleOrDash(Table1Quantile(values, 0.5), 1);
+    parts["q1"] = FormatDoubleOrDash(Table1Quantile(values, 0.25), 1);
+    parts["q3"] = FormatDoubleOrDash(Table1Quantile(values, 0.75), 1);
+    return parts;
 }
 
 Table1NativeTestResult Table1WelchTest(const DataColumn &col,
@@ -417,7 +487,8 @@ bool Table1RowIsSubVariable(const Table1DisplayRow &row)
 
 bool Table1RowHasValues(const Table1DisplayRow &row)
 {
-    return row.rowType == "n" ||
+    return row.rowType == "text" ||
+           row.rowType == "n" ||
            row.rowType == "missing" ||
            row.rowType == "nested_leaf_level" ||
            row.rowType == "nested_total" ||
@@ -439,29 +510,194 @@ Table1ReportLayout BuildTable1ReportLayout(const Table1DisplayState &state,
                                            double width)
 {
     Table1ReportLayout layout;
-    layout.width = width;
+    auto measured = [](const std::string &text, double minimum, double padding) {
+        // A deliberately conservative cross-platform estimate. AppKit and
+        // WinUI use very similar 11-12 pt UI fonts; overestimating slightly is
+        // preferable to clipping statistically meaningful text.
+        std::size_t glyphs = 0;
+        for (unsigned char ch : text) if ((ch & 0xc0U) != 0x80U) ++glyphs;
+        return std::max(minimum, static_cast<double>(glyphs) * 7.2 + padding);
+    };
     layout.hasGroup = !state.groupVariable.empty();
     layout.hasStubs = !state.stubHeaders.empty();
     layout.hasSpanningHeader = !state.groupSpanningHeader.empty() &&
         state.groupSpanningColumnCount > 0;
-    layout.variableWidth = layout.hasGroup
-        ? std::min(240.0, std::max(160.0, width * 0.28))
-        : std::min(200.0, std::max(120.0, width * 0.20));
-    layout.pWidth = state.showP ? 62.0 : 0.0;
-    layout.testWidth = state.showTest ? 128.0 : 0.0;
+    double variableNatural = measured(Table1ReportVariableHeader(), 130.0, 28.0);
+    for (const Table1DisplayRow &row : state.rows)
+        variableNatural = std::max(variableNatural, measured(Table1DisplayLabelText(row), 130.0,
+            Table1RowIsIndented(row) ? 42.0 : 28.0));
+    // Do not cap natural widths: a horizontal scrollbar is preferable to
+    // truncating a long variable name or an inferential-test description.
+    layout.variableWidth = variableNatural;
+    layout.pWidth = state.showP ? measured(Table1ReportPHeader(), 54.0, 24.0) : 0.0;
+    layout.testWidth = state.showTest ? measured(Table1ReportTestHeader(), 110.0, 34.0) : 0.0;
+    if (state.showP) for (const Table1DisplayRow &row : state.rows)
+        layout.pWidth = std::max(layout.pWidth, measured(row.p, 54.0, 24.0));
+    if (state.showTest) for (const Table1DisplayRow &row : state.rows)
+        layout.testWidth = std::max(layout.testWidth, measured(row.test, 110.0, 34.0));
     layout.stubColumnCount = std::max(1, layout.hasStubs ? static_cast<int>(state.stubHeaders.size()) : 1);
-    layout.stubWidth = layout.hasStubs
-        ? std::max(50.0, layout.variableWidth / static_cast<double>(layout.stubColumnCount))
-        : layout.variableWidth;
-    layout.stubArea = layout.hasStubs
-        ? layout.stubWidth * static_cast<double>(layout.stubColumnCount)
-        : layout.variableWidth;
+    if (layout.hasStubs) {
+        // Nested contingency tables have several label/stub columns. Measure
+        // every header and displayed stub value, then give all stub columns a
+        // common natural width. This follows the same no-clipping rule used by
+        // ordinary Table 1 variable and estimate columns.
+        double stubNatural = 50.0;
+        for (const std::string &header : state.stubHeaders)
+            stubNatural = std::max(stubNatural, measured(header, 50.0, 28.0));
+        for (const Table1DisplayRow &row : state.rows) {
+            for (const std::string &stub : row.stubValues)
+                stubNatural = std::max(stubNatural, measured(stub, 50.0, 28.0));
+        }
+        layout.stubWidth = stubNatural;
+        layout.stubArea = stubNatural * static_cast<double>(layout.stubColumnCount);
+        layout.variableWidth = layout.stubArea;
+    } else {
+        layout.stubWidth = layout.variableWidth;
+        layout.stubArea = layout.variableWidth;
+    }
     layout.valueColumnCount = std::max(1, static_cast<int>(state.columns.size()));
-    layout.valueArea = width - 2.0 * layout.margin - layout.stubArea -
-        layout.pWidth - layout.testWidth - 16.0;
-    layout.columnWidth = std::max(78.0, layout.valueArea / static_cast<double>(layout.valueColumnCount));
+    const bool compactDiagnostics = state.tableType == "mi_missing_information";
+    const double valueMinimum = compactDiagnostics ? 54.0 : 78.0;
+    const double valuePadding = compactDiagnostics ? 20.0 : 28.0;
+    layout.valueColumnWidths.assign(static_cast<std::size_t>(layout.valueColumnCount), valueMinimum);
+    for (std::size_t column = 0; column < state.columns.size(); ++column) {
+        double natural = measured(state.columns[column], valueMinimum, valuePadding);
+        for (const Table1DisplayRow &row : state.rows) {
+            if (column < row.values.size()) natural = std::max(natural, measured(row.values[column], valueMinimum, valuePadding));
+        }
+        // The convergence diagnostic Status field is explanatory prose rather
+        // than a scalar estimate.  Giving one short message its full one-line
+        // natural width pushes the header and the useful diagnostics outside
+        // a normal results window.  Both native clients can wrap this field,
+        // so keep a readable text column while preserving the remaining
+        // statistics in the initial viewport.
+        if (state.tableType == "mi_diagnostics" &&
+            state.columns[column] == "Status")
+            natural = std::min(natural, 240.0);
+        layout.valueColumnWidths[column] = natural;
+    }
+    // Group estimate columns use one consistent width so changing group does
+    // not produce a visually misleading hierarchy of differently sized cells.
+    if (layout.hasGroup && !layout.valueColumnWidths.empty()) {
+        const double common = *std::max_element(layout.valueColumnWidths.begin(), layout.valueColumnWidths.end());
+        std::fill(layout.valueColumnWidths.begin(), layout.valueColumnWidths.end(), common);
+    }
+    double naturalValueArea = 0.0;
+    for (double columnWidth : layout.valueColumnWidths) naturalValueArea += columnWidth;
+    double naturalWidth = 2.0 * layout.margin + layout.stubArea + naturalValueArea +
+        layout.pWidth + layout.testWidth + 16.0;
+    layout.width = std::max(width, naturalWidth);
+    double extra = layout.width - naturalWidth;
+    if (extra > 0.0 && !layout.valueColumnWidths.empty()) {
+        // Let the data columns absorb most spare room while retaining some
+        // breathing space for long Variable/Test labels.
+        const double perColumn = extra * 0.72 / static_cast<double>(layout.valueColumnWidths.size());
+        for (double &columnWidth : layout.valueColumnWidths) columnWidth += perColumn;
+        layout.variableWidth += extra * 0.18;
+        if (state.showTest) layout.testWidth += extra * 0.10;
+        layout.stubWidth = layout.hasStubs
+            ? layout.variableWidth / static_cast<double>(layout.stubColumnCount)
+            : layout.variableWidth;
+        layout.stubArea = layout.hasStubs
+            ? layout.stubWidth * static_cast<double>(layout.stubColumnCount)
+            : layout.variableWidth;
+    }
+    layout.valueArea = 0.0;
+    for (double columnWidth : layout.valueColumnWidths) layout.valueArea += columnWidth;
+    layout.columnWidth = layout.valueColumnWidths.empty() ? 78.0 : layout.valueColumnWidths.front();
     layout.headerOffset = 66.0 + (layout.hasSpanningHeader ? 14.0 : 0.0);
     return layout;
+}
+
+double Table1NaturalWidth(const Table1DisplayState &state)
+{
+    return BuildTable1ReportLayout(state, 0.0).width;
+}
+
+namespace {
+
+std::string Table1StatisticValue(const std::map<std::string, std::string> &parts,
+                                 bool medianRow,
+                                 const Table1DisplayPreferences &preferences)
+{
+    auto value = [&](const char *key) {
+        auto it = parts.find(key);
+        return it == parts.end() ? std::string() : it->second;
+    };
+    if (medianRow) {
+        const std::string median = value("median");
+        const std::string q1 = value("q1");
+        const std::string q3 = value("q3");
+        if (preferences.showMedian && preferences.showQuartiles && !median.empty())
+            return median + " [" + q1 + ", " + q3 + "]";
+        if (preferences.showMedian) return median;
+        if (preferences.showQuartiles && (!q1.empty() || !q3.empty())) return "[" + q1 + ", " + q3 + "]";
+        return std::string();
+    }
+    std::vector<std::string> dispersion;
+    if (preferences.showSD && !value("sd").empty()) dispersion.push_back("SD " + value("sd"));
+    if (preferences.showSE && !value("se").empty()) dispersion.push_back("SE " + value("se"));
+    if (preferences.showCI95 && !value("ci95").empty()) dispersion.push_back("95% CI " + value("ci95"));
+    std::ostringstream out;
+    if (preferences.showMean) out << value("mean");
+    if (!dispersion.empty()) {
+        if (preferences.showMean) out << " (";
+        for (std::size_t i = 0; i < dispersion.size(); ++i) {
+            if (i) out << "; ";
+            out << dispersion[i];
+        }
+        if (preferences.showMean) out << ")";
+    }
+    return out.str();
+}
+
+} // namespace
+
+Table1DisplayState Table1ApplyDisplayPreferences(
+    const Table1DisplayState &source,
+    const Table1DisplayPreferences &preferences)
+{
+    if (source.tableType != "table1" && source.tableType != "missingness_descriptives") return source;
+    Table1DisplayState state = source;
+    // source.showP/showTest express whether these optional columns belong to
+    // this particular table. Session preferences may hide and restore them,
+    // but must not override an explicit API request that excluded them.
+    state.showP = source.showP && preferences.showP;
+    state.showTest = source.showTest && preferences.showTest;
+    std::vector<std::size_t> keptColumns;
+    for (std::size_t i = 0; i < source.columns.size(); ++i) {
+        if (!preferences.showOverall && source.columns[i] == "Overall") continue;
+        keptColumns.push_back(i);
+    }
+    state.columns.clear();
+    for (std::size_t i : keptColumns) state.columns.push_back(source.columns[i]);
+    state.rows.clear();
+    for (const Table1DisplayRow &sourceRow : source.rows) {
+        const bool medianRow = sourceRow.rowType.find("median") != std::string::npos;
+        if (!preferences.showMissing && sourceRow.rowType == "missing") continue;
+        if (medianRow && !preferences.showMedian && !preferences.showQuartiles) continue;
+        if (sourceRow.rowType == "numeric_mean_sd" && !preferences.showMean &&
+            !preferences.showSD && !preferences.showSE && !preferences.showCI95) continue;
+        Table1DisplayRow row = sourceRow;
+        row.values.clear();
+        row.rawValues.clear();
+        row.statisticValues.clear();
+        row.rawStatisticValues.clear();
+        for (std::size_t i : keptColumns) {
+            std::string displayed = i < sourceRow.values.size() ? sourceRow.values[i] : std::string();
+            if (i < sourceRow.statisticValues.size() && !sourceRow.statisticValues[i].empty() &&
+                (sourceRow.rowType == "numeric_mean_sd" || medianRow)) {
+                displayed = Table1StatisticValue(sourceRow.statisticValues[i], medianRow, preferences);
+            }
+            row.values.push_back(displayed);
+            if (i < sourceRow.rawValues.size()) row.rawValues.push_back(sourceRow.rawValues[i]);
+            if (i < sourceRow.statisticValues.size()) row.statisticValues.push_back(sourceRow.statisticValues[i]);
+            row.rawStatisticValues.push_back(i < sourceRow.rawStatisticValues.size()
+                ? sourceRow.rawStatisticValues[i] : std::map<std::string, double>{});
+        }
+        state.rows.push_back(std::move(row));
+    }
+    return state;
 }
 
 double Table1PreferredHeight(const Table1DisplayState &state)
@@ -495,11 +731,14 @@ int Table1ReportColumnAtPoint(const Table1DisplayState &state,
     if (point.x < dataX) {
         return -1;
     }
-    int column = static_cast<int>((point.x - dataX) / layout.columnWidth);
-    if (column < 0 || static_cast<std::size_t>(column) >= state.columns.size()) {
-        return -1;
+    double x = dataX;
+    for (std::size_t column = 0; column < state.columns.size(); ++column) {
+        const double columnWidth = column < layout.valueColumnWidths.size()
+            ? layout.valueColumnWidths[column] : layout.columnWidth;
+        if (point.x >= x && point.x < x + columnWidth) return static_cast<int>(column);
+        x += columnWidth;
     }
-    return column;
+    return -1;
 }
 
 bool Table1ReportPointIsColumnHeader(const Table1ReportLayout &layout,
@@ -618,32 +857,10 @@ std::string Table1InferType(const DataColumn &col,
     auto oit = overrides.find(col.name);
     if (oit != overrides.end() && !oit->second.empty()) return oit->second;
     std::string type = NormalizeVariableType(col.type);
-    if (type == "factor" || type == "character" || type == "logical") {
-        return "categorical";
-    }
-    if (type == "ordered") {
-        return "ordinal";
-    }
-    std::set<double> unique;
-    int observed = 0;
-    bool allNumeric = true;
-    bool integerLike = true;
-    for (const std::string &value : col.values) {
-        if (DataCellIsMissing(value)) continue;
-        ++observed;
-        double numeric = NAN;
-        if (!ParseDataCellDouble(value, numeric)) {
-            allNumeric = false;
-            break;
-        }
-        unique.insert(numeric);
-        if (std::fabs(numeric - std::round(numeric)) > 1.0e-9) integerLike = false;
-    }
-    if (!allNumeric) return "categorical";
-    if (static_cast<int>(unique.size()) <= 2 && integerLike) return "categorical";
-    int lowLimit = std::min(7, std::max(3, observed / 4));
-    if (static_cast<int>(unique.size()) <= lowLimit && integerLike) return "ordinal";
-    return "numeric";
+    if (type == "factor" || type == "logical") return "categorical";
+    if (type == "ordered") return "ordinal";
+    if (type == "numeric") return "numeric";
+    return "unsupported";
 }
 
 std::vector<std::string> Table1Levels(const DataColumn &col,
@@ -653,9 +870,21 @@ std::vector<std::string> Table1Levels(const DataColumn &col,
     std::map<double, std::string> numericLevels;
     std::set<std::string> textLevels;
     bool numericOrdinal = type == "ordinal";
+    // Factors carry their canonical display order in definedLevels. Seed the
+    // result from that metadata before observed cells so unused levels remain
+    // visible and both platform renderers receive the same semantic rows.
+    if ((type == "categorical" || type == "ordinal") && !col.definedLevels.empty()) {
+        for (const std::string &level : col.definedLevels) {
+            if (!DataCellIsMissing(level) &&
+                std::find(levels.begin(), levels.end(), level) == levels.end()) {
+                levels.push_back(level);
+            }
+        }
+    }
     for (std::size_t row = 0; row < col.values.size(); ++row) {
         std::string label = DisplayValueForCell(col, row);
         if (DataCellIsMissing(label)) continue;
+        if (std::find(levels.begin(), levels.end(), label) != levels.end()) continue;
         if (numericOrdinal) {
             double numeric = NAN;
             if (ParseDataCellDouble(col.values[row], numeric)) {
@@ -694,6 +923,41 @@ std::string Table1CountPercent(const DataColumn &col,
         ")";
 }
 
+Table1DisplayState Table1PendingStateForDataFrame(
+    const DataFrameModel &df, const std::string &id,
+    std::vector<std::string> variables, const std::string &groupVariable,
+    const std::map<std::string, std::string> &types, const AnalysisScope *dataScope)
+{
+    Table1DisplayState state;
+    state.id = id;
+    state.datasetId = df.group;
+    state.groupVariable = groupVariable;
+    state.title = groupVariable.empty() ? "Table 1. Descriptive statistics"
+        : "Table 1. Descriptive statistics by " + groupVariable;
+    if (df.datasetType == "multiple_imputation") state.title += " - Multiple Imputation";
+    state.nativeGenerated = true;
+    state.needsRFit = true;
+    state.showP = state.showTest = !groupVariable.empty();
+    state.statusText = "Calculating descriptive statistics in R…";
+    if (dataScope) { state.dataScope = *dataScope; state.dataScopeCaptured = true; }
+    for (const auto &name : variables) {
+        if (name == groupVariable || std::find(state.variables.begin(), state.variables.end(), name) != state.variables.end()) continue;
+        state.variables.push_back(name);
+        Table1DisplayRow row; row.rowIndex = static_cast<int>(state.rows.size()+1);
+        row.variable = row.label = name; row.rowType = "text";
+        state.rows.push_back(std::move(row));
+    }
+    for (const auto &column : df.columns) {
+        if (column.name != groupVariable && std::find(state.variables.begin(), state.variables.end(), column.name) == state.variables.end()) continue;
+        const auto type = NormalizeVariableType(column.type);
+        state.variableTypes[column.name] = type == "numeric" ? "numeric"
+            : type == "ordered" ? "ordinal" : "categorical";
+    }
+    for (const auto &entry : types) state.variableTypes[entry.first] = entry.second;
+    state.columns = {"Overall"};
+    return state;
+}
+
 Table1DisplayState Table1StateForDataFrame(
     const DataFrameModel &df,
     const std::string &id,
@@ -715,14 +979,9 @@ Table1DisplayState Table1StateForDataFrame(
         state.dataScopeCaptured = true;
     }
     state.variableTypes = types;
-    if (variables.empty()) {
-        for (const DataColumn &col : df.columns) {
-            if (!DataColumnLooksLikeId(col) && col.name != groupVariable) {
-                variables.push_back(col.name);
-            }
-            if (variables.size() >= 8) break;
-        }
-    }
+    // An empty list is a supported, editable analysis state. Variable roles
+    // are resolved before this function is called; column order must never be
+    // used here as a second, implicit initialization policy.
     variables.erase(std::remove(variables.begin(), variables.end(), groupVariable), variables.end());
     state.variables = variables;
 
@@ -742,6 +1001,16 @@ Table1DisplayState Table1StateForDataFrame(
     }
     if (groupCol) {
         for (const std::string &level : Table1Levels(*groupCol, "categorical")) {
+            bool observed = false;
+            for (int row : slices["Overall"]) {
+                if (DisplayValueForCell(*groupCol, static_cast<std::size_t>(row)) == level) {
+                    observed = true;
+                    break;
+                }
+            }
+            // Match R's droplevels() policy for grouping columns while keeping
+            // the defined order of every observed group.
+            if (!observed) continue;
             slices[level] = std::vector<int>();
             state.columns.push_back(level);
         }
@@ -769,6 +1038,7 @@ Table1DisplayState Table1StateForDataFrame(
         if (!col) continue;
         std::string type = Table1InferType(*col, state.variableTypes);
         state.variableTypes[variable] = type;
+        if (type == "unsupported") continue;
         Table1NativeTestResult test;
         if (groupCol) {
             if (type == "numeric") {
@@ -785,7 +1055,9 @@ Table1DisplayState Table1StateForDataFrame(
             mean.variable = variable;
             mean.label = variable;
             for (const std::string &colName : state.columns) {
-                mean.values.push_back(Table1MeanSd(Table1NumericValuesForRows(*col, slices[colName])));
+                const std::vector<double> values = Table1NumericValuesForRows(*col, slices[colName]);
+                mean.values.push_back(Table1MeanSd(values));
+                mean.statisticValues.push_back(Table1NumericComponents(values));
             }
             if (groupCol) {
                 mean.test = test.test;
@@ -798,7 +1070,9 @@ Table1DisplayState Table1StateForDataFrame(
             median.variable = variable;
             median.label = "  Median [Q1, Q3]";
             for (const std::string &colName : state.columns) {
-                median.values.push_back(Table1MedianIqr(Table1NumericValuesForRows(*col, slices[colName])));
+                const std::vector<double> values = Table1NumericValuesForRows(*col, slices[colName]);
+                median.values.push_back(Table1MedianIqr(values));
+                median.statisticValues.push_back(Table1NumericComponents(values));
             }
             state.rows.push_back(median);
         } else {
@@ -856,7 +1130,10 @@ Table1DisplayState Table1StateForDataFrame(
     }
     state.footnotes.push_back("Numeric variables are shown as mean (SD) and median [Q1, Q3].");
     state.footnotes.push_back("Categorical variables are shown as n (%). Percentages exclude missing values.");
-    state.footnotes.push_back("Ordinal variables preserve level order and include median [Q1, Q3].");
+    state.footnotes.push_back("Ordinal variables preserve category order and include median [Q1, Q3].");
+    for (std::size_t index = 0; index < state.rows.size(); ++index) {
+        state.rows[index].rowIndex = static_cast<int>(index + 1);
+    }
     return state;
 }
 
@@ -871,7 +1148,8 @@ std::string Table1Subtitle(const Table1DisplayState &state,
         if (!state.groupVariable.empty()) {
             if (!state.datasetId.empty()) out << "    ";
             out << state.groupVariableLabel << ": " << state.groupVariable;
-        } else if (includeUngroupedN && !state.rows.empty() && !state.rows[0].values.empty()) {
+        } else if (includeUngroupedN && !state.rows.empty() &&
+                   state.rows[0].rowType == "n" && !state.rows[0].values.empty()) {
             out << "    N = " << state.rows[0].values[0];
         }
     }
@@ -989,7 +1267,9 @@ std::string Table1MarkdownText(const Table1DisplayState &state)
                 out << " " << Table1MarkdownCell(sv) << " |";
             }
         } else {
-            out << " " << Table1MarkdownCell(row.label) << " |";
+            const std::string label = (Table1RowIsIndented(row) ? "&#160;&#160;" : "") +
+                Table1DisplayLabelText(row);
+            out << " " << Table1MarkdownCell(label) << " |";
         }
         for (const std::string &value : row.values) out << " " << Table1MarkdownCell(value) << " |";
         if (state.showP) out << " " << Table1MarkdownCell(row.p) << " |";
@@ -1027,7 +1307,7 @@ std::string Table1CopiedStatus()
 
 std::string Table1StatusFieldHint()
 {
-    return "Right-click variables to change type, grouping, or copy the table.";
+    return "Click a variable name to replace it; right-click for type, grouping, or export.";
 }
 
 std::string Table1WindowTitle()
@@ -1070,6 +1350,19 @@ std::string Table1ReportTestHeader()
     return "Test";
 }
 
+bool MoveContingencyRowToColumn(std::vector<std::string> &rowVariables,
+                                std::string &columnVariable,
+                                const std::string &rowVariable)
+{
+    auto found = std::find(rowVariables.begin(), rowVariables.end(), rowVariable);
+    if (found == rowVariables.end() || rowVariable == columnVariable ||
+        (columnVariable.empty() && rowVariables.size() <= 1)) return false;
+    if (columnVariable.empty()) rowVariables.erase(found);
+    else *found = columnVariable;
+    columnVariable = rowVariable;
+    return true;
+}
+
 Table1DisplayState NestedContingencyTableStateForDataFrame(
     const DataFrameModel &df,
     const std::string &id,
@@ -1097,211 +1390,16 @@ Table1DisplayState NestedContingencyTableStateForDataFrame(
         state.title = "Nested Contingency Table \u2014 Counts and Row Percentages";
     }
 
-    if (xVariables.empty()) return state;
-
-    const DataColumn *splitCol = nullptr;
-    if (!splitVariable.empty()) {
-        splitCol = FindDataColumnInDataFrame(df, splitVariable);
-    }
-
-    std::vector<const DataColumn *> xCols;
-    for (const std::string &var : xVariables) {
-        const DataColumn *col = FindDataColumnInDataFrame(df, var);
-        if (col) xCols.push_back(col);
-    }
-    if (xCols.empty()) return state;
-
-    std::vector<std::string> splitLevels;
-    if (splitCol) {
-        {
-            std::set<std::string> unique;
-            for (std::size_t r = 0; r < splitCol->values.size(); ++r) {
-                std::string val = DisplayValueForCell(*splitCol, r);
-                if (!DataCellIsMissing(val)) unique.insert(val);
-            }
-            splitLevels.assign(unique.begin(), unique.end());
-        }
-        splitLevels = CanonicalLevelOrder(splitLevels);
-        state.groupVariable = splitVariable;
-    }
+    // Native code only owns the editable specification; R supplies every count,
+    // percentage and row/cell membership through the versioned Table 1 transport.
     state.variables = xVariables;
-
-    if (splitCol) {
-        for (const std::string &level : splitLevels) {
-            state.columns.push_back(level);
-        }
-        state.columns.push_back("Total");
-        state.groupSpanningHeader = splitVariable;
-        state.groupSpanningColumnCount = (int)splitLevels.size();
-    } else {
-        state.columns.push_back("N");
-    }
-
-    using KeyVec = std::vector<std::string>;
-    std::map<KeyVec, int> rowTotal;
-    std::map<KeyVec, std::map<std::string, int>> splitCounts;
-    std::map<KeyVec, std::vector<int>> rowRows;
-    std::map<KeyVec, std::map<std::string, std::vector<int>>> splitCellRows;
-
-    int totalRows = df.rows;
-    std::set<int> allowedRows;
-    const bool restrictRows = dataScope && dataScope->kind == AnalysisScopeKind::ExplicitRowIds;
-    if (restrictRows) {
-        const std::vector<int> rows = ResolveAnalysisScopeRowIds(
-            *dataScope, static_cast<std::size_t>(std::max(0, df.rows)));
-        allowedRows.insert(rows.begin(), rows.end());
-    }
-    int includedRows = 0;
-    std::vector<int> allIncludedRows;
-    for (int r = 0; r < totalRows; ++r) {
-        if (restrictRows && !allowedRows.count(r + 1)) continue;
-        KeyVec key;
-        bool anyMissing = false;
-        for (const DataColumn *col : xCols) {
-            std::string val = (static_cast<std::size_t>(r) < col->values.size())
-                ? DisplayValueForCell(*col, static_cast<std::size_t>(r))
-                : "";
-            if (DataCellIsMissing(val)) { anyMissing = true; break; }
-            key.push_back(val);
-        }
-        if (anyMissing) continue;
-
-        std::string splitVal;
-        if (splitCol) {
-            splitVal = (static_cast<std::size_t>(r) < splitCol->values.size())
-                ? DisplayValueForCell(*splitCol, static_cast<std::size_t>(r)) : "";
-            if (DataCellIsMissing(splitVal)) continue;
-        }
-
-        int rowId = r + 1;
-        ++includedRows;
-        allIncludedRows.push_back(rowId);
-        rowTotal[key]++;
-        rowRows[key].push_back(rowId);
-
-        if (splitCol) {
-            splitCounts[key][splitVal]++;
-            splitCellRows[key][splitVal].push_back(rowId);
-        }
-    }
-
+    state.groupVariable = splitVariable;
     state.stubHeaders = xVariables;
-
-    std::vector<std::vector<std::string>> canonicalOrders(xCols.size());
-    for (std::size_t vi = 0; vi < xCols.size(); ++vi) {
-        std::set<std::string> unique;
-        const DataColumn *col = xCols[vi];
-        for (std::size_t r = 0; r < col->values.size(); ++r) {
-            std::string val = DisplayValueForCell(*col, r);
-            if (!DataCellIsMissing(val)) unique.insert(val);
-        }
-        canonicalOrders[vi] = CanonicalLevelOrder(
-            std::vector<std::string>(unique.begin(), unique.end()));
-    }
-
-    std::vector<KeyVec> allKeys;
-    std::function<void(std::size_t, KeyVec &)> buildKeys =
-        [&](std::size_t depth, KeyVec &current) {
-            if (depth >= canonicalOrders.size()) {
-                allKeys.push_back(current);
-                return;
-            }
-            for (const std::string &level : canonicalOrders[depth]) {
-                current.push_back(level);
-                buildKeys(depth + 1, current);
-                current.pop_back();
-            }
-        };
-    KeyVec currentKey;
-    buildKeys(0, currentKey);
-
-    std::vector<std::pair<KeyVec, int>> sortedRows;
-    for (const KeyVec &key : allKeys) {
-        sortedRows.push_back({key, rowTotal[key]});
-    }
-
-    KeyVec prevKey;
-    bool firstRow = true;
-
-    for (const auto &entry : sortedRows) {
-        const KeyVec &key = entry.first;
-        int total = entry.second;
-
-        Table1DisplayRow leaf;
-        leaf.rowType = "nested_leaf_level";
-        leaf.variable = xCols.back()->name;
-        leaf.level = key.back();
-        leaf.label = key.back();
-
-        for (size_t d = 0; d < key.size(); ++d) {
-            if (firstRow) {
-                leaf.stubValues.push_back(key[d]);
-            } else {
-                bool prefixChanged = false;
-                for (size_t j = 0; j <= d; ++j) {
-                    if (j < key.size() && j < prevKey.size() && key[j] != prevKey[j]) {
-                        prefixChanged = true;
-                        break;
-                    }
-                }
-                leaf.stubValues.push_back(prefixChanged ? key[d] : "");
-            }
-        }
-
-        leaf.rowRows = rowRows[key];
-        leaf.contingencyRowKey.x_levels = key;
-
-        auto formatValue = [&](int cnt, int denom, bool emptyAsDash) -> std::string {
-            if (emptyAsDash && cnt == 0) {
-                return "\u2014";
-            }
-            double pct = (denom > 0) ? (100.0 * cnt / denom) : 0.0;
-            if (state.nestedDisplayMode == "count") {
-                return std::to_string(cnt);
-            } else if (state.nestedDisplayMode == "percent") {
-                return FormatPercent(pct / 100.0, 1);
-            }
-            return std::to_string(cnt) + " (" + FormatPercent(pct / 100.0, 1) + ")";
-        };
-        if (splitCol) {
-            for (const std::string &sl : splitLevels) {
-                int cnt = splitCounts[key][sl];
-                leaf.values.push_back(formatValue(cnt, total, true));
-                leaf.cellRows.push_back(splitCellRows[key][sl]);
-            }
-            leaf.values.push_back(formatValue(total, total, true));
-            leaf.cellRows.push_back(rowRows[key]);
-        } else {
-            leaf.values.push_back(formatValue(total, total, true));
-        }
-
-        state.rows.push_back(leaf);
-        prevKey = key;
-        firstRow = false;
-    }
-    if (splitCol) {
-        Table1DisplayRow totalRow;
-        totalRow.rowType = "nested_total";
-        totalRow.label = "Total";
-        totalRow.stubValues.assign(xVariables.size(), "");
-        if (!totalRow.stubValues.empty()) totalRow.stubValues.front() = "Total";
-        totalRow.rowRows = allIncludedRows;
-        for (const std::string &level : splitLevels) {
-            std::vector<int> rows;
-            for (const auto &entry : splitCellRows) {
-                auto it = entry.second.find(level);
-                if (it != entry.second.end()) rows.insert(rows.end(), it->second.begin(), it->second.end());
-            }
-            totalRow.values.push_back(std::to_string(rows.size()));
-            totalRow.cellRows.push_back(rows);
-        }
-        totalRow.values.push_back(std::to_string(includedRows));
-        totalRow.cellRows.push_back(allIncludedRows);
-        state.rows.push_back(totalRow);
-    }
-    state.statusText = "N = " + std::to_string(includedRows) + ", " +
-        std::to_string(std::max(0, totalRows - includedRows)) + " excluded.";
-    state.footnotes.push_back(state.statusText);
+    state.nativeGenerated = false;
+    state.needsRFit = true; // Even an empty specification supersedes any in-flight result.
+    state.showP = false; state.showTest = false;
+    state.statusText = xVariables.empty() ? "Add a row variable to calculate the table."
+                                        : "Calculating in R…";
     return state;
 }
 

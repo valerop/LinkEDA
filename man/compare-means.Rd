@@ -12,22 +12,24 @@ and one-way tests. All inferential calculations are performed by R.
 ls_new_one_sample_t_test(data = NULL, response = NULL, mu = 0,
   alternative = c("two.sided", "less", "greater"), conf_level = 0.95,
   scope = "all", p_adjust = c("holm", "bonferroni", "none"),
-  method = c("student", "wilcoxon"))
+  method = c("student", "wilcoxon", "binomial"), .selected_rows = NULL)
 
 ls_new_independent_samples_t_test(data = NULL, response = NULL, group = NULL,
   alternative = c("two.sided", "less", "greater"), conf_level = 0.95,
   var_equal = FALSE, scope = "all", group_order = NULL,
-  p_adjust = c("holm", "bonferroni", "none"), method = NULL)
+  p_adjust = c("holm", "bonferroni", "none"), method = NULL,
+  .selected_rows = NULL)
 
 ls_new_paired_samples_t_test(data = NULL, pairs = NULL,
   alternative = c("two.sided", "less", "greater"), conf_level = 0.95,
   scope = "all", p_adjust = c("holm", "bonferroni", "none"),
-  method = c("student", "wilcoxon"))
+  method = NULL, .selected_rows = NULL)
 
 ls_new_one_way_anova(data = NULL, response = NULL, group = NULL,
   conf_level = 0.95, scope = "all",
   method = c("welch", "classical", "kruskal_wallis"),
-  group_order = NULL, p_adjust = c("holm", "bonferroni", "none"))
+  group_order = NULL, p_adjust = c("holm", "bonferroni", "none"),
+  .selected_rows = NULL)
 }
 \arguments{
   \item{data}{Registered dataset name, a data frame, or \code{NULL} for the active dataset.}
@@ -45,8 +47,18 @@ ls_new_one_way_anova(data = NULL, response = NULL, group = NULL,
   groups, and \code{"kruskal_wallis"} for one-way tests.}
   \item{p_adjust}{Multiplicity correction across the valid inferential rows shown:
   \code{"holm"} (the default), \code{"bonferroni"}, or \code{"none"}.}
+  \item{.selected_rows}{Internal immutable original-row identifiers supplied by
+  the native analysis-scope bridge.}
 }
 \details{
+For multiply imputed data, Welch ANOVA calls \code{stats::oneway.test(var.equal = FALSE)}
+in every imputation and combines F statistics with \code{miceadds::micombine.F(version = 1)}.
+This is a D2 chi-square approximation: finite denominator degrees of freedom from
+individual Welch tests are not used in pooling. Every imputation must yield a valid test
+with the same groups. Classical ANOVA retains its \code{mice::D1} pooling path.
+Exact McNemar tests preserve defined binary categories when one measurement has
+no observed events or no observed non-events, provided discordant pairs exist.
+
 The ordinary-data implementations call \code{stats::t.test()},
 \code{stats::wilcox.test()}, \code{stats::oneway.test()}, or
 \code{stats::kruskal.test()}. Missing observations are removed separately for

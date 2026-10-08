@@ -41,7 +41,7 @@ struct BarplotSegmentVisualStyle {
 
 struct BarplotVisualState {
     double defaultSegmentAlpha = 0.70;
-    std::string segmentEncodingMode = "transparent_color_pattern";
+    std::string segmentEncodingMode = "transparent_color_only";
     double splitStrokeWidth = 3.0;
     std::map<std::string, std::string> levelColors;
     std::map<std::string, double> levelAlpha;
@@ -145,7 +145,7 @@ struct BarplotXMenuState {
 };
 
 struct BarplotSplitMenuState {
-    std::string title = "Split Bars By";
+    std::string title = "Split variable";
     BarplotMenuOption noneOption;
     std::vector<BarplotMenuOption> splitOptions;
     std::string emptyTitle = "No available variables";
@@ -729,6 +729,7 @@ BarplotSelectionSlicePlan BuildBarplotSelectionSlicePlan(
     const std::vector<std::string> &paletteOrder,
     const std::string &fallbackSelectedColorKey = "black",
     const std::string &defaultKey = "__default__");
+bool BarplotSelectedSliceCoversY(const BarplotSelectionSlicePlan &plan, double y);
 int CountSelectedRowsForRows(const std::vector<int> &rows,
                              const std::set<int> &selection);
 double SelectedFractionForRows(const std::vector<int> &rows,

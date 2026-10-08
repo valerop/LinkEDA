@@ -83,6 +83,18 @@ int main()
     assert(platform::windows::CopyPlotAsEnhancedMetafile(plot, dimensions, &error));
     VerifyClipboardVector(504.0 / 360.0);
 
+    plot.smoothCurves.push_back({core::SmoothCurveScope::ColorGroup, "#0078D4",
+        {1.0, 2.0, 3.0}, {2.0, 3.5, 3.0}, true, ""});
+    plot.frozenRowColors[1] = "#E83E8C";
+    const std::string svg = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+    assert(platform::windows::CopyPlotWithOfficeClipboardFormats(
+        plot, dimensions, svg, true, &error));
+    VerifyClipboardVector(504.0 / 360.0);
+    assert(OpenClipboard(nullptr));
+    assert(IsClipboardFormatAvailable(RegisterClipboardFormatW(L"image/svg+xml")));
+    assert(IsClipboardFormatAvailable(CF_UNICODETEXT));
+    CloseClipboard();
+
     assert(platform::windows::CopyTableAsEnhancedMetafile(
         "Table 1 — β", "Variable\tb\tp\nmpg\t0.041\t.723\ncyl\t—\t.002", &error));
     const core::VectorTableLayout table = core::BuildVectorTableLayout(

@@ -110,7 +110,7 @@ MixedModelInitialStateResult BuildInitialMixedModelState(const DataFrameModel &d
         }
     }
     if (randomGroup.empty()) {
-        result.message = "No suitable grouping variable was found. Choose a categorical variable with at least two levels.";
+        result.message = "No suitable grouping variable was found. Choose a categorical variable with at least two categories.";
         return result;
     }
 

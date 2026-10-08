@@ -27,6 +27,53 @@ test_that("native data payloads are merged while preserving R types", {
   expect_identical(result$keep, c(FALSE, TRUE))
 })
 
+test_that("native factor levels replace stale R levels after rapid type changes", {
+  original <- data.frame(
+    gender = factor(c("Female", "Male"), levels = c("Female", "Male"))
+  )
+  payload <- list(
+    rows = 2L,
+    columns = list(gender = c("0", "1")),
+    types = c("factor"),
+    factor_levels = list(gender = c("0", "1"))
+  )
+
+  result <- LinkEDA:::.rls_merge_native_data(payload, original)
+  expect_identical(levels(result$gender), c("0", "1"))
+  expect_identical(as.character(result$gender), c("0", "1"))
+})
+
+test_that("native multiple-imputation rebuild uses one authoritative factor coding", {
+  payload <- list(
+    rows = 2L,
+    columns = list(gender = c("0", "1")),
+    types = c("factor"),
+    factor_levels = list(gender = c("0", "1")),
+    imputation = list(
+      dataset_type = "multiple_imputation",
+      imputation_id = "gender-mi",
+      source_dataset_id = "source",
+      count = 2L,
+      active_version = 1L,
+      display_mode = "version",
+      sparse = list(list(
+        name = "gender", rows = 2L, original = "NA",
+        versions = list("1", "0")
+      ))
+    )
+  )
+  stale <- data.frame(
+    gender = factor(c("Female", "Male"), levels = c("Female", "Male"))
+  )
+  current <- LinkEDA:::.rls_merge_native_data(payload, stale)
+  rebuilt <- LinkEDA:::.rls_rebuild_native_imputation(payload, current)
+
+  expect_identical(levels(rebuilt$data$gender), c("0", "1"))
+  expect_identical(as.character(rebuilt$completed_datasets[[1L]]$gender), c("0", "1"))
+  expect_identical(as.character(rebuilt$completed_datasets[[2L]]$gender), c("0", "0"))
+  expect_false(any(c("Female", "Male") %in% levels(rebuilt$data$gender)))
+})
+
 test_that("return handler supports selected rows and zero selected rows", {
   state <- LinkEDA:::.rls_state
   request_id <- paste0("test-return-", sample.int(1e8, 1L))

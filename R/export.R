@@ -27,6 +27,71 @@
   paste0(.rls_export_format_number(estimate, 3L), .rls_export_stars(p))
 }
 
+.rls_export_global_term_tests <- function(tests) {
+  tests <- .rls_as_global_term_tests(tests %||% data.frame())
+  if (!nrow(tests)) return(data.frame())
+  method_labels <- vapply(
+    tests$term_test_method, .rls_global_term_test_method_label, character(1L)
+  )
+  unique_methods <- unique(method_labels[nzchar(method_labels) & method_labels != "\u2014"])
+  statistic_header <- if (length(unique_methods) == 1L) unique_methods[[1L]] else "Term test"
+  statistic_values <- vapply(
+    tests$term_test_statistic, .rls_export_format_number,
+    character(1L), digits = 3L
+  )
+  if (length(unique_methods) > 1L) {
+    statistic_values <- ifelse(
+      statistic_values == "\u2014", "\u2014", paste0(method_labels, ": ", statistic_values)
+    )
+  }
+  result <- data.frame(
+    Term = vapply(tests$term, .rls_model_term_display_name, character(1L)),
+    statistic_values,
+    df = vapply(tests$term_test_df, .rls_export_format_number,
+                character(1L), digits = 1L),
+    df2 = vapply(tests$term_test_df2, .rls_export_format_number,
+                 character(1L), digits = 1L),
+    p = vapply(tests$term_test_p, .rls_export_format_p, character(1L)),
+    stringsAsFactors = FALSE, check.names = FALSE
+  )
+  names(result)[[2L]] <- statistic_header
+  result
+}
+
+.rls_integrate_global_term_tests <- function(table, tests) {
+  raw_tests <- .rls_as_global_term_tests(tests %||% data.frame())
+  formatted_tests <- .rls_export_global_term_tests(raw_tests)
+  # Preserve the inferential details as metadata for audit/export.  The visible
+  # coefficient table renders them on semantic parent rows in its ordinary
+  # statistic and p columns; it must not grow a second set of test columns.
+  table$global_term_tests <- formatted_tests
+  parent_sources <- character()
+  if (nrow(table$terms) && "row_type" %in% names(table$terms)) {
+    parent <- table$terms$row_type %in% c("factor_parent", "term_parent")
+    parent_sources <- as.character(if ("source_term" %in% names(table$terms))
+      table$terms$source_term[parent] else table$terms$term[parent])
+  }
+  visible_tests <- raw_tests[vapply(raw_tests$term, function(term) {
+    any(vapply(parent_sources, .rls_model_terms_equivalent, logical(1L), b = term))
+  }, logical(1L)), , drop = FALSE]
+  if (nrow(visible_tests)) {
+    methods <- unique(vapply(
+      visible_tests$term_test_method,
+      .rls_global_term_test_method_label,
+      character(1L)
+    ))
+    methods <- methods[nzchar(methods) & methods != "\u2014"]
+    if (length(methods)) {
+      method_note <- paste0(
+        "Global tests shown on parent term rows use ",
+        paste(methods, collapse = "; "), "."
+      )
+      table$note <- paste(table$note, method_note, sep = "\n")
+    }
+  }
+  table
+}
+
 .rls_export_fit_rows_from_summary <- function(summary) {
   rows <- data.frame(
     label = c("N", "R\u00b2", "Adjusted R\u00b2", "s", "df residual", "F", "p", "AIC", "BIC"),
@@ -101,14 +166,14 @@
   model_labels <- vapply(models, `[[`, character(1L), "label")
   model_responses <- vapply(models, function(model) as.character(model$response %||% response), character(1L))
   responses_differ <- length(unique(model_responses)) > 1L
-  coef_table <- data.frame(`Variable / level` = term_rows$display_label, stringsAsFactors = FALSE, check.names = FALSE)
-  names(coef_table)[[1L]] <- "Variable / level"
+  coef_table <- data.frame(`Variable / category` = term_rows$display_label, stringsAsFactors = FALSE, check.names = FALSE)
+  names(coef_table)[[1L]] <- "Variable / category"
   if (responses_differ) {
     coef_table <- rbind(
-      data.frame(`Variable / level` = "Response", stringsAsFactors = FALSE, check.names = FALSE),
+      data.frame(`Variable / category` = "Response", stringsAsFactors = FALSE, check.names = FALSE),
       coef_table
     )
-    names(coef_table)[[1L]] <- "Variable / level"
+    names(coef_table)[[1L]] <- "Variable / category"
   }
   fit_labels <- models[[1L]]$fit_rows$label
   fit_table <- data.frame(Statistic = fit_labels, stringsAsFactors = FALSE, check.names = FALSE)
@@ -149,13 +214,17 @@
     coefficient_rows = record$coefficient_rows,
     response = record$dependent
   )
-  table <- .rls_regression_table(record$dependent, list(table_model), record$coefficient_rows, "General Linear Model")
+  table <- .rls_regression_table(record$dependent, list(table_model), record$coefficient_rows, "Linear Model")
+  table <- .rls_integrate_global_term_tests(table, record$term_tests)
+  hierarchy_note <- .rls_global_term_test_hierarchy_note(record$term_tests)
+  if (nzchar(hierarchy_note)) table$note <- paste(table$note, hierarchy_note, sep = "\n")
   if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
-    table$title <- "General Linear Model - Multiple Imputation"
+    table$title <- "Linear Model \u2014 Multiple Imputation"
     table$note <- paste(
       table$note,
-      sprintf("Multiple imputation: m = %d; coefficients pooled with Rubin's rules. Global model test uses D1 pooled Wald; standardized beta and AIC/BIC are not pooled.",
-              record$imputation_count %||% length(record$fits_by_imputation %||% list())),
+      sprintf("Multiple imputation: m = %d; coefficients use mice::pool, R-squared uses mice::pool.r.squared, and the global model test uses %s; standardized beta and AIC/BIC are not pooled.",
+              record$imputation_count %||% length(record$fits_by_imputation %||% list()),
+              record$summary$global_test_method %||% "mice::D1"),
       sep = "\n"
     )
   }
@@ -171,15 +240,18 @@
       response = model$response %||% record$response
     )
   })
-  table <- .rls_regression_table(record$response, models, .rls_regcmp_display_rows(record), "Regression Model Comparison")
+  table <- .rls_regression_table(record$response, models, .rls_regcmp_display_rows(record), "Compare Linear Models")
   if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
-    table$title <- "Regression Model Comparison - Multiple Imputation"
-    table$note <- paste(
-      table$note,
-      sprintf("Multiple imputation: m = %d; coefficients pooled with Rubin's rules. Sequential model tests use a pooled Wald/D1-style test; ordinary F statistics and p-values are not averaged.",
-              record$imputation_count %||% length(record$models[[1L]]$fits_by_imputation %||% list())),
-      sep = "\n"
-    )
+    table$title <- "Compare Linear Models \u2014 Multiple Imputation"
+    mi_note <- if (isTRUE(record$mi_pooling_required)) {
+      sprintf("Multiple imputation: m = %d; coefficients use mice::pool (Rubin's rules) and sequential nested-model tests use %s; ordinary statistics and p-values are not averaged.",
+              record$imputation_count %||% length(record$models[[1L]]$fits_by_imputation %||% list()),
+              record$model_comparison_tests$method %||% "mice::D1")
+    } else {
+      sprintf("Multiple-imputation dataset: m = %d; all response and predictor values used by the compared models are observed, so Rubin's rules were not required or applied; ordinary fits and nested F tests are identical across imputations.",
+              record$imputation_count %||% 0L)
+    }
+    table$note <- paste(table$note, mi_note, sep = "\n")
   }
   table
 }
@@ -205,11 +277,18 @@
   )
   table$family <- record$family
   table$link <- record$link
+  table <- .rls_integrate_global_term_tests(table, record$term_tests)
+  hierarchy_note <- .rls_global_term_test_hierarchy_note(record$term_tests)
+  if (nzchar(hierarchy_note)) table$note <- paste(table$note, hierarchy_note, sep = "\n")
   if (identical(record$analysis_backend %||% "ordinary", "multiple_imputation")) {
-    table$title <- "Generalized Linear Model - Multiple Imputation"
+    table$title <- .rls_model_window_title(
+      record$model_type %||% .rls_model_type_for_family(
+        record$family, record$binary_regression, record$count_regression
+      ), TRUE
+    )
     table$note <- paste(
       table$note,
-      sprintf("Multiple imputation: m = %d; link-scale coefficients pooled with Rubin's rules. Deviance/AIC/BIC/logLik are not pooled.",
+      sprintf("Multiple imputation: m = %d; link-scale coefficients use mice::pool. Deviance is descriptive by imputation; AIC/BIC/logLik are not pooled.",
               record$imputation_count %||% length(record$fits_by_imputation %||% list())),
       sep = "\n"
     )
@@ -220,7 +299,7 @@
 .rls_render_table_text <- function(table) {
   header <- c(table$title, paste("Response:", if (isTRUE(table$responses_differ)) "see table" else table$response))
   if (!is.null(table$family)) {
-    header <- c(header, paste("Family:", table$family), paste("Link:", table$link))
+    header <- c(header, paste("Distribution:", table$family), paste("Link:", table$link))
   }
   blocks <- list(
     c(header, ""),
@@ -268,7 +347,7 @@
     paste0("Response: `", .rls_markdown_escape(if (isTRUE(table$responses_differ)) "see table" else table$response), "`")
   )
   if (!is.null(table$family)) {
-    header <- c(header, paste0("Family: `", .rls_markdown_escape(table$family), "`"), paste0("Link: `", .rls_markdown_escape(table$link), "`"))
+    header <- c(header, paste0("Distribution: `", .rls_markdown_escape(table$family), "`"), paste0("Link: `", .rls_markdown_escape(table$link), "`"))
   }
   paste(c(
     header,
@@ -296,26 +375,151 @@
   invisible(text)
 }
 
-.rls_export_table_pdf <- function(table, path, width = 8.5, height = 11) {
+.rls_write_utf8_text <- function(text, path) {
   dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
-  lines <- strsplit(.rls_render_table_text(table), "\n", fixed = TRUE)[[1L]]
-  line_height <- 0.032
-  lines_per_page <- max(8L, floor(0.88 / line_height))
-  if (isTRUE(capabilities("cairo"))) {
-    grDevices::cairo_pdf(path, width = width, height = height, onefile = TRUE)
-  } else {
-    grDevices::pdf(path, width = width, height = height, onefile = TRUE)
+  lines <- enc2utf8(as.character(text))
+  payload <- paste0(paste(lines, collapse = "\n"), "\n")
+  connection <- file(path, open = "wb")
+  on.exit(close(connection), add = TRUE)
+  writeBin(charToRaw(payload), connection)
+  invisible(path)
+}
+
+.rls_export_table_pdf <- function(table, path, width = 8.5, height = 11) {
+  if (!requireNamespace("tinytable", quietly = TRUE)) {
+    stop("Install package 'tinytable' to export statistical tables as PDF.",
+         call. = FALSE)
   }
-  on.exit(grDevices::dev.off(), add = TRUE)
-  for (page_start in seq(1L, length(lines), by = lines_per_page)) {
-    graphics::plot.new()
-    graphics::par(family = "Helvetica", mar = c(0, 0, 0, 0))
-    page_lines <- lines[page_start:min(length(lines), page_start + lines_per_page - 1L)]
-    y <- 0.96
-    for (line in page_lines) {
-      graphics::text(0.06, y, line, adj = c(0, 1), family = "mono", cex = 0.72)
-      y <- y - line_height
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+
+  coefficients <- as.data.frame(table$coefficients, stringsAsFactors = FALSE,
+                                check.names = FALSE)
+  fit <- as.data.frame(table$fit, stringsAsFactors = FALSE, check.names = FALSE)
+  if (ncol(coefficients) != ncol(fit)) {
+    stop("The coefficient and model-fit sections have incompatible columns.",
+         call. = FALSE)
+  }
+  names(fit) <- names(coefficients)
+  section <- as.list(rep("", ncol(coefficients)))
+  section[[1L]] <- "Model fit"
+  section <- as.data.frame(section, stringsAsFactors = FALSE,
+                           check.names = FALSE)
+  names(section) <- names(coefficients)
+  publication_data <- rbind(coefficients, section, fit)
+  publication_data[] <- lapply(publication_data, function(values) {
+    sub("^-", "\u2212", as.character(values))
+  })
+
+  response <- if (isTRUE(table$responses_differ)) "see table" else table$response
+  notes <- paste0("Response: ", response, ".")
+  if (!is.null(table$family)) {
+    notes <- c(notes, paste0("Distribution: ", table$family,
+                             "; link: ", table$link, "."))
+  }
+  table_notes <- trimws(unlist(strsplit(table$note %||% "", "\n", fixed = TRUE)))
+  notes <- c(notes, table_notes[nzchar(table_notes)])
+
+  publication <- tinytable::tt(publication_data)
+  publication <- tinytable::style_tt(publication, i = 0, bold = TRUE)
+  publication <- tinytable::style_tt(publication,
+                                     i = nrow(coefficients) + 1L,
+                                     j = 1, bold = TRUE)
+  publication <- tinytable::theme_latex(
+    publication,
+    environment = "tblr",
+    environment_table = FALSE,
+    inner = "rowsep=3pt"
+  )
+  latex_table <- tinytable::save_tt(publication, output = "latex")
+  latex_escape <- function(value) {
+    replacements <- setNames(
+      c("\\textbackslash{}", "\\{", "\\}", "\\$", "\\&", "\\%",
+        "\\#", "\\_", "\\textasciicircum{}", "\\textasciitilde{}"),
+      c("\\", "{", "}", "$", "&", "%", "#", "_", "^", "~")
+    )
+    characters <- strsplit(enc2utf8(as.character(value)), "", fixed = TRUE)[[1L]]
+    paste0(vapply(characters, function(character) {
+      if (character %in% names(replacements)) replacements[[character]]
+      else if (character %in% c("\r", "\n")) " "
+      else character
+    }, character(1L)), collapse = "")
+  }
+  heading <- paste0("\\noindent\\textbf{", latex_escape(table$title),
+                    "}\\par\\vspace{8pt}")
+  note <- if (length(notes)) paste0(
+    "\\par\\vspace{8pt}\\noindent\\textit{Note.} ",
+    paste(vapply(notes, latex_escape, character(1L)), collapse = " ")
+  ) else ""
+  latex_document <- paste(
+    sprintf("\\documentclass[11pt]{article}"),
+    "\\usepackage{tabularray}",
+    "\\usepackage{float}",
+    "\\usepackage{xcolor}",
+    "\\usepackage{graphicx}",
+    "\\usepackage{rotating}",
+    "\\usepackage[normalem]{ulem}",
+    "\\UseTblrLibrary{booktabs,siunitx}",
+    "\\newcommand{\\tinytableTabularrayUnderline}[1]{\\underline{#1}}",
+    "\\newcommand{\\tinytableTabularrayStrikeout}[1]{\\sout{#1}}",
+    "\\NewTableCommand{\\tinytableDefineColor}[3]{\\definecolor{#1}{#2}{#3}}",
+    sprintf("\\usepackage[paperwidth=%sin,paperheight=%sin,margin=0.6in]{geometry}",
+            width, height),
+    "\\usepackage{fontspec}",
+    "\\IfFontExistsTF{Arial}{\\setmainfont{Arial}}{}",
+    "\\pagecolor{white}",
+    "\\color{black}",
+    "\\pagestyle{empty}",
+    "\\begin{document}",
+    heading,
+    latex_table,
+    note,
+    "\\end{document}",
+    sep = "\n"
+  )
+
+  build_dir <- tempfile("linkeda-table-pdf-")
+  dir.create(build_dir, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(build_dir, recursive = TRUE, force = TRUE), add = TRUE)
+  tex_path <- file.path(build_dir, "linkeda-table.tex")
+  pdf_path <- file.path(build_dir, "linkeda-table.pdf")
+  writeLines(latex_document, tex_path, useBytes = TRUE)
+  latexmk <- unname(Sys.which("latexmk"))
+  engines <- Sys.which(c("xelatex", "lualatex"))
+  engine <- unname(engines[nzchar(engines)][1L])
+  if (is.na(engine) || !nzchar(engine)) {
+    stop("PDF was not produced: XeLaTeX or LuaLaTeX is required.", call. = FALSE)
+  }
+  output <- withr::with_dir(build_dir, {
+    if (nzchar(latexmk)) {
+      flag <- if (grepl("xelatex$", engine)) "-xelatex" else "-lualatex"
+      suppressWarnings(system2(
+        latexmk,
+        c(flag, "-interaction=nonstopmode", "-halt-on-error", basename(tex_path)),
+        stdout = TRUE, stderr = TRUE
+      ))
+    } else {
+      suppressWarnings(system2(
+        engine,
+        c("-interaction=nonstopmode", "-halt-on-error", basename(tex_path)),
+        stdout = TRUE, stderr = TRUE
+      ))
     }
+  })
+  status <- attr(output, "status") %||% 0L
+  if (!identical(status, 0L) || !file.exists(pdf_path)) {
+    log_path <- file.path(build_dir, "linkeda-table.log")
+    log_detail <- if (file.exists(log_path)) {
+      paste(tail(readLines(log_path, warn = FALSE), 24L), collapse = "\n")
+    } else ""
+    detail <- paste(
+      c(tail(output, 12L), if (nzchar(log_detail)) c("LaTeX log:", log_detail)),
+      collapse = "\n"
+    )
+    stop(paste0("PDF was not produced because LaTeX compilation failed.",
+                if (nzchar(detail)) paste0("\n", detail) else ""), call. = FALSE)
+  }
+  if (!file.copy(pdf_path, path, overwrite = TRUE)) {
+    stop("The compiled PDF could not be written to the selected path.", call. = FALSE)
   }
   invisible(path)
 }
@@ -345,8 +549,8 @@ ls_export_glm_table <- function(model, path, format = c("pdf", "txt", "md")) {
   table <- .rls_regression_table_from_glm(model)
   switch(format,
     pdf = .rls_export_table_pdf(table, path),
-    txt = writeLines(.rls_render_table_text(table), path, useBytes = TRUE),
-    md = writeLines(.rls_render_table_markdown(table), path, useBytes = TRUE)
+    txt = .rls_write_utf8_text(.rls_render_table_text(table), path),
+    md = .rls_write_utf8_text(.rls_render_table_markdown(table), path)
   )
   invisible(path)
 }
@@ -373,8 +577,8 @@ ls_export_regression_comparison_table <- function(comparison, path, format = c("
   table <- .rls_regression_table_from_comparison(comparison)
   switch(format,
     pdf = .rls_export_table_pdf(table, path),
-    txt = writeLines(.rls_render_table_text(table), path, useBytes = TRUE),
-    md = writeLines(.rls_render_table_markdown(table), path, useBytes = TRUE)
+    txt = .rls_write_utf8_text(.rls_render_table_text(table), path),
+    md = .rls_write_utf8_text(.rls_render_table_markdown(table), path)
   )
   invisible(path)
 }
@@ -401,14 +605,14 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   table <- .rls_regression_table_from_generalized_glm(model)
   switch(format,
     pdf = .rls_export_table_pdf(table, path),
-    txt = writeLines(.rls_render_table_text(table), path, useBytes = TRUE),
-    md = writeLines(.rls_render_table_markdown(table), path, useBytes = TRUE)
+    txt = .rls_write_utf8_text(.rls_render_table_text(table), path),
+    md = .rls_write_utf8_text(.rls_render_table_markdown(table), path)
   )
   invisible(path)
 }
 
 .rls_plot_themes <- c(
-  "classic", "minimal", "bw", "gray",
+  "publication", "classic", "minimal", "bw", "gray",
   "cowplot", "ipsum", "theme_tq", "theme_modern",
   "tufte", "economist", "fivethirtyeight", "manet", "vista", "beige", "datadesk", "garish"
 )
@@ -429,6 +633,11 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
 .rls_plot_theme_colors <- function(theme) {
   theme <- .rls_validate_plot_theme(theme)
   switch(theme,
+    publication = list(background = "#FFFFFF", panel = "#FFFFFF", grid = "#EDEDED",
+                       axis = "#333333", text = "#1A1A1A", muted = "#616161",
+                       fill = "#D1E4F0", border = "#333333", accent = "#0072B2",
+                       point = "#0072B2", bar = "#E69F00",
+                       categorical = c("#0072B2", "#E69F00", "#009E73", "#CC79A7")),
     manet = list(background = "#FFFCA3", panel = "#FFFCA3", grid = "#D6D38A",
                  axis = "#111111", text = "#111111", muted = "#333333",
                  fill = "#B8B8B8", border = "#111111", accent = "#66FF00",
@@ -503,7 +712,15 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
     return(FALSE)
   }
   out <- try(.rls_send(c("EXPORT_PLOT", .rls_plot_id(plot), normalizePath(path, mustWork = FALSE), toupper(format))), silent = TRUE)
-  is.character(out) && startsWith(out, "OK")
+  if (!is.character(out) || !startsWith(out, "OK")) return(FALSE)
+  exported_size <- suppressWarnings(file.info(path)$size)
+  if (!is.finite(exported_size) || exported_size < 1024) {
+    # A newly opened native view can acknowledge the export before layout and
+    # write an empty 1x0 PDF. Let the R renderer create a usable file instead.
+    unlink(path)
+    return(FALSE)
+  }
+  TRUE
 }
 
 .rls_copy_plot_native <- function(plot, format) {
@@ -537,16 +754,19 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
     col.axis = colors$muted,
     col.lab = colors$text,
     col.main = colors$text,
-    bty = "l",
+    bty = if (identical(theme, "publication")) "o" else "l",
     las = 1
   )
 }
 
-.rls_plot_panel <- function(theme) {
+.rls_plot_panel <- function(theme, x_at = NULL) {
   colors <- .rls_plot_theme_colors(theme)
   usr <- graphics::par("usr")
   graphics::rect(usr[1], usr[3], usr[2], usr[4], col = colors$panel, border = NA)
-  graphics::grid(col = colors$grid, lty = "solid")
+  if (is.null(x_at)) graphics::grid(col = colors$grid, lty = "solid") else {
+    graphics::grid(nx = NA, col = colors$grid, lty = "solid")
+    graphics::abline(v = x_at, col = colors$grid, lty = "solid")
+  }
   graphics::box(col = colors$axis)
 }
 
@@ -596,11 +816,29 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   invisible(NULL)
 }
 
+.rls_export_scatter_point_size <- function(record, x, y, base = 1) {
+  if (!isTRUE(record$size_by_overlap)) return(rep(base, length(x)))
+  # Exact numeric coordinates, not rounded labels or categories.
+  key <- paste(sprintf("%a", x), sprintf("%a", y), sep = "/")
+  base * sqrt(as.numeric(table(key)[key]))
+}
+
+.rls_export_scatter_point_color <- function(record, colors) {
+  color <- colors$point %||% colors$axis %||% "black"
+  if (!identical(record$shade_overlap, FALSE)) {
+    return(grDevices::adjustcolor(color, alpha.f = 0.35))
+  }
+  foreground <- grDevices::col2rgb(color) / 255
+  panel <- grDevices::col2rgb(colors$panel %||% "white") / 255
+  muted <- 0.72 * foreground + 0.28 * panel
+  grDevices::rgb(muted[1L, ], muted[2L, ], muted[3L, ])
+}
+
 .rls_export_scatter_fallback <- function(record, path, format, width, height, theme, dpi) {
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   if (is.data.frame(record$render_points) && nrow(record$render_points)) {
     x <- record$render_points$x
@@ -628,8 +866,9 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   }
   .rls_export_draw_scatter_layers(record, x, y, ok, colors)
   graphics::points(x[ok], y[ok], pch = if (identical(theme, "vista")) 1 else if (identical(theme, "datadesk")) 3 else 19,
-                   cex = if (identical(theme, "datadesk")) 0.65 else 1,
-                   col = grDevices::adjustcolor(colors$point %||% "black", alpha.f = 0.72))
+                   cex = .rls_export_scatter_point_size(record, x[ok], y[ok],
+                     if (identical(theme, "datadesk")) 0.65 else 1),
+                   col = .rls_export_scatter_point_color(record, colors))
   invisible(path)
 }
 
@@ -645,7 +884,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   x_values <- c(if (has_points) points$x, if (has_lines) lines$x)
   y_values <- c(if (has_points) points$y, if (has_lines) lines$y)
@@ -661,10 +900,17 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   graphics::plot(NA_real_, NA_real_, type = "n", axes = FALSE, xlim = xlim, ylim = ylim,
                  xlab = record$x %||% "", ylab = record$y %||% "",
                  main = record$title %||% "")
-  .rls_plot_panel(theme)
+  component_ticks <- NULL
+  if (identical(record$type, "pca_scree")) {
+    positions <- c(points$x, record$parallel_points$x)
+    component_ticks <- sort(unique(positions[is.finite(positions) & positions >= 1 & positions == floor(positions)]))
+  }
+  .rls_plot_panel(theme, x_at = component_ticks)
   if (is.data.frame(record$x_ticks) && nrow(record$x_ticks)) {
     ticks <- record$x_ticks[is.finite(record$x_ticks$at), , drop = FALSE]
     graphics::axis(1, at = ticks$at, labels = ticks$label)
+  } else if (!is.null(component_ticks)) {
+    graphics::axis(1, at = component_ticks, labels = format(component_ticks, scientific = FALSE, trim = TRUE))
   } else {
     graphics::axis(1)
   }
@@ -701,8 +947,9 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   }
   if (has_points) {
     graphics::points(points$x, points$y,
+                     cex = .rls_export_scatter_point_size(record, points$x, points$y),
                      pch = if (identical(theme, "datadesk")) 3 else 19,
-                     col = grDevices::adjustcolor(colors$point %||% colors$axis, alpha.f = 0.72))
+                     col = .rls_export_scatter_point_color(record, colors))
   }
   if (identical(kind, "pca_biplot") && is.data.frame(loadings) && nrow(loadings)) {
     loadings <- loadings[is.finite(loadings$x) & is.finite(loadings$y), , drop = FALSE]
@@ -728,20 +975,24 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
+  series <- record$series %||% ""
+  # Use the same case membership and safe series labels as the interactive plot.
+  prepared <- .rls_prepare_time_series_data(record$data, record$x, record$y,
+    series = if(nzchar(series)) series else NULL)
   time <- record$data[[record$x]]
-  value <- suppressWarnings(as.double(record$data[[record$y]]))
-  ok <- !is.na(time) & is.finite(value)
+  value <- prepared$value_values
+  ok <- prepared$rows
   graphics::plot(time[ok], value[ok], type = "n", axes = FALSE,
                  xlab = record$x, ylab = record$y,
                  main = record$title %||% paste(record$y, "over", record$x))
   .rls_plot_panel(theme)
   .rls_export_axis_time(time)
   graphics::axis(2)
-  series <- record$series %||% ""
-  if (nzchar(series) && series %in% names(record$data)) {
-    groups <- factor(record$data[[series]][ok], exclude = NULL)
+  if (nzchar(series)) {
+    groups <- factor(prepared$point_series + 1L,
+      levels = seq_along(prepared$labels), labels = prepared$labels)
     palette <- colors$categorical %||% grDevices::hcl.colors(max(3L, nlevels(groups)), "Dark 3")
     for (index in seq_along(levels(groups))) {
       in_group <- groups == levels(groups)[[index]]
@@ -787,14 +1038,24 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   point_character <- if (identical(theme, "datadesk")) 3 else 19
+  panel <- function(x, y, ...) {
+    graphics::points(x, y, ...)
+    complete <- is.finite(x) & is.finite(y)
+    if (isTRUE(record$lm) && sum(complete) >= 2L &&
+        length(unique(x[complete])) >= 2L) {
+      fit <- stats::lm(y ~ x, data = data.frame(x = x[complete], y = y[complete]))
+      graphics::abline(fit, col = colors$axis %||% "black", lwd = 1.5)
+    }
+  }
   graphics::pairs(
     record$data[variables],
     labels = variables,
     pch = point_character,
     col = grDevices::adjustcolor(colors$point %||% "black", alpha.f = 0.72),
+    panel = panel,
     main = record$title %||% "Scatterplot matrix"
   )
   invisible(path)
@@ -804,7 +1065,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   plot_type <- record$plot_type %||% "scatter"
   conditions <- record$conditions %||% list(list(variable = record$condition, kind = "categorical"))
@@ -838,7 +1099,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   panel_grid <- expand.grid(condition_levels, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE)
   panel_keys <- apply(panel_grid, 1L, paste, collapse = "\037")
   panel_labels <- apply(panel_grid, 1L, function(values) paste(
-    paste0(vapply(conditions, `[[`, character(1L), "variable"), " = ", values), collapse = " · "))
+    paste0(vapply(conditions, `[[`, character(1L), "variable"), " = ", values), collapse = " \u00B7 "))
   row_keys <- do.call(paste, c(lapply(condition_factors, as.character), sep = "\037"))
   panel_count <- length(panel_keys)
   columns <- if (length(conditions) >= 2L) length(condition_levels[[1L]]) else
@@ -860,7 +1121,17 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   )
   grid_height <- panel_height * rows + gap_y * (rows - 1L)
   grid_bottom <- outer_bottom + (available_height - grid_height) / 2
-  x_raw <- record$data[[record$x]]
+  boxplot_groups <- record$boxplot_groups %||% record$x
+  if (identical(plot_type, "boxplot") && length(boxplot_groups) > 1L) {
+    group_values <- lapply(boxplot_groups, function(variable) {
+      value <- as.character(record$data[[variable]])
+      value[is.na(value)] <- "NA"
+      value
+    })
+    x_raw <- interaction(group_values, drop = TRUE, lex.order = TRUE, sep = " \u00B7 ")
+  } else {
+    x_raw <- record$data[[record$x]]
+  }
   y_raw <- if (nzchar(record$y %||% "") && record$y %in% names(record$data)) record$data[[record$y]] else NULL
   x_values <- suppressWarnings(as.double(x_raw))
   y_values <- suppressWarnings(as.double(y_raw))
@@ -890,6 +1161,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
     maxima <- vapply(panel_keys, function(key) {
       counts <- table(factor(as.character(x_raw[row_keys == key & complete_condition]), levels = categories))
       if (identical(record$bar_measure %||% "count", "percent")) counts <- 100 * counts / max(1, sum(counts))
+      if (identical(record$bar_measure %||% "count", "conditional_percent")) counts[counts > 0] <- 100
       max(counts, 0)
     }, numeric(1L))
     y_limits <- c(0, max(maxima, 1) * 1.05)
@@ -956,7 +1228,8 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
         .rls_export_draw_scatter_layers(record, x_values, y_values, in_panel, colors)
       }
       graphics::points(x_values[in_panel], y_values[in_panel], pch = point_character,
-                       col = grDevices::adjustcolor(colors$point %||% "black", alpha.f = 0.78))
+                       cex = .rls_export_scatter_point_size(record, x_values[in_panel], y_values[in_panel]),
+                       col = .rls_export_scatter_point_color(record, colors))
     } else if (plot_type == "boxplot") {
       graphics::boxplot(y_values[in_panel] ~ factor(x_raw[in_panel]), ylim = y_limits,
                         axes = FALSE, xlab = "", ylab = "", main = panel_labels[[index]],
@@ -966,6 +1239,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
       categories <- unique(as.character(x_raw[!is.na(x_raw)]))
       values <- table(factor(as.character(x_raw[in_panel]), levels = categories))
       if (identical(record$bar_measure %||% "count", "percent")) values <- 100 * values / max(1, sum(values))
+      if (identical(record$bar_measure %||% "count", "conditional_percent")) values[values > 0] <- 100
       graphics::barplot(values, ylim = y_limits, axes = FALSE, main = panel_labels[[index]],
                         col = colors$bar %||% colors$fill, border = colors$axis)
       graphics::axis(1, at = seq_along(categories) - 0.5, labels = if (panel_row == rows) categories else FALSE)
@@ -995,7 +1269,12 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   )
   graphics::text(0.5, 0.025, record$x)
   y_label <- if (plot_type %in% c("scatter", "time_series", "boxplot")) record$y else if (plot_type == "bar") {
-    if (identical(record$bar_measure %||% "count", "percent")) "Percent within panel" else "Count"
+    measure <- if (identical(record$bar_measure %||% "count", "percent")) {
+      "Percent within panel"
+    } else if (identical(record$bar_measure %||% "count", "conditional_percent")) {
+      "Percent within X"
+    } else "Count"
+    if (nzchar(record$split %||% "")) paste0(record$split, " (", measure, ")") else measure
   } else if (identical(record$histogram_measure %||% "count", "density")) "Density" else if (
     identical(record$histogram_measure %||% "count", "percent")) "Percent" else "Count"
   graphics::text(0.018, 0.5, y_label, srt = 90)
@@ -1006,7 +1285,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   if (nzchar(record$x)) {
     graphics::boxplot(record$data[[record$y]] ~ record$data[[record$x]],
@@ -1019,10 +1298,16 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
     }
     values <- record$data[vars]
     if (isTRUE(record$standardize)) {
-      values <- as.data.frame(scale(values))
       values[] <- lapply(values, function(x) {
-        x[is.na(x)] <- 0
-        x
+        finite <- is.finite(x)
+        out <- rep(NA_real_, length(x))
+        if (any(finite)) {
+          spread <- stats::sd(x[finite])
+          out[finite] <- if (is.finite(spread) && spread > 0) {
+            as.numeric(base::scale(x[finite]))
+          } else rep(0, sum(finite))
+        }
+        out
       })
     }
     graphics::boxplot(values, ylab = if (isTRUE(record$standardize)) "Standardized value" else "Value",
@@ -1047,7 +1332,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   values <- if (is.data.frame(record$render_points) && nrow(record$render_points)) {
     record$render_points$x
@@ -1055,10 +1340,16 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
     record$data[[record$x]]
   }
   values <- values[is.finite(values)]
-  requested_breaks <- breaks %||% record$histogram_bins %||% "Sturges"
-  histogram <- graphics::hist(values, breaks = requested_breaks, xlab = record$x,
-                              main = record$title %||% paste("Histogram of", record$x),
-                              col = colors$fill, border = colors$border)
+  requested_breaks <- .rls_histogram_breaks_for_values(values,
+    bins = record$histogram_bins, breaks = breaks)
+  histogram <- graphics::hist(values, breaks = requested_breaks,
+                              right = FALSE, include.lowest = TRUE, fuzz = 0, plot = FALSE)
+  # The native histogram uses count heights, also with unequal-width intervals.
+  graphics::plot(range(histogram$breaks), c(0, max(histogram$counts)), type = "n",
+                 xlab = record$x, ylab = "Count",
+                 main = record$title %||% paste("Histogram of", record$x))
+  graphics::rect(head(histogram$breaks, -1L), 0, tail(histogram$breaks, -1L),
+                 histogram$counts, col = colors$fill, border = colors$border)
   if (isTRUE(record$show_density) && identical(record$density_mode %||% "all", "all") && length(values) >= 2L) {
     bandwidth <- record$density_bw %||% 0
     density <- stats::density(values, bw = if (is.finite(bandwidth) && bandwidth > 0) bandwidth else "nrd0",
@@ -1074,37 +1365,37 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
   .rls_plot_device(path, format, width, height, dpi)
   on.exit(grDevices::dev.off(), add = TRUE)
   old <- .rls_plot_par(theme)
-  on.exit(graphics::par(old), add = TRUE)
+  on.exit(graphics::par(old), add = TRUE, after = FALSE)
   colors <- .rls_plot_theme_colors(theme)
   xvars <- record$x
-  if (length(xvars) == 1L) {
-    xvars <- trimws(strsplit(as.character(xvars), "\\s*\\+\\s*")[[1L]])
+  if (length(xvars) == 1L && !xvars %in% names(record$data)) {
+    xvars <- trimws(strsplit(xvars, " + ", fixed = TRUE)[[1L]])
   }
-  xvars <- xvars[nzchar(xvars)]
-  if (!length(xvars)) {
-    stop("No X variable metadata are available for barplot export.", call. = FALSE)
-  }
-  xdata <- lapply(xvars, function(name) record$data[[name]])
-  xgroup <- if (length(xdata) == 1L) {
-    factor(xdata[[1L]], exclude = NULL)
-  } else {
-    interaction(xdata, drop = TRUE, sep = " / ", lex.order = TRUE)
-  }
+  y <- record$y %||% ""
+  prepared <- .rls_prepare_barplot_data(record$data, xvars,
+    y = if (nzchar(y)) y else NULL,
+    mode = record$mode %||% "count",
+    bar_width = record$bar_width %||% "equal",
+    include_missing = record$include_missing %||% TRUE,
+    sort_x = record$sort_x %||% FALSE, sort_y = record$sort_y %||% FALSE)
+  categories <- prepared$bars$x_condition
+  levels <- unique(prepared$segments$y_level)
+  heights <- matrix(0, nrow = length(levels), ncol = length(categories),
+                    dimnames = list(levels, categories))
+  measure <- switch(prepared$mode, count = "count",
+                    conditional_percent = "conditional_percent", overall_percent = "overall_percent")
+  positions <- cbind(match(prepared$segments$y_level, levels),
+                     match(prepared$segments$x_condition, categories))
+  heights[positions] <- prepared$segments[[measure]]
+  fill <- colors$categorical %||% grDevices::gray.colors(max(2L, length(levels)), start = 0.82, end = 0.45)
   main <- record$title %||% paste("Bar chart of", paste(xvars, collapse = " + "))
-  if (nzchar(record$y %||% "")) {
-    y <- factor(record$data[[record$y]], exclude = NULL)
-    tab <- table(xgroup, y, useNA = "ifany")
-    fill <- colors$categorical %||% grDevices::gray.colors(max(2L, ncol(tab)), start = 0.82, end = 0.45)
-    fill <- rep(fill, length.out = ncol(tab))
-    graphics::barplot(t(tab), beside = FALSE, col = fill, border = colors$axis,
-                      main = main, xlab = paste(xvars, collapse = " + "),
-                      ylab = "Count", legend.text = colnames(tab),
-                      args.legend = list(x = "topright", bty = "n", cex = 0.8))
-  } else {
-    tab <- table(xgroup, useNA = "ifany")
-    graphics::barplot(tab, col = colors$bar %||% "gray82", border = colors$axis,
-                      main = main, xlab = paste(xvars, collapse = " + "), ylab = "Count")
-  }
+  graphics::barplot(heights, beside = FALSE, width = prepared$bars$visual_width,
+    col = if (nzchar(y)) rep(fill, length.out = length(levels)) else colors$bar %||% "gray82",
+    border = colors$axis, main = main, xlab = paste(xvars, collapse = " + "),
+    ylab = switch(prepared$mode, count = "Count", conditional_percent = "Conditional percent",
+                  overall_percent = "Overall percent"),
+    legend.text = if (nzchar(y)) levels else NULL,
+    args.legend = list(x = "topright", bty = "n", cex = 0.8))
   invisible(path)
 }
 
@@ -1113,7 +1404,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
 #' Gets or sets the application-wide plot theme used by native plots and R
 #' fallback plot exports.
 #'
-#' @param theme Optional theme. Supported values include `"classic"`,
+#' @param theme Optional theme. Supported values include `"publication"` (Default), `"classic"`,
 #' `"minimal"`, `"bw"`, `"gray"`, `"cowplot"`, `"ipsum"`, `"theme_tq"`,
 #' `"theme_modern"`, `"tufte"`, `"economist"`, `"fivethirtyeight"`,
 #' `"manet"`, `"vista"`, `"beige"`, `"datadesk"`, and `"garish"`.
@@ -1121,7 +1412,7 @@ ls_export_generalized_linear_model_table <- function(model, path, format = c("pd
 #' @export
 ls_plot_theme <- function(theme = NULL) {
   if (is.null(theme)) {
-    return(.rls_state$plot_theme %||% "classic")
+    return(.rls_state$plot_theme %||% "publication")
   }
   theme <- .rls_validate_plot_theme(theme)
   .rls_state$plot_theme <- theme
@@ -1145,7 +1436,7 @@ ls_export_plot <- function(plot, path, width = NULL, height = NULL,
                            format = c("pdf", "png", "svg"),
                            theme = NULL, dpi = 300) {
   format <- match.arg(format)
-  theme <- .rls_validate_plot_theme(theme %||% (.rls_state$plot_theme %||% "classic"))
+  theme <- .rls_validate_plot_theme(theme %||% (.rls_state$plot_theme %||% "publication"))
   if (isTRUE(.rls_state$process_started)) {
     .rls_sync_plot_theme_native(theme)
   }
@@ -1196,7 +1487,7 @@ ls_copy_plot <- function(plot, format = NULL, theme = NULL) {
   if (identical(format, "emf") && .Platform$OS.type != "windows") {
     stop("Enhanced Metafile copy is available only on Windows.", call. = FALSE)
   }
-  theme <- .rls_validate_plot_theme(theme %||% (.rls_state$plot_theme %||% "classic"))
+  theme <- .rls_validate_plot_theme(theme %||% (.rls_state$plot_theme %||% "publication"))
   if (isTRUE(.rls_state$process_started)) {
     .rls_sync_plot_theme_native(theme)
   }

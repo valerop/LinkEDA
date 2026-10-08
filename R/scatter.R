@@ -1,8 +1,8 @@
 #' Open a native interactive scatterplot
 #'
-#' Opens a native macOS scatterplot window. Drag with the mouse to select points
+#' Opens a native scatterplot window. Drag with the mouse to select points
 #' using a rectangular brush. Plots that share the same `group` have linked
-#' selections.
+#' selections on both supported desktop platforms.
 #'
 #' Missing values in `x` or `y` are excluded from drawing, but selected points
 #' still map back to their original row indices.
@@ -46,6 +46,9 @@ ls_scatter <- function(data, x, y, group = NULL, labels = NULL, title = NULL) {
   if (n) {
     point_lines <- sprintf("%.17g %.17g %d", prepared$x, prepared$y, prepared$row)
     lines <- c(lines, point_lines)
+  }
+  if (isFALSE(.rls_option("launch", TRUE))) {
+    stop("Backend launching is disabled by option `LinkEDA.launch = FALSE`.", call. = FALSE)
   }
   if (.Platform$OS.type == "windows") {
     .rls_send_winui(lines)

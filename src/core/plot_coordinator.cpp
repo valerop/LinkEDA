@@ -27,6 +27,9 @@ PlotCoordinationResult PlotCoordinator::attachPlot(PlotModel &plot)
     if (plot.id.empty() || plot.group.empty()) return result;
 
     auto existing = state_.plots().find(plot.id);
+    // Reopened documents may carry a retired pointer/zoom mode. Native views
+    // now start with direct selection, including conditioned histograms.
+    if (PlotLinksToDataRows(plot)) plot.interactionMode = "select";
     result.accepted = true;
     result.changed = existing == state_.plots().end() || existing->second != &plot;
     state_.ensureSelectionGroup(plot.group);

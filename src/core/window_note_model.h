@@ -39,6 +39,19 @@ struct WindowStickyNote {
     double height = 160.0;
     double anchor_x = 12.0;
     double anchor_y = 220.0;
+    // Coordinate space in which the geometry above was recorded. Zero means
+    // legacy absolute coordinates. Snapshot and export renderers use these
+    // dimensions to preserve relative placement at any output size.
+    double reference_width = 0.0;
+    double reference_height = 0.0;
+    // Plot-area rectangle associated with the anchor.  Keeping this separate
+    // from the full canvas is what lets a pointer remain attached to the same
+    // data location when titles, labels, or export margins change.
+    double anchor_reference_x = 0.0;
+    double anchor_reference_y = 0.0;
+    double anchor_reference_width = 0.0;
+    double anchor_reference_height = 0.0;
+    bool collapsed = false;
     bool has_content = false;
     WindowNoteTimePoint created_at{};
     WindowNoteTimePoint modified_at{};
@@ -68,6 +81,23 @@ void SetWindowStickyNoteColor(WindowStickyNote &note, StickyNoteColor color);
 void MoveWindowStickyNote(WindowStickyNote &note, double x, double y);
 void ResizeWindowStickyNote(WindowStickyNote &note, double width, double height);
 void MoveWindowStickyNoteAnchor(WindowStickyNote &note, double x, double y);
+void SetWindowStickyNoteReferenceSize(WindowStickyNote &note,
+                                      double width, double height);
+void SetWindowStickyNoteAnchorReferenceRect(WindowStickyNote &note,
+                                            double x, double y,
+                                            double width, double height);
+void SetWindowStickyNoteCollapsed(WindowStickyNote &note, bool collapsed);
+WindowStickyNote WindowStickyNoteForCanvas(const WindowStickyNote &note,
+                                           double width, double height);
+WindowStickyNote WindowStickyNoteForCanvas(const WindowStickyNote &note,
+                                           double width, double height,
+                                           double anchorReferenceX,
+                                           double anchorReferenceY,
+                                           double anchorReferenceWidth,
+                                           double anchorReferenceHeight);
+void RelayoutWindowStickyNoteForCanvasResize(WindowStickyNote &note,
+                                             double oldWidth, double oldHeight,
+                                             double newWidth, double newHeight);
 void SetWindowNoteText(WindowNote &note, const std::string &text,
                        WindowNoteTimePoint now = std::chrono::system_clock::now());
 void SetWindowNoteVisible(WindowNote &note, bool visible);

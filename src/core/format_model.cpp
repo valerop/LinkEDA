@@ -139,8 +139,8 @@ std::string PlotWindowTitle(const std::string &title,
                              const std::string &yLabel,
                              const std::string &xLabel,
                              const std::string &group,
-                             const std::string &interactionMode,
-                             const std::string &selectionMode)
+                             const std::string &,
+                             const std::string &)
 {
     std::ostringstream out;
     std::string displayTitle = title.empty() ? (yLabel + " vs " + xLabel) : title;
@@ -247,7 +247,7 @@ std::string SignificanceStars(double p)
 
 std::vector<std::string> PlotThemeNames()
 {
-    return {"classic", "minimal", "bw", "gray", "cowplot", "ipsum",
+    return {"publication", "classic", "minimal", "bw", "gray", "cowplot", "ipsum",
             "theme_tq", "theme_modern", "tufte", "economist", "fivethirtyeight",
             "manet", "vista", "beige", "datadesk", "garish"};
 }
@@ -275,6 +275,7 @@ std::string PlotThemeDisplayName(const std::string &theme)
     if (theme == "beige") return "Beige";
     if (theme == "datadesk") return "DataDesk";
     if (theme == "garish") return "Garish";
+    if (theme == "publication") return "Default";
     return "Classic";
 }
 
@@ -288,8 +289,29 @@ PlotRGBA PlotThemeWhite(double w, double a)
     return PlotRGBA{w, w, w, a};
 }
 
+PlotRGBA PlotMarkColor(PlotRGBA color, PlotRGBA panel, bool shadeOverlap, double alphaMultiplier)
+{
+    const double alpha = std::clamp(color.a * alphaMultiplier, 0.0, 1.0);
+    if (shadeOverlap) return {color.r, color.g, color.b, alpha};
+    return {alpha * color.r + (1.0 - alpha) * panel.r,
+            alpha * color.g + (1.0 - alpha) * panel.g,
+            alpha * color.b + (1.0 - alpha) * panel.b, 1.0};
+}
+
 PlotThemeStyleSpec PlotThemeStyleForName(const std::string &theme)
 {
+    if (theme == "publication") {
+        PlotThemeStyleSpec style{
+            PlotThemeWhite(1.0), PlotThemeWhite(1.0),
+            PlotThemeWhite(0.975), PlotThemeWhite(0.930),
+            PlotThemeWhite(0.20), PlotThemeWhite(0.10), PlotThemeWhite(0.38),
+            PlotThemeWhite(0.90, 0.82), PlotThemeWhite(0.20),
+            PlotThemeRGB(0.000, 0.447, 0.698), PlotThemeRGB(0.902, 0.624, 0.000),
+            false, true
+        };
+        style.showAxisTickMarks = true;
+        return style;
+    }
     if (theme == "manet") {
         PlotThemeStyleSpec style{
             PlotThemeRGB(1.000, 0.988, 0.639), PlotThemeRGB(1.000, 0.988, 0.639),
@@ -527,7 +549,7 @@ std::string FormatDecimalsColumnHeader()
 
 std::string FormatRoleColumnHeader()
 {
-    return "Role";
+    return "Default role (Experimental)";
 }
 
 std::string FormatDescriptionColumnHeader()
@@ -585,7 +607,22 @@ std::string PaletteColorNameAtIndex(size_t index)
 
 PlotRGBA PlotColorForName(const std::string &name, double alpha)
 {
-    if (name == "gray" || name == "grey") {
+    std::string lowered = name;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    if (lowered == "white") {
+        return PlotThemeWhite(1.0, alpha);
+    }
+    if (lowered == "black") {
+        return PlotThemeWhite(0.0, alpha);
+    }
+    if (lowered == "red") {
+        // A literal semantic red is used to distinguish rows whose model
+        // inputs were directly imputed from ordinary fitted-value
+        // propagation.  It must not fall through to the unknown-colour ink.
+        return PlotThemeRGB(0.835, 0.050, 0.050, alpha);
+    }
+    if (lowered == "gray" || lowered == "grey") {
         return PlotThemeWhite(0.45, alpha);
     }
     auto color = FindPaletteColor(name);
@@ -617,6 +654,29 @@ PlotRGBA PlotColorForNameOrHex(const std::string &nameOrHex, double alpha)
         return PlotThemeRGB(r, g, b, alpha);
     }
     return PlotColorForName(nameOrHex, alpha);
+}
+
+PlotRGBA PlotLightColorForNameOrHex(const std::string &nameOrHex, double alpha)
+{
+    if (auto color = FindPaletteColor(nameOrHex)) {
+        return PlotThemeRGB(color->lightR, color->lightG, color->lightB, alpha);
+    }
+    const PlotRGBA base = PlotColorForNameOrHex(nameOrHex, 1.0);
+    constexpr double whiteFraction = 0.72;
+    return PlotThemeRGB(
+        base.r + (1.0 - base.r) * whiteFraction,
+        base.g + (1.0 - base.g) * whiteFraction,
+        base.b + (1.0 - base.b) * whiteFraction,
+        alpha);
+}
+
+PlotRGBA PlotSelectedColorForNameOrHex(const std::string &nameOrHex, double alpha)
+{
+    auto color = FindPaletteColor(nameOrHex);
+    if (color) {
+        return PlotThemeRGB(color->selectedR, color->selectedG, color->selectedB, alpha);
+    }
+    return PlotColorForNameOrHex(nameOrHex, alpha);
 }
 
 bool ParseHexColorByte(const std::string &text, size_t offset, double *value)

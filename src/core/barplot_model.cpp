@@ -61,10 +61,11 @@ std::vector<Rect> BarplotBarRects(const BarplotLayout &layout)
     }
 
     const std::size_t n = layout.values.size();
+    const Rect contentRect = ZeroBaselineContentRect(layout.plotRect);
     rects.reserve(n);
     const std::size_t nestingDepth = std::max<std::size_t>(1, layout.nestingDepth);
     const bool nestedX = nestingDepth > 1;
-    const double slot = layout.plotRect.width / static_cast<double>(std::max<std::size_t>(1, n));
+    const double slot = contentRect.width / static_cast<double>(std::max<std::size_t>(1, n));
     const double baseGap = layout.widthMode == BarplotWidthMode::Equal
         ? (nestedX ? std::min(10.0, std::max(3.0, slot * 0.075))
                    : std::min(14.0, std::max(2.0, slot * 0.18)))
@@ -90,7 +91,7 @@ std::vector<Rect> BarplotBarRects(const BarplotLayout &layout)
     for (double gap : gaps) {
         totalGap += gap;
     }
-    const double availableWidth = std::max(1.0, layout.plotRect.width - totalGap);
+    const double availableWidth = std::max(1.0, contentRect.width - totalGap);
 
     double totalWeight = 0.0;
     if (layout.widthMode != BarplotWidthMode::Equal) {
@@ -114,14 +115,14 @@ std::vector<Rect> BarplotBarRects(const BarplotLayout &layout)
         return width;
     };
 
-    double x = layout.plotRect.x + outerPad;
+    double x = contentRect.x + outerPad;
     for (std::size_t i = 0; i < n; ++i) {
         const double width = widthForIndex(i);
         const double value = i < layout.values.size() ? layout.values[i] : 0.0;
-        const double h = layout.plotRect.height * std::max(0.0, value) / std::max(1.0, layout.yMaximum);
+        const double h = contentRect.height * std::max(0.0, value) / std::max(1.0, layout.yMaximum);
         rects.push_back({
             x,
-            layout.plotRect.y + layout.plotRect.height - h,
+            contentRect.y + contentRect.height - h,
             std::max(1.0, width),
             h
         });
@@ -639,7 +640,10 @@ BarplotSideLabelDrawPlan BuildBarplotSideLabelDrawPlan(
         return plan;
     }
 
-    const double sideWidth = std::max(42.0, plotRect.x - 46.0);
+    // The title uses the full left gutter.  The former 46 px reservation was
+    // appropriate for the category labels, but truncated ordinary variable
+    // names to just "Split:" even in a wide plot window.
+    const double sideWidth = std::max(42.0, plotRect.x - 16.0);
     plan.splitTitle = "Split: " + splitVariable;
     plan.splitTitleRect = {8.0, plotRect.y - 18.0, sideWidth, 14.0};
 
@@ -1029,9 +1033,8 @@ std::string BarplotSegmentEncodingLabel(bool hasSplit,
                                         const std::string &segmentEncodingMode)
 {
     if (hasSplit) return "solid color + border";
-    if (segmentEncodingMode == "pattern_only") return "pattern only";
-    if (segmentEncodingMode == "transparent_color_only") return "transparent color only";
-    return "transparent color + pattern";
+    (void)segmentEncodingMode;
+    return "transparent color";
 }
 
 std::string BarplotSubtitle(const std::string &mode,
@@ -1092,8 +1095,8 @@ bool NaturalLess(const std::string &a, const std::string &b)
             i = iEnd;
             j = jEnd;
         } else {
-            char ca = std::tolower(static_cast<unsigned char>(a[i]));
-            char cb = std::tolower(static_cast<unsigned char>(b[j]));
+            const int ca = std::tolower(static_cast<unsigned char>(a[i]));
+            const int cb = std::tolower(static_cast<unsigned char>(b[j]));
             if (ca != cb) return ca < cb;
             i++;
             j++;
@@ -2148,7 +2151,9 @@ BarplotDisplayMenuState BuildBarplotDisplayMenuState(
     state.conditionalPercent = BarplotConditionalPercentMenuOption(showConditionalPercent, hasSplit);
     state.rowColorOptions = CheckedMenuOptions(BarplotRowColorDisplayMenuOptions(hasSplit), rowColorDisplay);
     state.splitStrokeWidth = BarplotSplitStrokeWidthMenuOption(splitStrokeWidth);
-    state.showSegmentEncodingMenu = !hasSplit;
+    // Keep the ordinary bar-chart menu aligned with the macOS reference UI:
+    // patterns and alternate segment encodings are not user-facing options.
+    state.showSegmentEncodingMenu = false;
     state.segmentEncodingOptions = CheckedMenuOptions(BarplotSegmentEncodingMenuOptions(), segmentEncodingMode);
     state.showPatterns = BarplotShowPatternsMenuOption(showPatterns);
     state.splitStyle = BarplotSplitStyleMenuOption();
@@ -2896,6 +2901,16 @@ BarplotSelectionSlicePlan BuildBarplotSelectionSlicePlan(
     return plan;
 }
 
+bool BarplotSelectedSliceCoversY(const BarplotSelectionSlicePlan &plan, double y)
+{
+    if (!std::isfinite(y)) return false;
+    for (const BarplotCompositionSlice &slice : plan.slices) {
+        if (y >= slice.rect.y && y <= slice.rect.y + slice.rect.height)
+            return true;
+    }
+    return false;
+}
+
 int CountSelectedRowsForRows(const std::vector<int> &rows,
                              const std::set<int> &selection)
 {
@@ -3121,7 +3136,10 @@ void SortBarplotBinsByXHierarchy(PlotModel &model)
 {
     if (model.barplotBins.size() <= 1) return;
     std::vector<std::string> xVariables = BarplotXVariablesForModel(model);
-    if (xVariables.size() <= 1) return;
+    // A single categorical X still has a meaningful canonical order.  The
+    // macOS renderer orders numeric-looking levels numerically (4, 6, 8), so
+    // only an actually missing X specification should bypass sorting.
+    if (xVariables.empty()) return;
 
     std::vector<std::string> categories;
     categories.reserve(model.barplotBins.size());
@@ -3222,12 +3240,14 @@ BarplotSegmentVisualStyle ResolveBarplotSegmentVisual(
 
 bool BarplotEncodingShowsPatterns(const PlotModel &model)
 {
-    return BarplotEncodingShowsPatterns(model.barplotShowPatterns, model.barplotSegmentEncodingMode);
+    (void)model;
+    return false;
 }
 
 bool BarplotEncodingShowsColor(const PlotModel &model)
 {
-    return BarplotEncodingShowsColor(model.barplotSegmentEncodingMode);
+    (void)model;
+    return true;
 }
 
 std::optional<BarplotSegmentReference> BarplotCoreSegmentReferenceForIndices(

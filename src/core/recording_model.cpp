@@ -144,6 +144,7 @@ bool RecordingDispatchCommandShouldRecord(const std::string &command)
     case CommandAction::OpenColorPalette:
     case CommandAction::PaletteHide:
     case CommandAction::ClosePlot:
+    case CommandAction::FileExportData:
         return false;
     default:
         break;
@@ -157,6 +158,7 @@ bool RecordingDispatchCommandReplayable(const std::string &command)
     CommandRequest request = ParseMenuCommand(command);
     switch (request.action) {
     case CommandAction::FileImportData:
+    case CommandAction::FileExportData:
     case CommandAction::ShowActiveDataset:
     case CommandAction::ShowVariableInformation:
     case CommandAction::ChooseLabelColumn:
@@ -186,6 +188,10 @@ std::string RecordingRCodeForDispatch(const std::string &command,
         return "ls_new_regression_comparison(data = " + RStringLiteral(group) + ")";
     case CommandAction::OpenGeneralizedGLM:
         return "ls_new_generalized_linear_model(data = " + RStringLiteral(group) + ")";
+    case CommandAction::OpenCountRegression:
+        return "ls_new_count_regression(data = " + RStringLiteral(group) + ")";
+    case CommandAction::OpenCountRegressionComparison:
+        return "ls_compare_count_regression_models(...)";
     case CommandAction::OpenTable1:
         return "ls_new_table1(data = " + RStringLiteral(group) + ")";
     case CommandAction::OpenCorrelationMatrix:
@@ -248,9 +254,13 @@ std::string RecordingDescriptionForDispatch(const std::string &command,
     case CommandAction::OpenGLM:
         return "Open General Linear Model for `" + group + "`.";
     case CommandAction::OpenRegressionComparison:
-        return "Open linear regression model comparison for `" + group + "`.";
+        return "Open General Linear Model comparison for `" + group + "`.";
     case CommandAction::OpenGeneralizedGLM:
         return "Open Generalized Linear Model for `" + group + "`.";
+    case CommandAction::OpenCountRegression:
+        return "Open Count Model for `" + group + "`.";
+    case CommandAction::OpenCountRegressionComparison:
+        return "Open count regression model comparison for `" + group + "`.";
     case CommandAction::ChangeXVariable:
         if (!request.args.empty()) {
             return "Change scatterplot X variable to `" + request.args[0] + "`.";

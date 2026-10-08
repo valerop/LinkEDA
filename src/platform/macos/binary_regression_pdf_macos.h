@@ -15,7 +15,6 @@ struct BinaryAPAExportOptions {
     std::string tableNumber = "1";
     std::string title;
     BinaryAPAPageOrientation orientation = BinaryAPAPageOrientation::Automatic;
-    bool includeTermTests = false;
     bool includeDetailedFit = false;
 };
 

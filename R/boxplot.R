@@ -2,7 +2,8 @@
 #'
 #' @param data A data frame.
 #' @param y Numeric response variable.
-#' @param x Optional grouping variable.
+#' @param x Optional ordered vector of grouping variables. With two or more
+#'   variables, boxes are nested from the outermost to the innermost variable.
 #' @param group Linked brushing group.
 #' @return A list used by the native backend.
 .rls_prepare_boxplot_data <- function(data, y, x = NULL, group = NULL) {
@@ -17,9 +18,20 @@
     stop("`y` must name a numeric column.", call. = FALSE)
   }
   if (!is.null(x)) {
-    x <- .rls_validate_protocol_name(x, "x")
-    if (!x %in% names(data)) {
-      stop(sprintf("Column `%s` was not found in `data`.", x), call. = FALSE)
+    if (!is.character(x) || !length(x) || anyNA(x)) {
+      stop("`x` must contain one or more grouping column names.", call. = FALSE)
+    }
+    x <- unname(vapply(
+      x,
+      function(value) .rls_validate_protocol_name(value, "x"),
+      character(1L)
+    ))
+    if (anyDuplicated(x)) {
+      stop("`x` grouping column names must be unique.", call. = FALSE)
+    }
+    missing_x <- setdiff(x, names(data))
+    if (length(missing_x)) {
+      stop(sprintf("Column `%s` was not found in `data`.", missing_x[[1L]]), call. = FALSE)
     }
   }
   group <- .rls_validate_group(group, allow_null = TRUE)
@@ -28,16 +40,26 @@
   groups <- if (is.null(x)) {
     rep("All", length(rows))
   } else {
-    values <- as.character(data[[x]][ok])
-    values[is.na(values)] <- "NA"
-    values
+    values <- lapply(x, function(variable) {
+      current <- as.character(data[[variable]][ok])
+      current[is.na(current)] <- "NA"
+      current
+    })
+    if (length(x) == 1L) {
+      values[[1L]]
+    } else {
+      vapply(seq_along(rows), function(index) {
+        paste0(x, "=", vapply(values, `[[`, character(1L), index), collapse = " \u00B7 ")
+      }, character(1L))
+    }
   }
   list(
     y = unname(as.double(data[[y]][ok])),
     category = groups,
     row = rows,
     y_name = y,
-    x_name = x %||% "",
+    x_name = if (is.null(x)) "" else paste(x, collapse = " + "),
+    x_names = x %||% character(),
     group = group,
     n_total = nrow(data)
   )
@@ -149,7 +171,9 @@ ls_boxplot <- function(data, y, x = NULL, group = NULL, labels = NULL,
     categories <- gsub("[\r\n\t|]", " ", prepared$category)
     lines <- c(lines, sprintf("%.17g\t%s\t%d", prepared$y, categories, prepared$row))
   }
-  lines <- c(lines, .rls_variable_payload(data), .rls_dataframe_payload(data))
+  lines <- c(lines, "BOXPLOT_GROUPING_VARIABLES",
+             as.character(length(prepared$x_names)), prepared$x_names,
+             .rls_variable_payload(data), .rls_dataframe_payload(data))
   .rls_send(lines)
   if (isTRUE(standardize)) {
     .rls_send(c("BOXPLOT_OPTION", plot_id, "standardize_variables", "TRUE"))
@@ -171,7 +195,7 @@ ls_boxplot <- function(data, y, x = NULL, group = NULL, labels = NULL,
                      boxplot_variables = if (nzchar(prepared$x_name)) character() else prepared$y_name)
 
   structure(
-    list(id = plot_id, group = plot_group, x = prepared$x_name, y = prepared$y_name,
+    list(id = plot_id, group = plot_group, x = prepared$x_names, y = prepared$y_name,
          title = title, type = "boxplot"),
     class = "rlispstat_plot"
   )
@@ -195,9 +219,10 @@ ls_new_boxplot <- function(group = NULL, y = NULL, x = NULL, labels = NULL,
     title <- if (is.null(x)) {
       paste(y, .rls_mi_title_suffix(record))
     } else {
-      paste(y, "by", x, .rls_mi_title_suffix(record))
+      paste(y, "by", paste(x, collapse = " + "), .rls_mi_title_suffix(record))
     }
   }
+  .rls_mi_warn_current_version(record, "Boxplot")
   ls_boxplot(data, y = y, x = x, group = record$group, labels = labels,
              title = title, linked = linked, show_points = show_points,
              show_box = show_box, show_whiskers = show_whiskers,

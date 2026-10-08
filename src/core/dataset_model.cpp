@@ -14,6 +14,19 @@ namespace core {
 
 namespace {
 
+void RefreshCurrentVersion(DataFrameModel &df)
+{
+    df.dataVersion = std::max<std::uint64_t>(1, df.dataVersion);
+    df.provenance.currentVersion = DefaultDataVersionReference(
+        df.group, df.datasetType, df.imputationCount, df.dataVersion);
+}
+
+std::string NextTransformationId(const DataFrameModel &df)
+{
+    return df.group + ":transformation:" +
+        std::to_string(df.provenance.history.size() + 1);
+}
+
 std::string TrimCopy(const std::string &text)
 {
     std::size_t start = 0;
@@ -58,6 +71,401 @@ std::string LimitInlineCellText(const std::string &text, std::size_t maxChars)
     return text.substr(0, maxChars - 3) + "...";
 }
 
+std::string UnformattedDisplayValue(const DataColumn &column, std::size_t row)
+{
+    if (row < column.displayValues.size()) return column.displayValues[row];
+    return row < column.values.size() ? column.values[row] : std::string{};
+}
+
+std::vector<std::string> ObservedDisplayLevels(const DataColumn &column)
+{
+    std::vector<std::string> levels;
+    auto append = [&](const std::string &value) {
+        if (DataCellIsMissing(value) ||
+            std::find(levels.begin(), levels.end(), value) != levels.end()) return;
+        levels.push_back(value);
+    };
+    for (const std::string &level : column.definedLevels) append(level);
+    for (std::size_t row = 0; row < column.values.size(); ++row)
+        append(UnformattedDisplayValue(column, row));
+    return levels;
+}
+
+bool BinaryNumericCode(const std::string &value, std::size_t &index)
+{
+    if (DataCellIsMissing(value)) return true;
+    double parsed = NAN;
+    if (!ParseDataCellDouble(value, parsed)) return false;
+    if (std::fabs(parsed) <= 1.0e-9) {
+        index = 0;
+        return true;
+    }
+    if (std::fabs(parsed - 1.0) <= 1.0e-9) {
+        index = 1;
+        return true;
+    }
+    return false;
+}
+
+bool NumericValuesEquivalent(const std::string &left, const std::string &right)
+{
+    double a = NAN, b = NAN;
+    return ParseDataCellDouble(left, a) && ParseDataCellDouble(right, b) &&
+        std::fabs(a - b) <= 1.0e-9;
+}
+
+bool HasReversibleCategoryEncoding(const DataColumn &column)
+{
+    if (NormalizeVariableType(column.type) != "numeric" ||
+        column.reversibleFactorLevels.empty() || column.numericMapping.empty() ||
+        !column.displayValues.empty()) return false;
+    auto valid = [](const std::string &value) {
+        return DataCellIsMissing(value) || ParseOptionalDataCellDouble(value) ==
+            ParseOptionalDataCellDouble(value);
+    };
+    if (!std::all_of(column.values.begin(), column.values.end(), valid) ||
+        !std::all_of(column.imputationOriginalValues.begin(),
+                     column.imputationOriginalValues.end(), valid)) return false;
+    for (const auto &version : column.imputationValues)
+        if (!std::all_of(version.begin(), version.end(), valid)) return false;
+    for (const auto &[row, value] : column.imputationOriginalSparse) {
+        (void)row;
+        if (!valid(value)) return false;
+    }
+    for (const auto &version : column.imputationValuesSparse)
+        for (const auto &[row, value] : version) {
+            (void)row;
+            if (!valid(value)) return false;
+        }
+    for (const std::string &level : column.reversibleFactorLevels)
+        if (column.numericMapping.find(level) == column.numericMapping.end()) return false;
+    return true;
+}
+
+std::string RestoreCategoryLabel(const std::string &value,
+                                 const DataColumn &column)
+{
+    if (DataCellIsMissing(value)) return "NA";
+    for (const std::string &level : column.reversibleFactorLevels) {
+        const auto mapped = column.numericMapping.find(level);
+        if (mapped != column.numericMapping.end() &&
+            NumericValuesEquivalent(value, mapped->second)) return level;
+    }
+    return value;
+}
+
+bool EncodeCategoricalColumn(DataColumn &column, std::string *message)
+{
+    const bool restoreLabels = HasReversibleCategoryEncoding(column);
+    std::vector<std::string> levels = restoreLabels
+        ? column.reversibleFactorLevels : ObservedDisplayLevels(column);
+    const bool alreadyEncodedFactor = VariableTypeIsFactorLike(column.type) &&
+        !column.displayValues.empty();
+    auto appendImputationLevel = [&](const std::string &value) {
+        if (alreadyEncodedFactor || restoreLabels || DataCellIsMissing(value) ||
+            std::find(levels.begin(), levels.end(), value) != levels.end()) return;
+        levels.push_back(value);
+    };
+    // The active completed dataset may not contain every value occurring in
+    // the other imputations.  When a numeric MI variable becomes categorical,
+    // establish one canonical level set for the complete MI object rather than
+    // letting R discover different levels later during pooling.
+    for (const std::string &value : column.imputationOriginalValues)
+        appendImputationLevel(value);
+    for (const auto &version : column.imputationValues)
+        for (const std::string &value : version) appendImputationLevel(value);
+    for (const auto &[row, value] : column.imputationOriginalSparse) {
+        (void)row;
+        appendImputationLevel(value);
+    }
+    for (const auto &version : column.imputationValuesSparse)
+        for (const auto &[row, value] : version) {
+            (void)row;
+            appendImputationLevel(value);
+        }
+    std::map<std::string, std::size_t> codes;
+    for (std::size_t index = 0; index < levels.size(); ++index)
+        codes[levels[index]] = index + 1;
+
+    std::vector<std::string> values;
+    std::vector<std::string> display;
+    values.reserve(column.values.size());
+    display.reserve(column.values.size());
+    for (std::size_t row = 0; row < column.values.size(); ++row) {
+        const std::string label = restoreLabels
+            ? RestoreCategoryLabel(column.values[row], column)
+            : UnformattedDisplayValue(column, row);
+        if (DataCellIsMissing(label)) {
+            values.push_back("NA");
+            display.push_back("NA");
+            continue;
+        }
+        const auto found = codes.find(label);
+        if (found == codes.end()) {
+            if (message) *message = "Could not assign a categorical code to `" + label + "`.";
+            return false;
+        }
+        values.push_back(std::to_string(found->second));
+        display.push_back(label);
+    }
+    column.values = std::move(values);
+    column.displayValues = std::move(display);
+    column.definedLevels = levels;
+    if (restoreLabels) {
+        auto restore = [&](std::string &value) {
+            value = RestoreCategoryLabel(value, column);
+        };
+        for (std::string &value : column.imputationOriginalValues) restore(value);
+        for (auto &version : column.imputationValues)
+            for (std::string &value : version) restore(value);
+        for (auto &[row, value] : column.imputationOriginalSparse) {
+            (void)row;
+            restore(value);
+        }
+        for (auto &version : column.imputationValuesSparse)
+            for (auto &[row, value] : version) {
+                (void)row;
+                restore(value);
+            }
+    }
+    column.reversibleFactorLevels.clear();
+    column.numericMapping.clear();
+    column.reversibleCategoryType.clear();
+    return true;
+}
+
+bool ConvertColumnToNumeric(DataColumn &column, std::string *message,
+                            const VariableTypeConversionSpecification *specification)
+{
+    if (NormalizeVariableType(column.type) == "numeric") return true;
+    const std::string sourceType = NormalizeVariableType(column.type);
+
+    std::vector<std::string> displayed;
+    displayed.reserve(column.values.size());
+    std::vector<double> parsedValues;
+    parsedValues.reserve(column.values.size());
+    std::vector<bool> parsedRows;
+    parsedRows.reserve(column.values.size());
+    bool allNumeric = true;
+    std::size_t observedCount = 0;
+    std::size_t numericCount = 0;
+    for (std::size_t row = 0; row < column.values.size(); ++row) {
+        const std::string value = UnformattedDisplayValue(column, row);
+        displayed.push_back(value);
+        double parsed = NAN;
+        const bool missing = DataCellIsMissing(value);
+        const bool parsedOk = !missing && ParseDataCellDouble(value, parsed);
+        parsedRows.push_back(parsedOk);
+        parsedValues.push_back(parsed);
+        if (!missing) {
+            ++observedCount;
+            if (parsedOk) ++numericCount;
+            else allNumeric = false;
+        }
+    }
+
+    std::vector<std::string> sourceLevels = ObservedDisplayLevels(column);
+    if (specification && !specification->categoryOrder.empty()) {
+        std::set<std::string> provided(specification->categoryOrder.begin(),
+                                      specification->categoryOrder.end());
+        std::set<std::string> existing(sourceLevels.begin(), sourceLevels.end());
+        if (provided != existing || provided.size() != specification->categoryOrder.size()) {
+            if (message) *message = "Category order must contain every category exactly once.";
+            return false;
+        }
+        sourceLevels = specification->categoryOrder;
+    }
+    auto semanticValue = [&](const std::string &stored) {
+        if (DataCellIsMissing(stored)) return std::string("NA");
+        if (std::find(sourceLevels.begin(), sourceLevels.end(), stored) != sourceLevels.end())
+            return stored;
+        // Factor columns use one-based native codes in `values`, while MI
+        // payloads use their labels.  Accept either representation so a type
+        // change applies to every completed dataset, including documents
+        // written by earlier LinkEDA versions.
+        double code = NAN;
+        if (!sourceLevels.empty() && ParseDataCellDouble(stored, code) &&
+            std::fabs(code - std::round(code)) <= 1.0e-9 && code >= 1.0 &&
+            code <= static_cast<double>(sourceLevels.size())) {
+            return sourceLevels[static_cast<std::size_t>(std::llround(code)) - 1U];
+        }
+        return stored;
+    };
+
+    std::vector<std::string> converted;
+    converted.reserve(displayed.size());
+    // Explicitly changing Text to Numeric is also a request to clean a
+    // mostly-numeric imported text column.  A handful of survey-entry errors
+    // must not make an otherwise numeric variable impossible to use, while a
+    // genuinely categorical column must never be silently recoded this way.
+    const bool mostlyNumeric = sourceType == "character" && observedCount >= 4 && numericCount >= 4 &&
+        static_cast<double>(numericCount) / static_cast<double>(observedCount) >= 0.90;
+    std::map<std::string, std::string> mapping;
+    if (!allNumeric && !mostlyNumeric && specification)
+        mapping = specification->numericMapping;
+    if (!allNumeric && !mostlyNumeric && mapping.empty() && sourceType == "ordered" &&
+        (!specification || specification->useOrdinalPositions)) {
+        for (std::size_t index = 0; index < sourceLevels.size(); ++index)
+            mapping[sourceLevels[index]] = std::to_string(index + 1);
+        if (message) *message = "This conversion treats consecutive ordinal categories as equally spaced.";
+    }
+    if (!allNumeric && !mostlyNumeric && mapping.empty() && sourceLevels.size() == 2) {
+        mapping[sourceLevels[0]] = specification && specification->invertBinary ? "1" : "0";
+        mapping[sourceLevels[1]] = specification && specification->invertBinary ? "0" : "1";
+        if (message) *message = "Numeric mapping: " + sourceLevels[0] + " = " +
+            mapping[sourceLevels[0]] + "; " + sourceLevels[1] + " = " +
+            mapping[sourceLevels[1]] + ".";
+    }
+    if (!mapping.empty()) {
+        if (mapping.size() != sourceLevels.size()) {
+            if (message) *message = "The numeric mapping must contain every category exactly once.";
+            return false;
+        }
+        for (const std::string &level : sourceLevels) {
+            auto found = mapping.find(level);
+            double parsed = NAN;
+            if (found == mapping.end() || !ParseDataCellDouble(found->second, parsed)) {
+                if (message) *message = "The numeric mapping must assign a valid number to category `" + level + "`.";
+                return false;
+            }
+        }
+    }
+    if (allNumeric || mostlyNumeric) {
+        std::size_t introducedMissing = 0;
+        for (std::size_t row = 0; row < displayed.size(); ++row) {
+            const std::string &value = displayed[row];
+            if (DataCellIsMissing(value)) {
+                converted.push_back("NA");
+                continue;
+            }
+            if (!parsedRows[row]) {
+                converted.push_back("NA");
+                ++introducedMissing;
+                continue;
+            }
+            std::ostringstream normalized;
+            normalized << std::setprecision(17) << parsedValues[row];
+            converted.push_back(normalized.str());
+        }
+        if (introducedMissing > 0 && message) {
+            *message = column.name + " is now treated as Numeric; " +
+                std::to_string(introducedMissing) + " non-numeric " +
+                (introducedMissing == 1 ? "value was" : "values were") +
+                " set to missing.";
+        }
+    } else {
+        const std::vector<std::string> &levels = sourceLevels;
+        if (mapping.empty()) {
+            if (message) {
+                *message = "Variable `" + column.name +
+                    "` has non-numeric categories. Supply an explicit numeric mapping before converting it to Numeric.";
+            }
+            return false;
+        }
+        for (const std::string &value : displayed) {
+            if (DataCellIsMissing(value)) converted.push_back("NA");
+            else {
+                const auto found = mapping.find(value);
+                if (found == mapping.end()) {
+                    if (message) *message = "Category `" + value + "` is absent from the numeric mapping.";
+                    return false;
+                }
+                converted.push_back(found->second);
+            }
+        }
+    }
+
+    auto convertStored = [&](const std::string &stored, std::string &out) {
+        const std::string value = semanticValue(stored);
+        if (DataCellIsMissing(value)) {
+            out = "NA";
+            return true;
+        }
+        if (allNumeric || mostlyNumeric) {
+            double parsed = NAN;
+            if (!ParseDataCellDouble(value, parsed)) {
+                if (mostlyNumeric) {
+                    out = "NA";
+                    return true;
+                }
+                if (message) *message = "An imputed value of `" + column.name +
+                    "` is not numeric: `" + value + "`.";
+                return false;
+            }
+            std::ostringstream normalized;
+            normalized << std::setprecision(17) << parsed;
+            out = normalized.str();
+            return true;
+        }
+        auto found = mapping.find(value);
+        if (found == mapping.end()) {
+            if (message) *message = "An imputed value of `" + column.name +
+                "` is absent from the numeric mapping: `" + value + "`.";
+            return false;
+        }
+        out = found->second;
+        return true;
+    };
+
+    auto originalValues = column.imputationOriginalValues;
+    auto imputationValues = column.imputationValues;
+    auto originalSparse = column.imputationOriginalSparse;
+    auto imputationSparse = column.imputationValuesSparse;
+    for (std::string &value : originalValues) {
+        std::string next;
+        if (!convertStored(value, next)) return false;
+        value = std::move(next);
+    }
+    for (auto &version : imputationValues) {
+        for (std::string &value : version) {
+            std::string next;
+            if (!convertStored(value, next)) return false;
+            value = std::move(next);
+        }
+    }
+    for (auto &[row, value] : originalSparse) {
+        (void)row;
+        std::string next;
+        if (!convertStored(value, next)) return false;
+        value = std::move(next);
+    }
+    for (auto &version : imputationSparse) {
+        for (auto &[row, value] : version) {
+            (void)row;
+            std::string next;
+            if (!convertStored(value, next)) return false;
+            value = std::move(next);
+        }
+    }
+
+    if (allNumeric && sourceType != "character") {
+        for (const std::string &level : sourceLevels) {
+            double parsed = NAN;
+            if (!ParseDataCellDouble(level, parsed)) continue;
+            std::ostringstream normalized;
+            normalized << std::setprecision(17) << parsed;
+            mapping[level] = normalized.str();
+        }
+    }
+    const bool reversibleCategoryLabels = sourceType == "factor" || sourceType == "ordered" ||
+        sourceType == "logical";
+    column.values = std::move(converted);
+    column.displayValues.clear();
+    // Keep the original two labels as dormant metadata. Numeric rendering and
+    // analysis still use the visible 0/1 values; if the user changes the type
+    // back to factor, EncodeCategoricalColumn can restore the exact labels.
+    column.definedLevels.clear();
+    column.reversibleFactorLevels = reversibleCategoryLabels
+        ? sourceLevels : std::vector<std::string>{};
+    column.numericMapping = reversibleCategoryLabels ? mapping : std::map<std::string, std::string>{};
+    column.reversibleCategoryType = reversibleCategoryLabels ? sourceType : std::string{};
+    column.imputationOriginalValues = std::move(originalValues);
+    column.imputationValues = std::move(imputationValues);
+    column.imputationOriginalSparse = std::move(originalSparse);
+    column.imputationValuesSparse = std::move(imputationSparse);
+    return true;
+}
+
 double QuantileValue(std::vector<double> values, double probability)
 {
     values.erase(std::remove_if(values.begin(), values.end(), [](double value) {
@@ -90,12 +498,21 @@ bool ParseDataCellDouble(const std::string &value, double &out)
     if (DataCellIsMissing(value)) {
         return false;
     }
+    std::string normalized = TrimCopy(value);
+    // Imported survey files commonly contain decimal commas even when the
+    // current C locale expects a decimal point.  Accept one comma as the
+    // decimal mark (including entries such as "15,") without weakening the
+    // full-string validation below.
+    if (normalized.find('.') == std::string::npos &&
+        std::count(normalized.begin(), normalized.end(), ',') == 1) {
+        std::replace(normalized.begin(), normalized.end(), ',', '.');
+    }
     char *endptr = nullptr;
-    out = std::strtod(value.c_str(), &endptr);
+    out = std::strtod(normalized.c_str(), &endptr);
     while (endptr && *endptr && std::isspace(static_cast<unsigned char>(*endptr))) {
         ++endptr;
     }
-    return endptr && endptr != value.c_str() && *endptr == '\0' && std::isfinite(out);
+    return endptr && endptr != normalized.c_str() && *endptr == '\0' && std::isfinite(out);
 }
 
 double ParseOptionalDataCellDouble(const std::string &value)
@@ -163,12 +580,125 @@ bool WriteDataFrameCSV(std::ostream &out,
         for (std::size_t c = 0; c < df.columns.size(); ++c) {
             out << ",";
             const DataColumn &col = df.columns[c];
-            std::string value = row < static_cast<int>(col.values.size()) ? col.values[(std::size_t)row] : "NA";
+            const std::string type = NormalizeVariableType(col.type);
+            const bool labelledFactor = (type == "factor" || type == "ordered") &&
+                col.displayValues.size() == col.values.size();
+            std::string value = row < static_cast<int>(col.values.size())
+                ? (labelledFactor ? col.displayValues[static_cast<std::size_t>(row)]
+                                  : col.values[static_cast<std::size_t>(row)])
+                : "NA";
             out << CsvEscape(value);
         }
         out << "\n";
     }
     return true;
+}
+
+namespace {
+
+std::string UserFacingExportValue(const DataFrameModel &df,
+                                  const DataColumn &col,
+                                  std::size_t row,
+                                  int imputationIndex)
+{
+    const bool imputed = DataFrameCellIsImputed(df, col, row);
+    std::string value;
+    if (imputationIndex < 0 && imputed) {
+        value = OriginalImputationValueForCell(col, row);
+    } else if (imputationIndex >= 0 && imputed) {
+        value = ImputationVersionValueForCell(
+            col, row, static_cast<std::size_t>(imputationIndex));
+    } else {
+        value = row < col.values.size() ? col.values[row] : "NA";
+    }
+
+    const std::string type = NormalizeVariableType(col.type);
+    if ((type == "factor" || type == "ordered") && !DataCellIsMissing(value)) {
+        // Imported labelled factors retain their user-visible labels separately
+        // from the integer codes used by the R transport.
+        if (!imputed && col.displayValues.size() == col.values.size() &&
+            row < col.displayValues.size()) {
+            return col.displayValues[row];
+        }
+        if (!col.definedLevels.empty() && col.displayValues.size() == col.values.size()) {
+            char *end = nullptr;
+            long code = std::strtol(value.c_str(), &end, 10);
+            if (end && *end == '\0' && code >= 1 &&
+                static_cast<std::size_t>(code) <= col.definedLevels.size()) {
+                return col.definedLevels[static_cast<std::size_t>(code - 1)];
+            }
+        }
+    }
+    return value;
+}
+
+void WriteUserFacingExportHeader(std::ostream &out,
+                                 const DataFrameModel &df,
+                                 bool multipleImputation)
+{
+    if (multipleImputation) out << ".imp,.id";
+    for (std::size_t c = 0; c < df.columns.size(); ++c) {
+        if (multipleImputation || c > 0) out << ",";
+        out << CsvEscape(df.columns[c].name);
+    }
+    out << "\n";
+}
+
+void WriteUserFacingExportRow(std::ostream &out,
+                              const DataFrameModel &df,
+                              int row,
+                              int imputationIndex)
+{
+    const bool multipleImputation = imputationIndex >= -1 &&
+        df.datasetType == "multiple_imputation" && df.imputationCount > 0;
+    if (multipleImputation) {
+        out << (imputationIndex + 1) << "," << (row + 1);
+    }
+    for (std::size_t c = 0; c < df.columns.size(); ++c) {
+        if (multipleImputation || c > 0) out << ",";
+        out << CsvEscape(UserFacingExportValue(
+            df, df.columns[c], static_cast<std::size_t>(row), imputationIndex));
+    }
+    out << "\n";
+}
+
+} // namespace
+
+bool WriteDataExportCSV(std::ostream &out, const DataFrameModel &df)
+{
+    const bool multipleImputation = df.datasetType == "multiple_imputation" &&
+        df.imputationCount > 0;
+    WriteUserFacingExportHeader(out, df, multipleImputation);
+    if (multipleImputation) {
+        // -1 maps to the conventional .imp = 0 original incomplete dataset.
+        for (int imputationIndex = -1;
+             imputationIndex < df.imputationCount;
+             ++imputationIndex) {
+            for (int row = 0; row < df.rows; ++row) {
+                WriteUserFacingExportRow(out, df, row, imputationIndex);
+            }
+        }
+    } else {
+        for (int row = 0; row < df.rows; ++row) {
+            WriteUserFacingExportRow(out, df, row, -2);
+        }
+    }
+    return static_cast<bool>(out);
+}
+
+bool WriteDataExportMetadataCSV(std::ostream &out, const DataFrameModel &df)
+{
+    out << "variable,type,level_index,level\n";
+    for (const DataColumn &column : df.columns) {
+        const std::string type = NormalizeVariableType(column.type);
+        out << CsvEscape(column.name) << "," << CsvEscape(type) << ",0,\n";
+        if (type != "factor" && type != "ordered") continue;
+        for (std::size_t index = 0; index < column.definedLevels.size(); ++index) {
+            out << CsvEscape(column.name) << "," << CsvEscape(type) << ","
+                << (index + 1) << "," << CsvEscape(column.definedLevels[index]) << "\n";
+        }
+    }
+    return static_cast<bool>(out);
 }
 
 DataFrameModel SubsetDataFrame(const DataFrameModel &source,
@@ -232,6 +762,73 @@ DataFrameModel SubsetDataFrame(const DataFrameModel &source,
             version = subsetSparse(version);
         }
     }
+    subset.stableRowIds.clear();
+    subset.stableRowIds.reserve(indices.size());
+    for (std::size_t index : indices) {
+        if (index < source.stableRowIds.size()) subset.stableRowIds.push_back(source.stableRowIds[index]);
+        else subset.stableRowIds.push_back(source.group + ":row:" + std::to_string(index + 1));
+    }
+    subset.dataVersion = 1;
+    subset.provenance = DataProvenance{};
+    EnsureDataFrameProvenance(subset, RCodeOrigin::Recorded, {},
+                              "Subset created in LinkEDA.");
+    TransformationStep step;
+    step.label = "Subset rows from " + source.group;
+    step.origin = RCodeOrigin::Recorded;
+    step.parentVersionKeys = {source.provenance.currentVersion.storageKey};
+    step.stableRowIds = subset.stableRowIds;
+    step.rCode = "source_data <- LinkEDA::ls_get_data_version(" +
+        ProvenanceRStringLiteral(source.group) + ", version = " +
+        std::to_string(std::max<std::uint64_t>(1, source.dataVersion)) + ")\n" +
+        "data <- LinkEDA::ls_select_rows_by_id(source_data, " +
+        [&] { std::ostringstream out; out << "c("; for (std::size_t i = 0; i < subset.stableRowIds.size(); ++i) { if (i) out << ", "; out << ProvenanceRStringLiteral(subset.stableRowIds[i]); } out << ")"; return out.str(); }() + ")";
+    RecordDataFrameTransformation(subset, std::move(step));
+    return subset;
+}
+
+DataFrameModel SubsetDataFrameColumns(const DataFrameModel &source,
+                                     const std::vector<std::string> &columnNames,
+                                     const std::string &newGroup)
+{
+    DataFrameModel subset = source;
+    subset.group = newGroup;
+    subset.columns.clear();
+    const std::set<std::string> wanted(columnNames.begin(), columnNames.end());
+    for (const DataColumn &column : source.columns) {
+        if (wanted.count(column.name)) subset.columns.push_back(column);
+    }
+    if (source.datasetType != "multiple_imputation") {
+        subset.sourceDatasetId = source.group;
+    } else {
+        // The original mids process belongs to the full set of variables. R
+        // retains the selected completed datasets, but cannot attribute the
+        // original imputation diagnostics to this projected dataset.
+        subset.imputationProcess.clear();
+        subset.imputationId.clear();
+    }
+    subset.dataVersion = 1;
+    subset.syncSessionToken.clear();
+    subset.verificationPreparedRds.clear();
+    subset.provenance = DataProvenance{};
+    EnsureDataFrameProvenance(subset, RCodeOrigin::Recorded, {},
+                              "Variable subset created in LinkEDA.");
+    TransformationStep step;
+    step.label = "Subset variables from " + source.group;
+    step.origin = RCodeOrigin::Recorded;
+    step.parentVersionKeys = {source.provenance.currentVersion.storageKey};
+    step.stableRowIds = subset.stableRowIds;
+    std::ostringstream names;
+    names << "c(";
+    for (std::size_t i = 0; i < subset.columns.size(); ++i) {
+        if (i) names << ", ";
+        names << ProvenanceRStringLiteral(subset.columns[i].name);
+    }
+    names << ")";
+    step.rCode = "source_data <- LinkEDA::ls_get_data_version(" +
+        ProvenanceRStringLiteral(source.group) + ", version = " +
+        std::to_string(std::max<std::uint64_t>(1, source.dataVersion)) + ")\n" +
+        "data <- source_data[, " + names.str() + ", drop = FALSE]";
+    RecordDataFrameTransformation(subset, std::move(step));
     return subset;
 }
 
@@ -265,12 +862,14 @@ read_import <- function(path) {
     ext,
     csv = {
       source <- "CSV file"
-      utils::read.csv(path, check.names = FALSE, stringsAsFactors = FALSE)
+      utils::read.csv(path, check.names = FALSE, stringsAsFactors = FALSE,
+                      na.strings = c("NA", ""))
     },
     tsv = ,
     txt = {
       source <- "Delimited text file"
-      utils::read.delim(path, check.names = FALSE, stringsAsFactors = FALSE)
+      utils::read.delim(path, check.names = FALSE, stringsAsFactors = FALSE,
+                        na.strings = c("NA", ""))
     },
     sav = ,
     zsav = {
@@ -309,8 +908,23 @@ read_import <- function(path) {
     rdata = {
       env <- new.env(parent = emptyenv())
       loaded <- load(path, envir = env)
+      mids_names <- loaded[vapply(loaded, function(object_name) inherits(get(object_name, envir = env), "mids"), logical(1L))]
+      if (length(mids_names)) {
+        sizes <- vapply(mids_names, function(object_name) {
+          object <- get(object_name, envir = env)
+          nrow(object$data) * max(1L, ncol(object$data))
+        }, numeric(1L))
+        selected <- mids_names[[which.max(sizes)]]
+        source <- paste0("mice mids R data file: ", selected)
+        return(list(data = get(selected, envir = env), source = source))
+      }
       data_names <- loaded[vapply(loaded, function(object_name) is.data.frame(get(object_name, envir = env)), logical(1L))]
-      if (!length(data_names)) fail("The selected R data file did not contain a data frame.")
+      if (!length(data_names)) {
+        if (requireNamespace("LinkEDA",quietly=TRUE) && any(vapply(loaded,function(name)
+            identical(LinkEDA:::.rls_classify_r_import_object(get(name,envir=env)),"completed_dataset_list"),logical(1L))))
+          stop(LinkEDA:::.rls_mi_import_requirement(),call.=FALSE)
+        fail("The selected R data file did not contain a data frame.")
+      }
       sizes <- vapply(data_names, function(object_name) {
         data <- get(object_name, envir = env)
         nrow(data) * max(1L, ncol(data))
@@ -324,16 +938,46 @@ read_import <- function(path) {
   list(data = data, source = source)
 }
 variable_type <- function(x) {
-  if (is.numeric(x)) "numeric"
-  else if (is.ordered(x)) "ordered"
+  if (is.ordered(x)) "ordered"
   else if (is.factor(x)) "factor"
   else if (is.character(x)) "character"
   else if (is.logical(x)) "logical"
   else if (inherits(x, c("Date", "POSIXct", "POSIXlt"))) "datetime"
+  else if (is.numeric(x)) "numeric"
   else "other"
 }
-variable_payload <- function(data) {
-  numeric_names <- names(data)[vapply(data, is.numeric, logical(1L))]
+imported_variable_type <- function(x, name = "") {
+  type <- variable_type(x)
+  if (identical(type, "logical")) return("factor")
+  if (identical(type, "character")) {
+    return("character")
+  }
+  if (!identical(type, "numeric")) return(type)
+  if (length(attr(x, "labels", exact = TRUE))) return("factor")
+  "numeric"
+}
+variable_label <- function(x) {
+  label <- attr(x, "label", exact = TRUE)
+  if (is.null(label) || !length(label) || is.na(label[[1L]])) return("")
+  as.character(label[[1L]])
+}
+variable_decimals <- function(x) {
+  format <- attr(x, "format.spss", exact = TRUE)
+  if (!is.null(format) && length(format) && !is.na(format[[1L]])) {
+    hit <- regexec("\\.([0-9]+)", as.character(format[[1L]]))
+    parts <- regmatches(as.character(format[[1L]]), hit)[[1L]]
+    if (length(parts) >= 2L) return(as.integer(parts[[2L]]))
+  }
+  if (is.integer(x) || is.logical(x)) return(0L)
+  -1L
+}
+metadata_value <- function(value) {
+  value <- as.character(value)
+  if (!length(value) || is.na(value[[1L]])) return("")
+  gsub("[\r\n\t]+", " ", value[[1L]])
+}
+variable_payload <- function(data, types) {
+  numeric_names <- names(types)[types == "numeric"]
   lines <- c("VARS", as.character(length(numeric_names)))
   for (name in numeric_names) {
     values <- as.double(data[[name]])
@@ -342,15 +986,14 @@ variable_payload <- function(data) {
   }
   lines <- c(lines, "VARMETA", as.character(length(names(data))))
   for (name in names(data)) {
-    lines <- c(lines, name, variable_type(data[[name]]))
+    lines <- c(lines, name, types[[name]])
   }
   lines
 }
-dataframe_payload <- function(data, max_cell_chars = 120L) {
+dataframe_payload <- function(data, types, max_cell_chars = NULL) {
   clean_values <- function(values) {
     values[is.na(values)] <- "NA"
-    values <- substr(values, 1L, max_cell_chars)
-    gsub("[\r\n\t|]", " ", values)
+    LinkEDA:::.rls_encode_data_value(values)
   }
   raw_values <- function(x) {
     if (!is.null(attr(x, "labels", exact = TRUE))) {
@@ -386,18 +1029,85 @@ dataframe_payload <- function(data, max_cell_chars = 120L) {
     }
     out
   }
-  lines <- c("DATAFRAME", as.character(nrow(data)), as.character(ncol(data)))
+  semantic_levels <- function(x, type) {
+    if (!type %in% c("factor", "ordered", "logical")) return(character())
+    if (is.factor(x)) return(as.character(levels(x)))
+    labels <- attr(x, "labels", exact = TRUE)
+    if (!is.null(labels) && length(labels)) {
+      label_names <- names(labels)
+      if (is.null(label_names)) label_names <- rep("", length(labels))
+      raw <- unclass(labels)
+      attributes(raw) <- NULL
+      missing_names <- is.na(label_names) | !nzchar(label_names)
+      label_names[missing_names] <- as.character(raw)[missing_names]
+      return(unique(as.character(label_names)))
+    }
+    if (is.logical(x)) return(c("FALSE", "TRUE"))
+    observed <- as.character(x[!is.na(x)])
+    observed <- observed[nzchar(trimws(observed))]
+    unique(observed)
+  }
+  lines <- c("DATAFRAME", as.character(nrow(data)), as.character(ncol(data)), "DATACELLS_PERCENT_V1")
   display <- list()
   for (name in names(data)) {
     values <- clean_values(raw_values(data[[name]]))
     shown <- clean_values(labelled_values(data[[name]]))
     if (!identical(values, shown)) display[[name]] <- shown
-    lines <- c(lines, name, variable_type(data[[name]]), values)
+    lines <- c(lines, name, types[[name]], values)
   }
   if (length(display)) {
     lines <- c(lines, "DATADISPLAY", as.character(length(display)))
     for (name in names(display)) {
       lines <- c(lines, name, display[[name]])
+    }
+  }
+  level_columns <- names(types)[types %in% c("factor", "ordered", "logical")]
+  if (length(level_columns)) {
+    lines <- c(lines, "DATLEVELS", as.character(length(level_columns)))
+    for (name in level_columns) {
+      defined <- clean_values(semantic_levels(data[[name]], types[[name]]))
+      lines <- c(lines, name, as.character(length(defined)), defined)
+    }
+  }
+  lines <- c(lines, "DATAMETA", as.character(length(names(data))))
+  for (name in names(data)) {
+    lines <- c(lines, name, name, metadata_value(variable_label(data[[name]])),
+               as.character(variable_decimals(data[[name]])))
+  }
+  lines <- c(lines, "DATATYPEMETA", as.character(length(names(data))))
+  for (name in names(data)) {
+    type <- types[[name]]
+    if (identical(type, "logical")) type <- "factor"
+    defined <- semantic_levels(data[[name]], type)
+    storage <- paste(class(data[[name]]), collapse = ", ")
+    binary <- type %in% c("factor", "ordered") && length(defined) == 2L
+    lines <- c(lines, name, type, metadata_value(storage), if (binary) "1" else "0", "",
+               as.character(length(defined)), clean_values(defined), "0")
+  }
+  lines
+}
+imputation_payload <- function(original, completed, mask, impute_id, source_id,
+                               max_cell_chars = NULL) {
+  clean_values <- function(values) {
+    values <- as.character(values)
+    values[is.na(values)] <- "NA"
+    LinkEDA:::.rls_encode_data_value(values)
+  }
+  imputed_names <- names(original)[vapply(names(original), function(name) {
+    any(mask[[name]])
+  }, logical(1L))]
+  lines <- c(
+    "IMPUTATION_SPARSE", "multiple_imputation", impute_id, source_id,
+    as.character(length(completed)), "1", "version", as.character(length(imputed_names))
+  )
+  for (name in imputed_names) {
+    missing_rows <- which(mask[[name]])
+    lines <- c(
+      lines, name, as.character(length(missing_rows)), as.character(missing_rows),
+      clean_values(original[[name]][missing_rows])
+    )
+    for (version in seq_along(completed)) {
+      lines <- c(lines, clean_values(completed[[version]][[name]][missing_rows]))
     }
   }
   lines
@@ -406,11 +1116,57 @@ dataframe_payload <- function(data, max_cell_chars = 120L) {
 tryCatch({
   path <- check_path(path)
   imported <- read_import(path)
-  if (!is.data.frame(imported$data)) fail("The selected file was read successfully, but it did not contain a data frame.")
+  if (requireNamespace("LinkEDA",quietly=TRUE)) {
+    if (identical(LinkEDA:::.rls_classify_r_import_object(imported$data),"completed_dataset_list"))
+      stop(LinkEDA:::.rls_mi_import_requirement(),call.=FALSE)
+    notice <- LinkEDA:::.rls_mi_stacked_import_notice(imported$data)
+    if (length(notice) && nzchar(notice)) message(notice)
+  }
+  if (inherits(imported$data, "mids")) {
+    if (!requireNamespace("mice", quietly = TRUE)) {
+      fail("The RDS file contains a mice mids object, but the 'mice' package is not installed.")
+    }
+    mids <- imported$data
+    m <- suppressWarnings(as.integer(mids$m))
+    if (length(m) != 1L || !is.finite(m) || m < 1L || !is.data.frame(mids$data)) {
+      fail("The selected file contains an invalid mice mids object.")
+    }
+    data <- as.data.frame(mids$data, stringsAsFactors = FALSE)
+    original_names <- names(data)
+    completed <- lapply(seq_len(m), function(version) {
+      value <- as.data.frame(mice::complete(mids, action = version), stringsAsFactors = FALSE)
+      if (!anyDuplicated(original_names) && all(original_names %in% names(value))) value <- value[original_names]
+      if (nrow(value) != nrow(data) || ncol(value) != ncol(data)) {
+        fail("Completed imputation %d does not match the mice source data.", version)
+      }
+      value
+    })
+    clean <- clean_names(original_names)
+    names(data) <- clean
+    for (version in seq_along(completed)) names(completed[[version]]) <- clean
+    if (!nrow(data) || !ncol(data)) fail("The mice mids object contained an empty source data frame.")
+    mask <- as.data.frame(lapply(data, is.na), stringsAsFactors = FALSE)
+    current <- completed[[1L]]
+    types <- vapply(names(data), function(name) imported_variable_type(data[[name]], name), character(1L))
+    payload <- c(
+      "REGISTER_DATASET", dataset_name, variable_payload(current, types),
+      dataframe_payload(current, types),
+      imputation_payload(
+        data, completed, mask, paste0("imported_", dataset_name),
+        paste0("mice:", basename(path))
+      )
+    )
+    payload <- c(payload, "IMPUTATION_PROCESS_V1", LinkEDA:::.rls_mi_encode_process(mids,
+      data.frame(original_name=original_names,variable_name=clean)))
+    writeLines(payload, output, useBytes = TRUE)
+    quit(status = 0L)
+  }
+  if (!is.data.frame(imported$data)) fail("The selected file was read successfully, but it did not contain a data frame or a mice mids object.")
   data <- as.data.frame(imported$data, stringsAsFactors = FALSE)
   if (!nrow(data) || !ncol(data)) fail("The selected file was read successfully, but it contained an empty data frame.")
   names(data) <- clean_names(names(data))
-  payload <- c("REGISTER_DATASET", dataset_name, variable_payload(data), dataframe_payload(data))
+  types <- vapply(names(data), function(name) imported_variable_type(data[[name]], name), character(1L))
+  payload <- c("REGISTER_DATASET", dataset_name, variable_payload(data, types), dataframe_payload(data, types))
   writeLines(payload, output, useBytes = TRUE)
 }, error = function(e) {
   message(conditionMessage(e))
@@ -447,11 +1203,10 @@ if (!requireNamespace("mice", quietly = TRUE)) stop(missing_msg, call. = FALSE)
 
 fail <- function(...) stop(sprintf(...), call. = FALSE)
 stage <- "initializing"
-clean_values <- function(values, max_cell_chars = 120L) {
+clean_values <- function(values, max_cell_chars = NULL) {
   values <- as.character(values)
   values[is.na(values)] <- "NA"
-  values <- substr(values, 1L, max_cell_chars)
-  gsub("[\r\n\t|]", " ", values)
+  LinkEDA:::.rls_encode_data_value(values)
 }
 split_names <- function(text) {
   text <- trimws(scalar_text(text))
@@ -492,6 +1247,11 @@ variable_type <- function(x) {
 }
 read_payload <- function(path) {
   lines <- readLines(path, warn = FALSE, encoding = "UTF-8")
+  if (length(lines) >= 5L && identical(lines[[5L]], "DATACELLS_PERCENT_V1")) {
+    lines <- lines[-5L]
+    escaped <- which(grepl("%", lines, fixed = TRUE))
+    if (length(escaped)) lines[escaped] <- utils::URLdecode(lines[escaped])
+  }
   i <- 1L
   next_line <- function() {
     if (i > length(lines)) fail("Malformed imputation payload.")
@@ -577,9 +1337,22 @@ variable_payload <- function(data, types) {
   lines
 }
 dataframe_payload <- function(current, original, completed, mask, types, impute_id, source_id) {
-  lines <- c("DATAFRAME", as.character(nrow(current)), as.character(ncol(current)))
+  lines <- c("DATAFRAME", as.character(nrow(current)), as.character(ncol(current)), "DATACELLS_PERCENT_V1")
   for (name in names(current)) {
     lines <- c(lines, name, types[[name]], clean_values(current[[name]]))
+  }
+  lines <- c(lines, "DATATYPEMETA", as.character(length(names(current))))
+  for (name in names(current)) {
+    type <- types[[name]]
+    if (identical(type, "logical")) type <- "factor"
+    levels <- if (type %in% c("factor", "ordered")) {
+      if (is.factor(current[[name]])) as.character(levels(current[[name]]))
+      else unique(as.character(current[[name]][!is.na(current[[name]])]))
+    } else character()
+    storage <- gsub("[\r\n\t|]", " ", paste(class(current[[name]]), collapse = ", "))
+    binary <- type %in% c("factor", "ordered") && length(levels) == 2L
+    lines <- c(lines, name, type, storage, if (binary) "1" else "0", "",
+               as.character(length(levels)), clean_values(levels), "0")
   }
   imputed_names <- names(current)[vapply(names(current), function(name) {
     name %in% names(mask) && any(mask[[name]])
@@ -661,6 +1434,7 @@ tryCatch({
   out <- c("REGISTER_DATASET", dataset_name, variable_payload(current, types),
            dataframe_payload(current, data, completed, mask, types,
                              paste0("native_", dataset_name), payload$source))
+  out <- c(out, "IMPUTATION_PROCESS_V1", LinkEDA:::.rls_mi_encode_process(mids))
   writeLines(out, output, useBytes = TRUE)
 }, error = function(e) {
   tb <- paste(utils::capture.output(traceback(2)), collapse = "\n")
@@ -765,17 +1539,18 @@ convert_values <- function(values, type) {
     x
   }
 }
-finalize_types <- function(data, original, completed, types) {
+finalize_types <- function(data, original, completed, types, declared_levels = list()) {
   for (name in names(data)) {
     type <- types[[name]]
-    if (identical(type, "factor")) {
+    if (type %in% c("factor", "ordered")) {
       all_values <- c(as.character(data[[name]]), as.character(original[[name]]),
                       unlist(lapply(completed, function(one) as.character(one[[name]])), use.names = FALSE))
-      levels <- unique(all_values[!is.na(all_values)])
-      data[[name]] <- factor(as.character(data[[name]]), levels = levels)
-      original[[name]] <- factor(as.character(original[[name]]), levels = levels)
+      levels <- unique(c(as.character(declared_levels[[name]]), all_values[!is.na(all_values)]))
+      make_factor <- if (identical(type, "ordered")) ordered else factor
+      data[[name]] <- make_factor(as.character(data[[name]]), levels = levels)
+      original[[name]] <- make_factor(as.character(original[[name]]), levels = levels)
       completed <- lapply(completed, function(one) {
-        one[[name]] <- factor(as.character(one[[name]]), levels = levels)
+        one[[name]] <- make_factor(as.character(one[[name]]), levels = levels)
         one
       })
     } else if (identical(type, "character")) {
@@ -791,6 +1566,11 @@ finalize_types <- function(data, original, completed, types) {
 }
 read_payload <- function(path) {
   lines <- readLines(path, warn = FALSE, encoding = "UTF-8")
+  if (length(lines) >= 5L && identical(lines[[5L]], "DATACELLS_PERCENT_V1")) {
+    lines <- lines[-5L]
+    escaped <- which(grepl("%", lines, fixed = TRUE))
+    if (length(escaped)) lines[escaped] <- utils::URLdecode(lines[escaped])
+  }
   i <- 1L
   next_line <- function() {
     if (i > length(lines)) stop("Malformed native analysis payload.", call. = FALSE)
@@ -821,6 +1601,18 @@ read_payload <- function(path) {
   imputation_count <- 0L
   active_version <- 1L
   display_mode <- "version"
+  declared_levels <- list()
+  if (i <= length(lines) && identical(lines[[i]], "DATLEVELS")) {
+    i <- i + 1L
+    level_columns <- as.integer(next_line())
+    for (ci in seq_len(level_columns)) {
+      name <- next_line()
+      level_count <- as.integer(next_line())
+      declared_levels[[name]] <- vapply(
+        seq_len(level_count), function(level_index) next_line(), character(1L)
+      )
+    }
+  }
   if (i <= length(lines) && identical(lines[[i]], "IMPUTATION_SPARSE")) {
     i <- i + 1L
     dataset_type <- next_line()
@@ -844,7 +1636,7 @@ read_payload <- function(path) {
       }
     }
   }
-  typed <- finalize_types(data, original, completed, types)
+  typed <- finalize_types(data, original, completed, types, declared_levels)
   data <- typed$data
   original <- typed$original
   completed <- typed$completed
@@ -856,7 +1648,7 @@ read_payload <- function(path) {
   }
   list(
     dataset_id = group,
-    name = group,
+)RLSANALYSIS" R"RLSANALYSIS(name = group,
     dataset_name = group,
     group = group,
     original_data = original,
@@ -892,51 +1684,354 @@ register_record <- function(record) {
 tryCatch({
   record <- register_record(read_payload(input))
   variables <- split_names(variables_text)
+  emm_test_reference <- NULL
+  plot_focal <- NULL
+  report_focal <- NULL
+  report_group <- NULL
+  effect_quantity <- "predicted_probability"
+  effect_adjustment <- "average_sample"
+  effect_presentation <- "percentage"
+  effect_confidence_level <- .95
+  emm_reference_option <- variables[startsWith(variables, "emm_reference=")]
+  if (length(emm_reference_option)) {
+    reference_text <- sub("^emm_reference=", "", tail(emm_reference_option, 1L))
+    if (!identical(reference_text, "none")) {
+      emm_test_reference <- suppressWarnings(as.numeric(reference_text))
+      if (length(emm_test_reference) != 1L || !is.finite(emm_test_reference)) {
+        stop("The estimated-mean reference value must be a finite number.", call. = FALSE)
+      }
+    }
+  }
+  plot_focal_option <- variables[startsWith(variables, "plot_focal=")]
+  if (length(plot_focal_option)) {
+    candidate <- sub("^plot_focal=", "", tail(plot_focal_option, 1L))
+    if (nzchar(candidate)) plot_focal <- candidate
+  }
+  report_focal_option <- variables[startsWith(variables, "report_focal=")]
+  if (length(report_focal_option)) {
+    candidate <- sub("^report_focal=", "", tail(report_focal_option, 1L))
+    if (nzchar(candidate)) report_focal <- candidate
+  }
+  report_group_option <- variables[startsWith(variables, "report_group=")]
+  if (length(report_group_option)) {
+    candidate <- sub("^report_group=", "", tail(report_group_option, 1L))
+    if (nzchar(candidate)) report_group <- candidate
+  }
+  effect_quantity_option <- variables[startsWith(variables, "effect_quantity=")]
+  if (length(effect_quantity_option)) {
+    effect_quantity <- sub("^effect_quantity=", "", tail(effect_quantity_option, 1L))
+  }
+  effect_adjustment_option <- variables[startsWith(variables, "effect_adjustment=")]
+  if (length(effect_adjustment_option)) {
+    effect_adjustment <- sub("^effect_adjustment=", "", tail(effect_adjustment_option, 1L))
+  }
+  effect_presentation_option <- variables[startsWith(variables, "effect_presentation=")]
+  if (length(effect_presentation_option)) {
+    effect_presentation <- sub("^effect_presentation=", "", tail(effect_presentation_option, 1L))
+  }
+  effect_confidence_option <- variables[startsWith(variables, "effect_confidence=")]
+  if (length(effect_confidence_option)) {
+    effect_confidence_level <- suppressWarnings(as.numeric(sub(
+      "^effect_confidence=", "", tail(effect_confidence_option, 1L)
+    )))
+    if (length(effect_confidence_level) != 1L || !is.finite(effect_confidence_level) ||
+        effect_confidence_level <= 0 || effect_confidence_level >= 1) {
+      stop("The effect confidence level must be between zero and one.", call. = FALSE)
+    }
+  }
   terms <- split_names(terms_text)
   group_var <- scalar_text(group_text)
   response <- scalar_text(response_text)
   scope <- scalar_text(scope_text)
   if (!nzchar(scope)) scope <- "all"
 
-  if (identical(mode, "table1")) {
+  if (identical(mode, "contingency")) {
+    spec <- strsplit(model_spec_text, "|", fixed = TRUE)[[1L]]
+    version <- suppressWarnings(as.integer(spec[[1L]]))
+    if (!is.finite(version) || version < 1L) stop("Invalid contingency data version.")
+    record$data_version <- version
+    register_record(record)
+    selected <- if (identical(scope, "selected")) {
+      text <- if (length(spec) >= 2L) spec[[2L]] else ""
+      as.integer(split_names(text))
+    } else NULL
+    table_record <- LinkEDA:::.rls_mi_contingency_record(
+      record$group, variables, group_var, id = analysis_id, selected_rows = selected,
+      display_mode = if(length(spec)>=3L && nzchar(spec[[3L]])) spec[[3L]] else "count_percent")
+    writeLines(LinkEDA:::.rls_table1_native_payload(table_record), output, useBytes = TRUE)
+  } else if (identical(mode, "table1")) {
+    table1_selected_rows <- if (identical(scope, "selected")) {
+      rows <- suppressWarnings(as.integer(split_names(model_spec_text)))
+      rows[is.finite(rows) & rows > 0L]
+    } else {
+      NULL
+    }
     handle <- LinkEDA::ls_new_table1(
       record$group,
       variables = if (length(variables)) variables else NULL,
       group = if (nzchar(group_var)) group_var else NULL,
-      name = if (nzchar(analysis_id)) analysis_id else NULL
+      name = if (nzchar(analysis_id)) analysis_id else NULL,
+      .selected_rows = table1_selected_rows,
+      .scope_description = if (identical(scope, "selected")) "Selected rows" else NULL
     )
     table_record <- LinkEDA:::.rls_table1_record(handle)
     writeLines(LinkEDA:::.rls_table1_native_payload(table_record), output, useBytes = TRUE)
-  } else if (identical(mode, "glm")) {
+  } else if (mode %in% c("glm", "glm_pairwise", "glm_interaction", "glm_interaction_plot", "glm_partial_plot")) {
     if (!length(terms)) stop("Add at least one independent variable before opening the pooled MI General Linear Model table.", call. = FALSE)
     model <- LinkEDA::ls_new_glm(record$group)
     if (nzchar(response)) model <- LinkEDA::ls_glm_set_dependent(model, response)
     for (term in terms) model <- LinkEDA::ls_glm_add_predictor(model, term)
-    model <- LinkEDA::ls_glm_fit(model)
     model_record <- LinkEDA:::.rls_glm_model_record(model)
-    writeLines(LinkEDA:::.rls_glm_pooled_native_payload(model_record), output, useBytes = TRUE)
-  } else if (identical(mode, "gglm")) {
-    if (!nzchar(response)) stop("Choose a response variable before opening the pooled MI Generalized Linear Model table.", call. = FALSE)
-    if (!length(terms)) stop("Add at least one predictor before opening the pooled MI Generalized Linear Model table.", call. = FALSE)
-    family <- "gaussian"
-    link <- ""
+    # The native table has already fitted this specification with the selected
+    # scope.  Post-estimation runs in a separate R process, so it must restore
+    # that scope explicitly as well as the encoded row ids.  Otherwise the
+    # interaction report/plot silently refits all rows and resurrects factor
+    # levels that were absent from the fitted analysis sample.
+    model_record$scope <- scope
     if (nzchar(model_spec_text)) {
       fields <- strsplit(model_spec_text, "|", fixed = TRUE)[[1L]]
-      if (length(fields) >= 1L && nzchar(fields[[1L]])) family <- decode_field(fields[[1L]])
-      if (length(fields) >= 2L && nzchar(fields[[2L]])) link <- decode_field(fields[[2L]])
+      if (identical(fields[[1L]], "MI_LINEAR_SPEC_V1")) {
+        cursor <- 2L
+        take <- function() {
+          if (cursor > length(fields)) stop("The standalone MI linear-model specification is incomplete.", call. = FALSE)
+          value <- decode_field(fields[[cursor]])
+          cursor <<- cursor + 1L
+          value
+        }
+        take_count <- function(label) {
+          value <- suppressWarnings(as.integer(take()))
+          if (!is.finite(value) || value < 0L) stop(sprintf("The standalone MI %s count is invalid.", label), call. = FALSE)
+          value
+        }
+        type_count <- take_count("term-type")
+        if (type_count > 0L) for (i in seq_len(type_count)) {
+          term_name <- take()
+          model_record$term_types[[term_name]] <- take()
+        }
+        centered_count <- take_count("centered-predictor")
+        if (centered_count > 0L) model_record$centered_predictors <- vapply(seq_len(centered_count), function(i) take(), character(1L))
+        reference_count <- take_count("factor-reference")
+        if (reference_count > 0L) for (i in seq_len(reference_count)) {
+          term_name <- take()
+          model_record$factor_reference_levels[[term_name]] <- take()
+        }
+        row_count <- take_count("selected-row")
+        if (row_count > 0L) model_record$selected_rows <- suppressWarnings(as.integer(vapply(seq_len(row_count), function(i) take(), character(1L))))
+      } else {
+        centered <- split_names(model_spec_text)
+        model_record$centered_predictors <- unique(centered[nzchar(centered)])
+      }
     }
-    model <- LinkEDA::ls_new_generalized_linear_model(
-      record$group,
-      response = response,
-      terms = terms,
-      family = family,
-      link = if (nzchar(link)) link else NULL,
-      scope = scope,
-      name = if (nzchar(analysis_id)) analysis_id else NULL,
-      native = FALSE
+    model <- LinkEDA:::.rls_assign_glm_model(model_record)
+    model <- LinkEDA::ls_glm_fit(model)
+    model_record <- LinkEDA:::.rls_glm_model_record(model)
+    if (identical(mode, "glm_pairwise")) {
+      if (!nzchar(group_var)) stop("Choose a categorical term for pairwise comparisons.", call. = FALSE)
+      writeLines(LinkEDA:::.rls_pairwise_native_payload(
+        LinkEDA::ls_glm_pairwise(model, group_var)
+      ), output, useBytes = TRUE)
+    } else if (identical(mode, "glm_partial_plot")) {
+      if (!nzchar(group_var)) stop("Choose a fitted term for the partial regression plot.", call. = FALSE)
+      residual_type <- if (length(variables)) variables[[1L]] else "default"
+      writeLines(LinkEDA:::.rls_partial_native_plot_payload(
+        LinkEDA:::.rls_regression_partial_plot_record(model_record, group_var, residual_type)
+      ), output, useBytes = TRUE)
+    } else if (mode %in% c("glm_interaction", "glm_interaction_plot")) {
+      if (!nzchar(group_var)) stop("Choose a two- or three-way interaction to interpret.", call. = FALSE)
+      interaction <- LinkEDA::ls_glm_interaction(
+        model, group_var, confidence_level = effect_confidence_level,
+        emm_test_reference = emm_test_reference,
+        focal = if (identical(mode, "glm_interaction_plot")) plot_focal else report_focal,
+        group_by = if (identical(mode, "glm_interaction_plot")) NULL else report_group,
+        quantity = effect_quantity, adjustment = effect_adjustment,
+        presentation = effect_presentation
+      )
+      writeLines(if (identical(mode, "glm_interaction_plot")) {
+        LinkEDA:::.rls_interaction_native_plot_payload(interaction)
+)RLSANALYSIS" R"RLSANALYSIS(      } else {
+        LinkEDA:::.rls_interaction_native_report(interaction)
+      }, output, useBytes = TRUE)
+    } else {
+      writeLines(LinkEDA:::.rls_glm_pooled_native_payload(model_record), output, useBytes = TRUE)
+    }
+  } else if (mode %in% c("gglm", "gglm_pairwise", "gglm_interaction", "gglm_interaction_plot", "gglm_partial_plot")) {
+    if (!nzchar(response)) stop("Choose a response variable before opening the pooled MI Generalized Linear Model table.", call. = FALSE)
+    family <- "gaussian"
+    link <- ""
+    generation <- 0L
+    analysis_mode <- "GENERALIZED"
+    model_type <- "legacy_generalized"
+    count_distribution <- "poisson"
+    exposure <- ""
+    offset <- ""
+    trials_variable <- ""
+    trials_constant <- NA_real_
+    event <- ""
+    reference <- ""
+    response_bounds <- NULL
+    term_types <- list()
+    centered_predictors <- character()
+    factor_reference_levels <- list()
+    selected_rows <- integer()
+    if (nzchar(model_spec_text)) {
+      fields <- strsplit(model_spec_text, "|", fixed = TRUE)[[1L]]
+      if (fields[[1L]] %in% c("MI_GGLM_SPEC_V2", "MI_GGLM_SPEC_V3", "MI_GGLM_SPEC_V4", "MI_GGLM_SPEC_V5")) {
+        bounded_spec <- identical(fields[[1L]], "MI_GGLM_SPEC_V3")
+        current_spec <- fields[[1L]] %in% c("MI_GGLM_SPEC_V4", "MI_GGLM_SPEC_V5")
+        cursor <- 2L
+        take <- function() {
+          if (cursor > length(fields)) stop("The standalone MI generalized-model specification is incomplete.", call. = FALSE)
+          value <- decode_field(fields[[cursor]])
+          cursor <<- cursor + 1L
+          value
+        }
+        take_count <- function(label) {
+          value <- suppressWarnings(as.integer(take()))
+          if (!is.finite(value) || value < 0L) {
+            stop(sprintf("The standalone MI %s count is invalid.", label), call. = FALSE)
+          }
+          value
+        }
+        family <- take()
+        link <- take()
+        generation <- suppressWarnings(as.integer(take()))
+        if (!is.finite(generation) || generation < 0L) generation <- 0L
+        analysis_mode <- take()
+        count_distribution <- take()
+        exposure <- take()
+        if (identical(fields[[1L]], "MI_GGLM_SPEC_V5")) offset <- take()
+        if (current_spec) {
+          trials_variable <- take()
+          trials_constant <- suppressWarnings(as.numeric(take()))
+        }
+        event <- take()
+        reference <- take()
+        if (current_spec) {
+          bounds_configured <- identical(take(), "TRUE")
+          lower <- suppressWarnings(as.numeric(take()))
+          upper <- suppressWarnings(as.numeric(take()))
+          if (bounds_configured) {
+            if (!is.finite(lower) || !is.finite(upper) || lower >= upper) {
+              stop("The standalone MI generalized-model response bounds are invalid.", call. = FALSE)
+            }
+            response_bounds <- c(lower, upper)
+          }
+        } else if (bounded_spec) {
+          lower <- suppressWarnings(as.numeric(take()))
+          upper <- suppressWarnings(as.numeric(take()))
+          if (!is.finite(lower) || !is.finite(upper) || lower >= upper) {
+            stop("The standalone MI generalized-model response bounds are invalid.", call. = FALSE)
+          }
+          response_bounds <- c(lower, upper)
+        }
+        type_count <- take_count("term-type")
+        if (type_count > 0L) for (i in seq_len(type_count)) {
+          term_name <- take()
+          term_types[[term_name]] <- take()
+        }
+        centered_count <- take_count("centered-predictor")
+        if (centered_count > 0L) centered_predictors <- vapply(seq_len(centered_count), function(i) take(), character(1L))
+        reference_count <- take_count("factor-reference")
+        if (reference_count > 0L) for (i in seq_len(reference_count)) {
+          term_name <- take()
+          factor_reference_levels[[term_name]] <- take()
+        }
+        row_count <- take_count("selected-row")
+        if (row_count > 0L) {
+          selected_rows <- suppressWarnings(as.integer(vapply(seq_len(row_count), function(i) take(), character(1L))))
+          if (any(!is.finite(selected_rows)) || any(selected_rows < 1L)) {
+            stop("The standalone MI selected rows are invalid.", call. = FALSE)
+          }
+        }
+        if (cursor <= length(fields) && identical(take(), "MODEL_TYPE_V1") &&
+            cursor <= length(fields)) {
+          model_type <- take()
+        }
+      } else {
+        if (length(fields) >= 1L && nzchar(fields[[1L]])) family <- decode_field(fields[[1L]])
+        if (length(fields) >= 2L && nzchar(fields[[2L]])) link <- decode_field(fields[[2L]])
+        if (length(fields) >= 3L && nzchar(fields[[3L]])) {
+          generation <- suppressWarnings(as.integer(fields[[3L]]))
+          if (!is.finite(generation) || generation < 0L) generation <- 0L
+        }
+      }
+    }
+    if (!length(terms) && !analysis_mode %in% c("COUNT", "BINARY")) {
+      stop("Add at least one predictor before opening the pooled MI Generalized Linear Model table.", call. = FALSE)
+    }
+    common <- list(
+      data = record$group, response = response, terms = terms, scope = scope,
+      name = if (nzchar(analysis_id)) analysis_id else NULL, native = FALSE,
+      term_types = term_types, centered_predictors = centered_predictors,
+      factor_reference_levels = factor_reference_levels,
+      offset = if (nzchar(offset)) offset else NULL,
+      .selected_rows = selected_rows
     )
+    model <- if (identical(analysis_mode, "COUNT")) {
+      do.call(LinkEDA::ls_new_count_regression, c(common, list(
+        distribution = count_distribution,
+        exposure = if (nzchar(exposure)) exposure else NULL,
+        trials = if (nzchar(trials_variable)) trials_variable else trials_constant,
+        .allow_intercept_only = TRUE
+      )))
+    } else if (identical(analysis_mode, "BINARY")) {
+      do.call(LinkEDA::ls_new_binary_regression, c(common, list(
+        link = link,
+        event = if (nzchar(event)) event else NULL,
+        reference = if (nzchar(reference)) reference else NULL
+      )))
+    } else {
+      do.call(LinkEDA::ls_new_generalized_linear_model, c(common, list(
+        family = family, link = if (nzchar(link)) link else NULL,
+        response_bounds = response_bounds, .model_type = model_type,
+        .allow_intercept_only = TRUE
+      )))
+    }
     model_record <- LinkEDA:::.rls_generalized_glm_record(model)
-    writeLines(LinkEDA:::.rls_generalized_glm_pooled_native_payload(model_record), output, useBytes = TRUE)
+    model_record$native_generation <- generation
+    if (isTRUE(model_record$count_regression) && !length(effect_quantity_option)) {
+      if (identical(model_record$count_distribution,
+                    "hurdle_beta_binomial_ceiling")) {
+        effect_quantity <- "overall_expected_score"
+      } else if (model_record$count_distribution %in%
+                 c("binomial_trials", "beta_binomial")) {
+        effect_quantity <- "expected_count"
+      } else if (identical(model_record$count_distribution, "perfect_score")) {
+        effect_quantity <- "predicted_probability"
+      }
+    }
+    if (identical(mode, "gglm_partial_plot")) {
+      if (!nzchar(group_var)) stop("Choose a fitted term for the partial regression plot.", call. = FALSE)
+      residual_type <- if (length(variables)) variables[[1L]] else "default"
+      writeLines(LinkEDA:::.rls_partial_native_plot_payload(
+        LinkEDA:::.rls_regression_partial_plot_record(model_record, group_var, residual_type)
+      ), output, useBytes = TRUE)
+    } else if (identical(mode, "gglm_pairwise")) {
+      if (!nzchar(group_var)) stop("Choose a categorical term for pairwise comparisons.", call. = FALSE)
+      result <- if (identical(analysis_mode, "BINARY")) {
+        LinkEDA::ls_binary_regression_pairwise(model, group_var)
+      } else {
+        LinkEDA::ls_generalized_linear_model_pairwise(model, group_var, scale = "response")
+      }
+      writeLines(LinkEDA:::.rls_pairwise_native_payload(result), output, useBytes = TRUE)
+    } else if (mode %in% c("gglm_interaction", "gglm_interaction_plot")) {
+      if (!nzchar(group_var)) stop("Choose a two- or three-way interaction to interpret.", call. = FALSE)
+      interaction <- LinkEDA::ls_generalized_linear_model_interaction(
+        model, group_var, confidence_level = effect_confidence_level,
+        emm_test_reference = emm_test_reference,
+        focal = if (identical(mode, "gglm_interaction_plot")) plot_focal else report_focal,
+        group_by = if (identical(mode, "gglm_interaction_plot")) NULL else report_group,
+        quantity = effect_quantity, adjustment = effect_adjustment,
+        presentation = effect_presentation
+      )
+      writeLines(if (identical(mode, "gglm_interaction_plot")) {
+        LinkEDA:::.rls_interaction_native_plot_payload(interaction)
+      } else {
+        LinkEDA:::.rls_interaction_native_report(interaction)
+      }, output, useBytes = TRUE)
+    } else {
+      writeLines(LinkEDA:::.rls_generalized_glm_pooled_native_payload(model_record), output, useBytes = TRUE)
+    }
   } else if (identical(mode, "regcmp")) {
     model_specs <- parse_model_specs(model_spec_text)
     if (length(model_specs)) {
@@ -958,7 +2053,7 @@ tryCatch({
     } else {
       if (!nzchar(response)) stop("Choose a response variable before opening pooled MI model comparison.", call. = FALSE)
       models <- list(terms)
-      names(models) <- if (length(terms)) "Model 1" else "Null"
+      names(models) <- "Model 1"
       response_arg <- response
     }
     comparison <- LinkEDA::ls_new_regression_comparison(
@@ -988,18 +2083,20 @@ std::string NormalizeVariableType(const std::string &type)
         lowered == "numerico" || lowered == "numérico") {
         return "numeric";
     }
-    if (lowered == "factor") {
+    if (lowered == "factor" || lowered == "categorical") {
         return "factor";
     }
     if (lowered == "ordered" || lowered == "ordered_factor" ||
-        lowered == "ordered factor" || lowered == "factor ordenado") {
+        lowered == "ordered factor" || lowered == "factor ordenado" ||
+        lowered == "ordinal") {
         return "ordered";
     }
     if (lowered == "character" || lowered == "text" ||
         lowered == "texto" || lowered == "string") {
         return "character";
     }
-    if (lowered == "logical" || lowered == "boolean" || lowered == "bool") {
+    if (lowered == "logical" || lowered == "boolean" || lowered == "bool" ||
+        lowered == "binary") {
         return "logical";
     }
     return lowered;
@@ -1013,21 +2110,41 @@ bool VariableTypeIsSupported(const std::string &type)
         normalized == "logical";
 }
 
+bool VariableTypeIsNumeric(const std::string &type)
+{
+    return NormalizeVariableType(type) == "numeric";
+}
+
+bool VariableTypeIsCategorical(const std::string &type)
+{
+    const std::string normalized = NormalizeVariableType(type);
+    return normalized == "factor" || normalized == "ordered" ||
+        normalized == "logical";
+}
+
+bool VariableTypeIsOrdinal(const std::string &type)
+{
+    return NormalizeVariableType(type) == "ordered";
+}
+
+bool VariableTypeIsText(const std::string &type)
+{
+    return NormalizeVariableType(type) == "character";
+}
+
 bool VariableTypeIsFactorLike(const std::string &type)
 {
-    std::string normalized = NormalizeVariableType(type);
-    return normalized == "factor" || normalized == "ordered" ||
-        normalized == "character" || normalized == "logical";
+    return VariableTypeIsCategorical(type);
 }
 
 std::string VariableTypeDisplayName(const std::string &type)
 {
     std::string normalized = NormalizeVariableType(type);
     if (normalized == "numeric") return "Numeric";
-    if (normalized == "factor") return "Factor";
-    if (normalized == "ordered") return "Ordered factor";
+    if (normalized == "factor") return "Categorical";
+    if (normalized == "ordered") return "Ordinal";
     if (normalized == "character") return "Text";
-    if (normalized == "logical") return "Logical";
+    if (normalized == "logical") return "Categorical (binary)";
     return normalized.empty() ? "unknown" : normalized;
 }
 
@@ -1052,7 +2169,7 @@ std::string VariableTypeChangedStatus(const std::string &variable,
 std::string VariableDecimalsUnavailableStatus(const std::string &variable,
                                               const std::string &type)
 {
-    return "Decimals are available only for numeric variables; `" + variable +
+    return "Decimals are available only for Numeric variables; `" + variable +
         "` is " + VariableTypeDisplayName(type) + ".";
 }
 
@@ -1108,25 +2225,26 @@ std::string VariableRoleChangedStatus(const std::string &variable,
                                       const std::string &roleAction)
 {
     if (roleAction == "dependent") {
-        return "Set `" + variable + "` as response variable.";
+        return "Set the default role for `" + variable + "` to Dependent.";
     }
     if (roleAction == "predictor" || roleAction == "independent") {
-        return "Added `" + variable + "` as predictor.";
+        return "Set the default role for `" + variable + "` to Independent.";
     }
     if (roleAction == "remove_predictor") {
-        return "Removed predictor role from `" + variable + "`.";
+        return "Cleared the default role for `" + variable + "`.";
     }
     if (roleAction == "none" || roleAction == "clear") {
-        return "Cleared model role for `" + variable + "`.";
+        return "Cleared the default role for `" + variable + "`.";
     }
-    return "Updated role for `" + variable + "`.";
+    return "Updated the default role for `" + variable + "`.";
 }
 
 std::string VariableViewModelRoleSummary(const std::string &dependent,
                                          std::size_t predictorCount)
 {
-    return "Model roles: Y=" + (dependent.empty() ? std::string("(none)") : dependent) +
-        " | predictors=" + std::to_string(predictorCount);
+    return "Default roles: dependent=" +
+        (dependent.empty() ? std::string("(none)") : dependent) +
+        " | independent=" + std::to_string(predictorCount);
 }
 
 bool DataColumnAllowsNumeric(const DataColumn &col, std::string *message)
@@ -1202,7 +2320,42 @@ bool DataColumnLooksLikeId(const DataColumn &col)
     std::set<std::string> uniqueValues(observed.begin(), observed.end());
     return uniqueValues.size() == observed.size() &&
         observed.size() >= static_cast<std::size_t>(
-            std::ceil(0.9 * static_cast<double>(std::max<std::size_t>(1, col.values.size()))));
+        std::ceil(0.9 * static_cast<double>(std::max<std::size_t>(1, col.values.size()))));
+}
+
+bool DataColumnLooksLikeAnalysisId(const DataColumn &col)
+{
+    std::string name = LowerCopy(col.name);
+    if (name == "id" || name.find("_id") != std::string::npos ||
+        name.find("identifier") != std::string::npos ||
+        name.find("subject") != std::string::npos ||
+        name.find("case") != std::string::npos ||
+        name.find("etiqueta") != std::string::npos ||
+        name.find("label") != std::string::npos) {
+        return true;
+    }
+    if (!VariableTypeIsNumeric(col.type)) return DataColumnLooksLikeId(col);
+
+    // A continuous measurement can legitimately contain one distinct value
+    // per case. Exclude it from response selectors only when it is the usual
+    // implicit row identifier: a unique integer sequence such as 1..N.
+    std::vector<double> observed;
+    observed.reserve(col.values.size());
+    for (auto const& value : col.values) {
+        if (DataCellIsMissing(value)) continue;
+        double parsed = NAN;
+        if (!ParseDataCellDouble(value, parsed) || !std::isfinite(parsed) ||
+            std::fabs(parsed - std::round(parsed)) > 1.0e-9) return false;
+        observed.push_back(parsed);
+    }
+    if (observed.empty()) return false;
+    std::sort(observed.begin(), observed.end());
+    if (std::adjacent_find(observed.begin(), observed.end()) != observed.end())
+        return false;
+    for (std::size_t index = 1; index < observed.size(); ++index)
+        if (std::fabs((observed[index] - observed[index - 1]) - 1.0) > 1.0e-9)
+            return false;
+    return true;
 }
 
 bool DataColumnLooksBinaryNumeric(const DataColumn &col)
@@ -1216,6 +2369,24 @@ bool DataColumnLooksBinaryNumeric(const DataColumn &col)
         levels.insert(std::fabs(numeric - 1.0) <= 1.0e-9 ? "1" : "0");
     }
     return levels.size() == 2;
+}
+
+bool DataColumnIsBinaryCategorical(const DataColumn &col)
+{
+    if (!VariableTypeIsCategorical(col.type)) return false;
+    return DataColumnFactorLevels(col).size() == 2;
+}
+
+std::string DataColumnStorageType(const DataColumn &col)
+{
+    if (!col.storageType.empty()) return col.storageType;
+    const std::string type = NormalizeVariableType(col.type);
+    if (type == "numeric") return "double";
+    if (type == "ordered") return "ordered factor";
+    if (type == "factor") return "factor";
+    if (type == "logical") return "logical";
+    if (type == "character") return "character";
+    return type.empty() ? "unknown" : type;
 }
 
 bool DataColumnLooksGroupingCandidate(const DataColumn &col, int rows)
@@ -1242,13 +2413,34 @@ int DataColumnMissingCount(const DataColumn &col)
 
 int DataColumnObservedLevelCount(const DataColumn &col)
 {
-    std::set<std::string> levels;
-    for (const std::string &value : col.values) {
-        if (!DataCellIsMissing(value)) {
-            levels.insert(value);
+    return static_cast<int>(DataColumnObservedLevels(col).size());
+}
+
+std::vector<std::string> DataColumnObservedLevels(const DataColumn &col)
+{
+    std::vector<std::string> levels;
+    for (std::size_t row = 0; row < col.values.size(); ++row) {
+        const std::string value = UnformattedDisplayValue(col, row);
+        if (!DataCellIsMissing(value) &&
+            std::find(levels.begin(), levels.end(), value) == levels.end()) {
+            levels.push_back(value);
         }
     }
-    return static_cast<int>(levels.size());
+    return levels;
+}
+
+std::vector<std::string> DataColumnFactorLevels(const DataColumn &col)
+{
+    std::vector<std::string> levels;
+    auto append = [&](const std::string &value) {
+        if (!DataCellIsMissing(value) &&
+            std::find(levels.begin(), levels.end(), value) == levels.end()) {
+            levels.push_back(value);
+        }
+    };
+    for (const std::string &value : col.definedLevels) append(value);
+    for (const std::string &value : DataColumnObservedLevels(col)) append(value);
+    return levels;
 }
 
 std::string DefaultMiceMethod(const DataColumn &col)
@@ -1283,7 +2475,9 @@ std::vector<std::string> MiceMethodOptions(const DataColumn &col)
 
 std::string MiceVariableStatusText(const DataColumn &col, int rowCount)
 {
-    std::string status = col.type.empty() ? "unknown" : col.type;
+    const std::string normalized = NormalizeVariableType(col.type);
+    std::string status = col.type.empty() ? "unknown" :
+        (VariableTypeIsSupported(normalized) ? VariableTypeDisplayName(normalized) : col.type);
     int missing = DataColumnMissingCount(col);
     status += ", " + std::to_string(missing) + " missing";
     if (missing >= std::max(1, rowCount)) status += ", all missing";
@@ -1337,19 +2531,55 @@ std::string MiceSelectionSummaryText(std::size_t imputeCount,
         std::to_string(predictorCount) + " predictors selected.";
 }
 
-bool SetDataColumnType(DataColumn &col, const std::string &type, std::string *message)
+bool SetDataColumnType(DataColumn &col, const std::string &type, std::string *message,
+                       const VariableTypeConversionSpecification *conversion)
 {
+    if (message) message->clear();
     std::string normalized = NormalizeVariableType(type);
     if (!VariableTypeIsSupported(normalized)) {
         if (message) {
-            *message = "Variable type must be numeric, factor, ordered factor, text, or logical.";
+            *message = "Variable type must be Numeric, Categorical, Ordinal, or Text.";
         }
         return false;
     }
-    if (normalized == "numeric" && !DataColumnAllowsNumeric(col, message)) {
-        return false;
+    const std::string previousType = NormalizeVariableType(col.type);
+    if (normalized == "numeric" && !ConvertColumnToNumeric(col, message, conversion)) return false;
+    if ((normalized == "factor" || normalized == "ordered") && conversion &&
+        !conversion->categoryOrder.empty()) {
+        const std::vector<std::string> existing = ObservedDisplayLevels(col);
+        const std::set<std::string> provided(conversion->categoryOrder.begin(),
+                                             conversion->categoryOrder.end());
+        const std::set<std::string> expected(existing.begin(), existing.end());
+        if (provided != expected || provided.size() != conversion->categoryOrder.size()) {
+            if (message) *message = "Category order must contain every category exactly once.";
+            return false;
+        }
+        col.definedLevels = conversion->categoryOrder;
+    }
+    if ((normalized == "factor" || normalized == "ordered") &&
+        !EncodeCategoricalColumn(col, message)) return false;
+    if (normalized == "character" && !col.displayValues.empty()) {
+        std::vector<std::string> labels;
+        labels.reserve(col.values.size());
+        for (std::size_t row = 0; row < col.values.size(); ++row)
+            labels.push_back(UnformattedDisplayValue(col, row));
+        col.values = std::move(labels);
+        col.displayValues.clear();
+        col.definedLevels.clear();
+    }
+    if (normalized == "character") {
+        col.reversibleFactorLevels.clear();
+        col.numericMapping.clear();
+        col.reversibleCategoryType.clear();
     }
     col.type = normalized;
+    col.storageType = normalized == "numeric" ? "double" :
+        normalized == "ordered" ? "ordered factor" :
+        normalized == "factor" ? "factor" :
+        normalized == "logical" ? "logical" : "character";
+    if (previousType == "logical" && normalized == "factor" && col.definedLevels.empty())
+        col.definedLevels = {"FALSE", "TRUE"};
+    col.binary = DataColumnIsBinaryCategorical(col);
     return true;
 }
 
@@ -1372,6 +2602,12 @@ bool SetDataFrameCellValue(DataFrameModel &df,
     }
     if (row >= static_cast<std::size_t>(std::max(0, df.rows))) {
         if (message) *message = "The edited row is outside the dataset.";
+        return false;
+    }
+    const bool imputedCell = DataFrameCellIsImputed(df, *column, row);
+    if (imputedCell && df.imputationDisplayMode != "version") {
+        if (message) *message =
+            "Choose one imputation version before editing an imputed cell.";
         return false;
     }
     std::string stored = TrimCopy(value);
@@ -1401,20 +2637,52 @@ bool SetDataFrameCellValue(DataFrameModel &df,
     if (column->values.size() < static_cast<std::size_t>(df.rows)) {
         column->values.resize(static_cast<std::size_t>(df.rows), "NA");
     }
-    column->values[row] = stored;
+    const bool encodedFactor = (type == "factor" || type == "ordered") &&
+        !column->displayValues.empty();
+    if (encodedFactor && !missing) {
+        auto level = std::find(column->definedLevels.begin(), column->definedLevels.end(), stored);
+        if (level == column->definedLevels.end()) {
+            column->definedLevels.push_back(stored);
+            level = column->definedLevels.end() - 1;
+        }
+        column->values[row] = std::to_string(
+            static_cast<std::size_t>(level - column->definedLevels.begin()) + 1);
+    } else {
+        column->values[row] = stored;
+    }
     if (!column->displayValues.empty()) {
         if (column->displayValues.size() < static_cast<std::size_t>(df.rows)) {
             column->displayValues.resize(static_cast<std::size_t>(df.rows), "NA");
         }
         column->displayValues[row] = stored;
     }
-    if (!missing && VariableTypeIsFactorLike(type) &&
+    if (imputedCell) {
+        const std::size_t version = static_cast<std::size_t>(
+            std::max(1, std::min(df.activeImputationVersion, df.imputationCount)) - 1);
+        if (version < column->imputationValues.size() &&
+            row < column->imputationValues[version].size())
+            column->imputationValues[version][row] = column->values[row];
+        if (column->imputationValuesSparse.size() <= version)
+            column->imputationValuesSparse.resize(version + 1);
+        column->imputationValuesSparse[version][row] = column->values[row];
+    }
+    if (!missing && VariableTypeIsFactorLike(type) && !encodedFactor &&
         std::find(column->definedLevels.begin(), column->definedLevels.end(), stored) == column->definedLevels.end()) {
         column->definedLevels.push_back(stored);
     }
+    column->binary = DataColumnIsBinaryCategorical(*column);
     if (message) {
         *message = "Updated row " + std::to_string(row + 1) + ", variable `" + variable + "`.";
     }
+    EnsureDataFrameProvenance(df);
+    TransformationStep step;
+    step.label = "Manual edit of " + variable;
+    step.origin = RCodeOrigin::Unavailable;
+    step.inputColumns = {variable};
+    step.outputColumns = {variable};
+    if (row < df.stableRowIds.size()) step.stableRowIds = {df.stableRowIds[row]};
+    step.parameters["value"] = value;
+    RecordDataFrameTransformation(df, std::move(step));
     return true;
 }
 
@@ -1587,6 +2855,89 @@ bool AddDerivedDataColumn(DataFrameModel &df,
         *createdName = col.name;
     }
     df.columns.push_back(col);
+    EnsureDataFrameProvenance(df);
+    TransformationStep step;
+    step.label = kind == "selection" ? "Add selection indicator column" : "Add point-colour column";
+    step.origin = RCodeOrigin::Recorded;
+    step.outputColumns = {col.name};
+    if (kind == "selection") {
+        std::vector<std::string> ids;
+        for (int row : selectedRows) {
+            if (row > 0 && static_cast<std::size_t>(row) <= df.stableRowIds.size())
+                ids.push_back(df.stableRowIds[static_cast<std::size_t>(row - 1)]);
+        }
+        std::ostringstream selected;
+        selected << "c(";
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (i) selected << ", ";
+            selected << ProvenanceRStringLiteral(ids[i]);
+        }
+        selected << ")";
+        step.rCode = RNameLiteral(col.name) +
+            " <- factor(LinkEDA::ls_row_ids(data) %in% " + selected.str() +
+            ", levels = c(FALSE, TRUE), labels = c(\"not_selected\", \"selected\"))";
+    } else {
+        step.rCode =
+            "# Point colours were assigned interactively in LinkEDA.\n"
+            "# The original native colour-state operation is preserved in the data snapshot,\n"
+            "# but no equivalent R operation was executed.";
+    }
+    RecordDataFrameTransformation(df, std::move(step));
+    return true;
+}
+
+bool BuildMissingDataPatternColumn(const DataFrameModel &df,
+                                   const std::vector<std::string> &variables,
+                                   DataColumn &column,
+                                   std::string *message)
+{
+    if (variables.empty()) {
+        if (message) *message = "Select at least one variable.";
+        return false;
+    }
+
+    std::vector<const DataColumn *> selected;
+    selected.reserve(variables.size());
+    for (const std::string &variable : variables) {
+        const DataColumn *found = FindDataColumnInDataFrame(df, variable);
+        if (!found) {
+            if (message) *message = VariableNotFoundStatus(variable);
+            return false;
+        }
+        selected.push_back(found);
+    }
+
+    column = DataColumn{};
+    column.name = UniqueDataColumnName(df, "missing_pattern");
+    column.displayName = column.name;
+    column.type = "factor";
+    column.decimals = -1;
+    column.description = "Missing data patterns based on selected variables.";
+    column.values.reserve(static_cast<std::size_t>(std::max(0, df.rows)));
+
+    std::map<std::string, int> patternIndex;
+    int nextNumber = 1;
+    for (int row = 0; row < df.rows; ++row) {
+        std::string key;
+        for (std::size_t index = 0; index < selected.size(); ++index) {
+            const DataColumn &candidate = *selected[index];
+            const std::size_t dataRow = static_cast<std::size_t>(row);
+            if (dataRow >= candidate.values.size() ||
+                !DataCellIsMissing(candidate.values[dataRow])) continue;
+            const std::string &name = variables[index];
+            if (!name.empty())
+                key.push_back(static_cast<char>(std::tolower(
+                    static_cast<unsigned char>(name.front()))));
+        }
+        if (key.empty()) {
+            column.values.push_back("0");
+            continue;
+        }
+        auto [position, inserted] = patternIndex.emplace(key, nextNumber);
+        if (inserted) ++nextNumber;
+        column.values.push_back(key + std::to_string(position->second));
+    }
+    if (message) message->clear();
     return true;
 }
 
@@ -1611,8 +2962,28 @@ std::string VariableInformationText(const DataFrameModel &df,
     std::ostringstream out;
     out << "Variable: " << col->name
         << "\nDisplay name: " << (col->displayName.empty() ? col->name : col->displayName)
-        << "\nDataset: " << df.group
-        << "\nAnalysis type: " << col->type
+        << "\nDataset: " << df.group;
+    if (df.datasetType == "multiple_imputation" && df.imputationCount > 0) {
+        const int count = std::max(1, df.imputationCount);
+        const int active = std::max(1, std::min(count, df.activeImputationVersion));
+        out << "\nDataset type: Multiple imputation"
+            << "\nImputations: m = " << count
+            << "\nData displayed: ";
+        if (df.imputationDisplayMode == "all") {
+            out << "Compact preview across all " << count << " imputations";
+        } else if (df.imputationDisplayMode == "original") {
+            out << "Original incomplete data";
+        } else {
+            out << "Imputation " << active << " of " << count;
+        }
+    } else {
+        out << "\nDataset type: Ordinary data";
+    }
+    out << "\nStatistical type: " << VariableTypeDisplayName(col->type)
+        << "\nR storage: " << DataColumnStorageType(*col)
+        << "\nBinary: " << (DataColumnIsBinaryCategorical(*col) ? "Yes" : "No")
+        << "\nCategories: " << (VariableTypeIsCategorical(col->type)
+            ? JoinValues(DataColumnFactorLevels(*col), " / ") : "(not categorical)")
         << "\nDescription: " << (col->description.empty() ? "(none)" : col->description)
         << "\nDisplayed decimals: " << (col->decimals < 0 ? "automatic" : std::to_string(col->decimals))
         << "\nRows: " << col->values.size()
@@ -1657,7 +3028,62 @@ bool RenameDataFrameColumn(DataFrameModel &df,
     if (col->displayName == oldName || col->displayName.empty()) {
         col->displayName = newName;
     }
+    EnsureDataFrameProvenance(df);
+    TransformationStep step;
+    step.label = "Rename column " + oldName + " to " + newName;
+    step.origin = RCodeOrigin::Recorded;
+    step.inputColumns = {oldName};
+    step.outputColumns = {newName};
+    step.rCode = "names(data)[names(data) == " + ProvenanceRStringLiteral(oldName) + "] <- " +
+        ProvenanceRStringLiteral(newName);
+    RecordDataFrameTransformation(df, std::move(step));
+    auto previous = df.provenance.columnSteps.find(oldName);
+    if (previous != df.provenance.columnSteps.end()) {
+        auto &target = df.provenance.columnSteps[newName];
+        target.insert(target.begin(), previous->second.begin(), previous->second.end());
+        df.provenance.columnSteps.erase(previous);
+    }
     return true;
+}
+
+void EnsureDataFrameProvenance(DataFrameModel &df, RCodeOrigin origin,
+                               const std::string &originCode,
+                               const std::string &originDescription)
+{
+    if (df.dataVersion == 0) df.dataVersion = 1;
+    if (df.stableRowIds.size() != static_cast<std::size_t>(std::max(0, df.rows)))
+        df.stableRowIds = StableRowIdsForCount(df.group, static_cast<std::size_t>(std::max(0, df.rows)));
+    if (df.provenance.currentVersion.datasetId.empty()) {
+        df.provenance.origin = origin;
+        df.provenance.originCode = originCode;
+        df.provenance.originDescription = originDescription;
+    }
+    RefreshCurrentVersion(df);
+}
+
+void RecordDataFrameTransformation(DataFrameModel &df, TransformationStep step)
+{
+    EnsureDataFrameProvenance(df);
+    if (step.id.empty()) step.id = NextTransformationId(df);
+    if (step.parentVersionKeys.empty())
+        step.parentVersionKeys.push_back(df.provenance.currentVersion.storageKey);
+    df.provenance.history.push_back(step);
+    for (const std::string &column : step.outputColumns)
+        df.provenance.columnSteps[column].push_back(step.id);
+    ++df.dataVersion;
+    RefreshCurrentVersion(df);
+}
+
+void RecordDataFrameMetadataChange(DataFrameModel &df,
+                                   const std::string &column,
+                                   const std::string &label)
+{
+    TransformationStep step;
+    step.label = label;
+    step.origin = RCodeOrigin::Unavailable;
+    step.inputColumns = {column};
+    step.outputColumns = {column};
+    RecordDataFrameTransformation(df, std::move(step));
 }
 
 std::vector<VariableViewRow> VariableViewRowsForDataFrame(const DataFrameModel &df)
@@ -1943,36 +3369,15 @@ void NumericRangeInclude(NumericImputationRange &range, double value)
     }
 }
 
-NumericImputationRange NumericImputationRangeForCell(const DataFrameModel &df,
-                                                     const DataColumn &col,
-                                                     std::size_t row,
-                                                     const std::string &uncertaintyMode)
+NumericImputationRange NumericImputationRangeForValues(
+    std::vector<double> values,
+    const std::string &uncertaintyMode)
 {
     NumericImputationRange range;
-    bool markedImputed = DataFrameCellIsImputed(df, col, row);
-    int count = ImputationVersionCountForCell(df, col);
-    std::vector<double> values;
-    values.reserve(static_cast<std::size_t>(std::max(0, count)));
-    for (int version = 0; version < count; ++version) {
-        double value = NAN;
-        if (ParseDataCellDouble(ImputationVersionValueForCell(col, row, static_cast<std::size_t>(version)), value)) {
-            values.push_back(value);
-        }
-    }
     values.erase(std::remove_if(values.begin(), values.end(), [](double value) {
         return !std::isfinite(value);
     }), values.end());
     if (values.empty()) {
-        return range;
-    }
-
-    double observedMin = values.front();
-    double observedMax = values.front();
-    for (double value : values) {
-        observedMin = std::min(observedMin, value);
-        observedMax = std::max(observedMax, value);
-    }
-    if (!markedImputed && std::fabs(observedMax - observedMin) <= 1.0e-12) {
         return range;
     }
 
@@ -2012,11 +3417,72 @@ NumericImputationRange NumericImputationRangeForCell(const DataFrameModel &df,
     return range;
 }
 
+NumericImputationRange NumericImputationRangeForCell(const DataFrameModel &df,
+                                                     const DataColumn &col,
+                                                     std::size_t row,
+                                                     const std::string &uncertaintyMode)
+{
+    const bool markedImputed = DataFrameCellIsImputed(df, col, row);
+    const int count = ImputationVersionCountForCell(df, col);
+    std::vector<double> values;
+    values.reserve(static_cast<std::size_t>(std::max(0, count)));
+    for (int version = 0; version < count; ++version) {
+        double value = NAN;
+        if (ParseDataCellDouble(ImputationVersionValueForCell(
+                col, row, static_cast<std::size_t>(version)), value)) {
+            values.push_back(value);
+        }
+    }
+    if (!markedImputed && !values.empty()) {
+        const auto limits = std::minmax_element(values.begin(), values.end());
+        if (limits.first != values.end() &&
+            std::fabs(*limits.second - *limits.first) <= 1.0e-12) {
+            return NumericImputationRange();
+        }
+    }
+    return NumericImputationRangeForValues(std::move(values), uncertaintyMode);
+}
+
 bool DataFrameShowsAllImputations(const DataFrameModel &df)
 {
     return df.datasetType == "multiple_imputation" &&
         df.imputationCount > 0 &&
         df.imputationDisplayMode == "all";
+}
+
+std::string PlotImputationDisplayStatus(const DataFrameModel &df,
+                                        bool summarizesAllImputations)
+{
+    if (df.datasetType != "multiple_imputation" || df.imputationCount <= 0) {
+        return "";
+    }
+    const int count = std::max(1, df.imputationCount);
+    const int active = std::max(1, std::min(count, df.activeImputationVersion));
+    if (df.imputationDisplayMode == "original") {
+        return "Showing original incomplete data (not pooled).";
+    }
+    if (df.imputationDisplayMode == "all") {
+        if (summarizesAllImputations) {
+            return "All " + std::to_string(count) +
+                " imputations selected; points show imputation " +
+                std::to_string(active) +
+                " and uncertainty glyphs summarize all imputations.";
+        }
+        return "All imputations selected in the Data Sheet; this descriptive plot shows imputation " +
+            std::to_string(active) + " of " + std::to_string(count) + " (not pooled).";
+    }
+    return "Showing imputation " + std::to_string(active) + " of " +
+        std::to_string(count) + " (not pooled).";
+}
+
+std::string PooledEffectPlotImputationStatus(const DataFrameModel &df)
+{
+    if (df.datasetType != "multiple_imputation" || df.imputationCount <= 0) {
+        return "";
+    }
+    return "Effect estimates are pooled across all " +
+        std::to_string(std::max(1, df.imputationCount)) +
+        " imputations; no single imputation is displayed.";
 }
 
 std::string DataFrameStatusText(const DataFrameModel &df,
@@ -2164,7 +3630,7 @@ std::string VariableViewWindowTitle(const std::string &group)
 
 std::string VariableViewInstructionText()
 {
-    return "Click Name or Description to edit. Click Type, Decimals, or Role to choose an action.";
+    return "Click Name or Description to edit. Click Type or Decimals to choose an action.";
 }
 
 std::string VariableDescriptionDialogTitle(const std::string &variable)
@@ -2387,6 +3853,8 @@ std::vector<NativeImportFileFilter> NativeImportFileFilters()
     const std::vector<std::string> all = NativeImportAllowedFileExtensions();
     return {
         {"all", "All supported data files", all},
+        {"mice", "mice multiple-imputation files (.rds, .rda, .RData)",
+            {"rds", "rda", "RData"}},
         {"spss", "SPSS files (.sav, .zsav)", {"sav", "zsav"}},
         {"delimited", "CSV and text files (.csv, .tsv, .txt)", {"csv", "tsv", "txt"}},
         {"excel", "Excel files (.xlsx, .xls)", {"xlsx", "xls"}},
@@ -2394,6 +3862,118 @@ std::vector<NativeImportFileFilter> NativeImportFileFilters()
         {"sas", "SAS files (.sas7bdat, .xpt)", {"sas7bdat", "xpt"}},
         {"r", "R data files (.rds, .rda, .RData)", {"rds", "rda", "RData"}}
     };
+}
+
+std::vector<NativeDataExportFileFilter> NativeDataExportFileFilters()
+{
+    return {
+        {"csv", "CSV data file (.csv)", "csv"},
+        {"xlsx", "Excel workbook (.xlsx)", "xlsx"},
+        {"sav", "SPSS data file (.sav)", "sav"},
+        {"zsav", "Compressed SPSS data file (.zsav)", "zsav"},
+        {"dta", "Stata data file (.dta)", "dta"},
+        {"xpt", "SAS transport file (.xpt)", "xpt"},
+        {"rds", "R serialized data file (.rds)", "rds"},
+        {"rdata", "R workspace data file (.RData)", "RData"},
+        {"tsv", "Tab-delimited text file (.tsv)", "tsv"}
+    };
+}
+
+std::string NativeDataExportFormatForExtension(const std::string &extension)
+{
+    std::string normalized = LowerCopy(TrimCopy(extension));
+    while (!normalized.empty() && normalized.front() == '.') normalized.erase(normalized.begin());
+    if (normalized == "txt") return "tsv";
+    if (normalized == "rda" || normalized == "rdata") return "rdata";
+    for (const NativeDataExportFileFilter &filter : NativeDataExportFileFilters()) {
+        if (LowerCopy(filter.extension) == normalized) return filter.identifier;
+    }
+    return {};
+}
+
+std::string NativeDataExportRScript()
+{
+    return R"RLSEXPORT(
+args <- commandArgs(TRUE)
+if (length(args) < 4L) stop("Expected input CSV, metadata, output path, and export format.", call. = FALSE)
+input <- args[[1L]]
+metadata_path <- args[[2L]]
+output <- args[[3L]]
+format <- tolower(args[[4L]])
+if (!file.exists(input)) stop("The temporary export data are unavailable.", call. = FALSE)
+data <- utils::read.csv(input, check.names = FALSE, stringsAsFactors = FALSE,
+                        na.strings = "NA")
+if (file.exists(metadata_path)) {
+  metadata <- utils::read.csv(metadata_path, check.names = FALSE,
+                              stringsAsFactors = FALSE, na.strings = NULL)
+  for (variable in unique(metadata$variable)) {
+    rows <- metadata[metadata$variable == variable, , drop = FALSE]
+    type <- rows$type[[1L]]
+    if (!variable %in% names(data) || !type %in% c("factor", "ordered")) next
+    level_rows <- rows[rows$level_index > 0L, , drop = FALSE]
+    level_rows <- level_rows[order(level_rows$level_index), , drop = FALSE]
+    levels <- as.character(level_rows$level)
+    if (!length(levels)) levels <- unique(data[[variable]][!is.na(data[[variable]])])
+    data[[variable]] <- factor(data[[variable]], levels = levels,
+                               ordered = identical(type, "ordered"))
+  }
+}
+if (!requireNamespace("LinkEDA", quietly = TRUE)) {
+  stop("The LinkEDA R package is not available to the export process.", call. = FALSE)
+}
+is_mi_long <- all(c(".imp", ".id") %in% names(data)) &&
+  length(unique(data$.imp)) > 1L && any(data$.imp == 0L)
+if (is_mi_long && format %in% c("rds", "rdata")) {
+  if (!requireNamespace("mice", quietly = TRUE)) {
+    stop("RDS/RData multiple-imputation export requires package 'mice'.", call. = FALSE)
+  }
+  export_object <- mice::as.mids(data, .imp = ".imp", .id = ".id")
+  attr(export_object, "linkeda_exported_dataset_type") <- "multiple_imputation"
+  LinkEDA:::.rls_export_r_object(export_object, output, format)
+} else {
+  LinkEDA:::.rls_export_data_frame(data, output, format)
+}
+)RLSEXPORT";
+}
+
+std::string NativeDataExportTemporaryFileFailedStatus()
+{
+    return "Could not create the temporary files required for data export.";
+}
+
+std::string NativeDataExportRscriptLaunchFailedStatus()
+{
+    return "Could not start Rscript for data export.";
+}
+
+std::string NativeDataExportRscriptFailedStatus()
+{
+    return "R could not export the selected data format.";
+}
+
+std::string NativeDataExportSuccessStatus(const std::string &format,
+                                          bool multipleImputation)
+{
+    std::string label = "data";
+    const std::string normalized = LowerCopy(format);
+    if (normalized == "csv") label = "CSV";
+    else if (normalized == "tsv") label = "tab-delimited text";
+    else if (normalized == "xlsx") label = "Excel";
+    else if (normalized == "sav") label = "SPSS";
+    else if (normalized == "zsav") label = "compressed SPSS";
+    else if (normalized == "dta") label = "Stata";
+    else if (normalized == "xpt") label = "SAS transport";
+    else if (normalized == "rds") label = "RDS";
+    else if (normalized == "rdata") label = "RData";
+    if (multipleImputation) {
+        if (normalized == "rds" || normalized == "rdata") {
+            return "The multiple-imputation dataset was exported as a mice mids object in " +
+                label + " format and can be reimported with its imputations preserved.";
+        }
+        return "The multiple-imputation dataset was exported as " + label +
+            " in long format with .imp and .id columns.";
+    }
+    return "The active dataset was exported as " + label + ".";
 }
 
 std::string NativeImportTemporaryScriptFailedStatus()
@@ -2428,6 +4008,64 @@ std::string NativeImportDatasetLoadedStatus(const std::string &group,
     std::ostringstream out;
     out << "Imported `" << group << "` with " << rows
         << " rows and " << variableCount << " variables.";
+    return out.str();
+}
+
+std::string ImportedVariableTypeReviewWarning(const DataFrameModel &dataframe)
+{
+    std::vector<std::string> warnings;
+    for (const DataColumn &column : dataframe.columns) {
+        const std::string type = NormalizeVariableType(column.type);
+        if (type != "factor" && type != "ordered" && type != "character") continue;
+
+        std::size_t observed = 0;
+        std::size_t numeric = 0;
+        std::vector<std::string> incompatibleExamples;
+        for (std::size_t row = 0; row < column.values.size(); ++row) {
+            const std::string value = UnformattedDisplayValue(column, row);
+            if (DataCellIsMissing(value)) continue;
+            ++observed;
+            double parsed = NAN;
+            if (ParseDataCellDouble(value, parsed)) {
+                ++numeric;
+            } else if (incompatibleExamples.size() < 3 &&
+                       std::find(incompatibleExamples.begin(), incompatibleExamples.end(), value) ==
+                           incompatibleExamples.end()) {
+                incompatibleExamples.push_back(value);
+            }
+        }
+        if (observed < 4 || numeric < 4 || numeric == observed ||
+            static_cast<double>(numeric) / static_cast<double>(observed) < 0.90) {
+            continue;
+        }
+
+        const std::size_t incompatible = observed - numeric;
+        std::ostringstream warning;
+        warning << "`" << column.name << "` looks numeric, but " << incompatible
+                << " of " << observed << " non-missing "
+                << (incompatible == 1 ? "value is" : "values are")
+                << " not numeric";
+        if (!incompatibleExamples.empty()) {
+            warning << " (";
+            for (std::size_t index = 0; index < incompatibleExamples.size(); ++index) {
+                if (index) warning << ", ";
+                warning << "`" << incompatibleExamples[index] << "`";
+            }
+            warning << ")";
+        }
+        warning << ". It was imported as "
+                << (type == "factor" ? "Categorical" : type == "ordered" ? "Ordinal" : "Text")
+                << "; review these values before changing it to Numeric.";
+        warnings.push_back(warning.str());
+    }
+    if (warnings.empty()) return "";
+
+    std::ostringstream out;
+    out << "Review imported variable types: ";
+    for (std::size_t index = 0; index < warnings.size(); ++index) {
+        if (index) out << " ";
+        out << warnings[index];
+    }
     return out.str();
 }
 
@@ -2513,7 +4151,9 @@ void DatasetRegistry::registerDataset(const DataFrameModel &df)
     if (df.group.empty()) {
         return;
     }
-    dataFrames_[df.group] = df;
+    DataFrameModel registered = df;
+    EnsureDataFrameProvenance(registered);
+    dataFrames_[df.group] = std::move(registered);
     if (activeGroup_.empty()) {
         activeGroup_ = df.group;
     }

@@ -98,6 +98,8 @@ using rlispstat::core::BarplotWidthMode;
 using rlispstat::core::BarplotWidthScaleLabel;
 using rlispstat::core::BarplotWidthValueForBin;
 using rlispstat::core::BarplotYAxisTicks;
+using rlispstat::core::ZeroBaselineContentRect;
+using rlispstat::core::ZeroBaselineY;
 using rlispstat::core::BarplotCategoryTooltipText;
 using rlispstat::core::BarplotModeIsValid;
 using rlispstat::core::BarplotModeMenuOptions;
@@ -137,6 +139,7 @@ using rlispstat::core::BuildBarplotLayout;
 using rlispstat::core::BuildBarplotSplitMenuState;
 using rlispstat::core::BuildBarplotSplitStrokeWidthDialogState;
 using rlispstat::core::BuildBarplotSelectionSlicePlan;
+using rlispstat::core::BarplotSelectedSliceCoversY;
 using rlispstat::core::BuildBarplotSideLabelDrawPlan;
 using rlispstat::core::BuildBarplotXMenuState;
 using rlispstat::core::ClampBarplotSplitStrokeWidth;
@@ -212,15 +215,26 @@ int main()
     Rect first = BarplotBarRect(layout, 0);
     Rect second = BarplotBarRect(layout, 1);
     Rect third = BarplotBarRect(layout, 2);
+    const Rect contentRect = ZeroBaselineContentRect(layout.plotRect);
     assert(first.width > 1.0);
-    assert(closeEnough(second.y, 30.0));
-    assert(closeEnough(first.height, 100.0));
+    assert(contentRect.y > layout.plotRect.y);
+    assert(contentRect.y + contentRect.height < layout.plotRect.y + layout.plotRect.height);
+    assert(closeEnough(second.y, contentRect.y));
+    assert(closeEnough(first.height, contentRect.height / 2.0));
+    assert(closeEnough(first.y + first.height, ZeroBaselineY(layout.plotRect, 0.0)));
+    assert(closeEnough(second.y, ZeroBaselineY(layout.plotRect, 1.0)));
     assert((third.x - (second.x + second.width)) > (second.x - (first.x + first.width)));
+    const Rect fourth = BarplotBarRect(layout, 3);
+    assert(first.x - layout.plotRect.x >= layout.plotRect.width * 0.025);
+    assert(layout.plotRect.x + layout.plotRect.width -
+           (fourth.x + fourth.width) >= layout.plotRect.width * 0.025);
 
     auto firstHit = BarplotBarIndexAtPoint(layout, Point{first.x + first.width / 2.0, 80.0});
     assert(firstHit.has_value() && *firstHit == 0);
     auto emptyHit = BarplotBarIndexAtPoint(layout, Point{0.0, 80.0});
     assert(!emptyHit.has_value());
+    assert(!BarplotBarIndexAtPoint(layout,
+        Point{layout.plotRect.x + 1.0, 80.0}).has_value());
     auto reversedRange = BarplotBarRangeForGesture(
         layout,
         Point{third.x + third.width / 2.0, 70.0},
@@ -289,7 +303,12 @@ int main()
     layout.widthMode = BarplotWidthMode::Proportional;
     Rect proportional0 = BarplotBarRect(layout, 0);
     Rect proportional1 = BarplotBarRect(layout, 1);
+    Rect proportionalLast = BarplotBarRect(layout, 3);
     assert(proportional1.width > proportional0.width);
+    assert(proportional0.x - layout.plotRect.x >= layout.plotRect.width * 0.025);
+    assert(layout.plotRect.x + layout.plotRect.width -
+           (proportionalLast.x + proportionalLast.width) >=
+           layout.plotRect.width * 0.025);
 
     std::map<int, std::string> rowColors{{1, "orange"}, {2, "orange"}, {3, ""}, {4, "blue"}};
     assert(RowColorKeyForRow(rowColors, 1) == "orange");
@@ -388,6 +407,8 @@ int main()
     assert(selectionPlan.slices[1].colorKey == "orange");
     assert(closeEnough(selectionPlan.slices[1].rect.y, 70.0));
     assert(closeEnough(selectionPlan.slices[1].rect.height, 50.0));
+    assert(BarplotSelectedSliceCoversY(selectionPlan, 145.0));
+    assert(!BarplotSelectedSliceCoversY(selectionPlan, 45.0));
     assert(BuildBarplotSelectionSlicePlan(compositionRect,
                                          {1, 2, 3, 4},
                                          std::set<int>{9},
@@ -401,6 +422,7 @@ int main()
                                        paletteOrder,
                                        "yellow");
     assert(unselectedPlan.slices.empty());
+    assert(!BarplotSelectedSliceCoversY(unselectedPlan, 145.0));
     assert(unselectedPlan.backgroundSlices.size() == 1);
     assert(unselectedPlan.backgroundSlices[0].colorKey == "__default__");
 
@@ -516,13 +538,13 @@ int main()
     assert(BarplotWidthScaleLabel("proportional_n") == "proportional to N");
     assert(BarplotWidthScaleLabel("proportional_percent") == "proportional to % of total");
     assert(BarplotSegmentEncodingLabel(true, "pattern_only") == "solid color + border");
-    assert(BarplotSegmentEncodingLabel(false, "pattern_only") == "pattern only");
-    assert(BarplotSegmentEncodingLabel(false, "transparent_color_only") == "transparent color only");
-    assert(BarplotSegmentEncodingLabel(false, "transparent_color_pattern") == "transparent color + pattern");
+    assert(BarplotSegmentEncodingLabel(false, "pattern_only") == "transparent color");
+    assert(BarplotSegmentEncodingLabel(false, "transparent_color_only") == "transparent color");
+    assert(BarplotSegmentEncodingLabel(false, "transparent_color_pattern") == "transparent color");
     assert(BarplotSubtitle("overall_percent", "proportional_n", "gear", 20.0, "pattern_only") ==
            "Height: % of total | Width: proportional to N | Split: gear | Bar border: 12.0 px | Segment encoding: solid color + border");
     assert(BarplotSubtitle("count", "equal", "", 3.0, "transparent_color_only") ==
-           "Height: Counts | Width: equal | Split: none | Bar border: 3.0 px | Segment encoding: transparent color only");
+           "Height: Counts | Width: equal | Split: none | Bar border: 3.0 px | Segment encoding: transparent color");
     std::vector<rlispstat::core::BarplotAxisTick> countTicks = BarplotYAxisTicks(20.0, "count");
     assert(countTicks.size() == 5);
     assert(closeEnough(countTicks[2].value, 10.0));
@@ -575,7 +597,7 @@ int main()
         {"mpg", "cyl", "am", "gear"},
         {"cyl", "am"},
         "gear");
-    assert(splitMenuState.title == "Split Bars By");
+    assert(splitMenuState.title == "Split variable");
     assert(splitMenuState.emptyTitle == "No available variables");
     assert(!splitMenuState.noneOption.checked);
     assert(splitMenuState.splitOptions.size() == 2);
@@ -653,7 +675,7 @@ int main()
     assert(displayMenuState.rowColorsTitle == "Row Colors");
     assert(displayMenuState.segmentEncodingTitle == "Segment Encoding");
     assert(displayMenuState.selectionDisplayTitle == "Selection Display");
-    assert(displayMenuState.showSegmentEncodingMenu);
+    assert(!displayMenuState.showSegmentEncodingMenu);
     assert(displayMenuState.modeOptions[1].checked);
     assert(displayMenuState.widthOptions[1].checked);
     assert(displayMenuState.rowColorOptions[3].checked);
@@ -720,6 +742,19 @@ int main()
     assert(order[1] == 2);
     assert(order[2] == 1);
     assert(order[3] == 3);
+
+    PlotModel singleVariableOrder;
+    singleVariableOrder.kind = "barplot";
+    singleVariableOrder.xLabel = "cyl";
+    singleVariableOrder.barplotXVariables = {"cyl"};
+    for (const std::string &category : {"6", "4", "8"}) {
+        singleVariableOrder.barplotBins.emplace_back();
+        singleVariableOrder.barplotBins.back().category = category;
+    }
+    rlispstat::core::SortBarplotBinsByXHierarchy(singleVariableOrder);
+    assert(singleVariableOrder.barplotBins[0].category == "4");
+    assert(singleVariableOrder.barplotBins[1].category == "6");
+    assert(singleVariableOrder.barplotBins[2].category == "8");
 
     BarplotBuildInput build;
     build.xVariables = {"am", "cyl"};
@@ -937,6 +972,7 @@ int main()
     BarplotLayout coreBuiltLayout = BuildBarplotLayout(layoutInput);
     assert(coreBuiltLayout.nestingDepth == 2);
     assert(closeEnough(coreBuiltLayout.yMaximum, 2.0));
+    assert(BarplotBarRect(coreBuiltLayout, 0).y > coreBuiltLayout.plotRect.y);
     assert(coreBuiltLayout.widthMode == BarplotWidthMode::Equal);
     assert(coreBuiltLayout.values == std::vector<double>({2.0, 1.0, 1.0, 1.0}));
     assert(coreBuiltLayout.sharedPrefixDepthWithPrevious == std::vector<int>({0, 1, 0, 1}));
@@ -1005,6 +1041,8 @@ int main()
         splitTotals,
         true);
     assert(sideLabels.splitTitle == "Split: group");
+    assert(closeEnough(sideLabels.splitTitleRect.width,
+                       std::max(42.0, builtLayout.plotRect.x - 16.0)));
     assert(sideLabels.splitLabels.size() == 2);
     assert(sideLabels.splitLabels[0].label == "high");
     assert(sideLabels.splitLabels[1].label == "low");

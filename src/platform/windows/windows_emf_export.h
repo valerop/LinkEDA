@@ -16,6 +16,15 @@ bool CopyPlotAsEnhancedMetafile(
     const core::ExportDimensions &dimensions,
     std::string *error = nullptr);
 
+// Publishes a native Enhanced Metafile for Office together with the canonical
+// SVG payload. includeSvgText additionally exposes the SVG source as text.
+bool CopyPlotWithOfficeClipboardFormats(
+    const core::PlotModel &plot,
+    const core::ExportDimensions &dimensions,
+    const std::string &svg,
+    bool includeSvgText,
+    std::string *error = nullptr);
+
 // Uses the same portable VectorTableLayout consumed by macOS PDF/PNG and SVG.
 bool CopyTableAsEnhancedMetafile(
     const std::string &title,

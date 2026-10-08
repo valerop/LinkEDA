@@ -15,6 +15,8 @@ struct BinaryAPACoefficientRow {
     std::string sourceTerm;
     std::string factorLevel;
     std::string referenceLevel;
+    bool parent = false;
+    bool reference = false;
     double estimate = NAN;
     double stdError = NAN;
     double statistic = NAN;
@@ -30,6 +32,7 @@ struct BinaryAPAReportModel {
     bool logit = true;
     std::string defaultTitle;
     std::vector<BinaryAPACoefficientRow> coefficients;
+    // Retained as audit metadata; global tests are presented on parent rows.
     std::vector<BinaryTermTestRow> termTests;
     std::vector<std::string> warnings;
 };

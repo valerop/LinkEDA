@@ -35,6 +35,20 @@ std::size_t StringBytes(const std::string &value)
     return value.capacity();
 }
 
+std::vector<std::string> SplitTableRow(std::string const& line)
+{
+    std::vector<std::string> cells;
+    std::size_t start = 0;
+    while (true) {
+        const auto end = line.find('\t', start);
+        cells.push_back(line.substr(start, end == std::string::npos
+            ? std::string::npos : end - start));
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return cells;
+}
+
 std::size_t PlotMemoryBytes(const PlotModel &model)
 {
     std::size_t bytes = sizeof(model);
@@ -85,6 +99,7 @@ std::string SnapshotContentKindName(SnapshotContentKind kind)
     case SnapshotContentKind::DataTable: return "Data Table";
     case SnapshotContentKind::Trellis: return "Trellis";
     case SnapshotContentKind::ModelResult: return "Model Result";
+    case SnapshotContentKind::TextOutput: return "Text / Output";
     case SnapshotContentKind::OtherRenderable: return "Renderable Result";
     }
     return "Renderable Result";
@@ -108,14 +123,67 @@ std::size_t EstimateSnapshotMemoryBytes(const SnapshotItem &item)
     } else if (const auto *table = std::get_if<FrozenTableContent>(&item.renderable_content)) {
         bytes += StringBytes(table->tab_delimited_text) +
             table->column_widths.capacity() * sizeof(double);
+        for (auto const& header : table->column_headers) bytes += StringBytes(header);
+        for (auto const& row : table->rows) {
+            bytes += row.capacity() * sizeof(std::string);
+            for (auto const& cell : row) bytes += StringBytes(cell);
+        }
+    } else if (const auto *vector = std::get_if<FrozenSvgContent>(&item.renderable_content)) {
+        bytes += StringBytes(vector->svg);
     } else if (const auto *image = std::get_if<FrozenImageContent>(&item.renderable_content)) {
         bytes += image->png_data.capacity() * sizeof(unsigned char);
+    } else if (const auto *text = std::get_if<FrozenTextContent>(&item.renderable_content)) {
+        bytes += StringBytes(text->plain_text);
     }
     if (item.note) bytes += sizeof(WindowNote) + StringBytes(item.note->plain_text);
     bytes += item.stickers.capacity() * sizeof(WindowStickyNote);
     for (const WindowStickyNote &sticker : item.stickers)
         bytes += StringBytes(sticker.note_id) + StringBytes(sticker.plain_text);
     return bytes;
+}
+
+FrozenTableContent FrozenTableFromTabDelimited(std::string const& text)
+{
+    FrozenTableContent table;
+    table.tab_delimited_text = text;
+    std::size_t start = 0;
+    bool first = true;
+    while (start <= text.size()) {
+        const auto end = text.find('\n', start);
+        std::string line = text.substr(start, end == std::string::npos
+            ? std::string::npos : end - start);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (start == text.size() && line.empty()) break;
+        if (!line.empty() || !first) {
+            auto cells = SplitTableRow(line);
+            if (first) table.column_headers = std::move(cells);
+            else table.rows.push_back(std::move(cells));
+            first = false;
+        }
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    table.source_row_count = table.rows.size();
+    table.total_source_row_count = table.rows.size();
+    return table;
+}
+
+std::string FrozenTableToTabDelimited(FrozenTableContent const& table)
+{
+    if (!table.tab_delimited_text.empty()) return table.tab_delimited_text;
+    std::ostringstream output;
+    auto append = [&](std::vector<std::string> const& row) {
+        for (std::size_t column = 0; column < row.size(); ++column) {
+            if (column) output << '\t';
+            output << row[column];
+        }
+    };
+    append(table.column_headers);
+    for (auto const& row : table.rows) {
+        output << '\n';
+        append(row);
+    }
+    return output.str();
 }
 
 const std::vector<SnapshotItem> &SnapshotAlbum::items() const { return items_; }

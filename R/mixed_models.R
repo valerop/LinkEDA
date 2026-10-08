@@ -37,6 +37,7 @@
   if (grepl(":", term, fixed = TRUE)) {
     return(paste(vapply(strsplit(term, ":", fixed = TRUE)[[1L]], .rls_mixed_term_expr, character(1L)), collapse = ":"))
   }
+  if (!is.null(.rls_model_polynomial_term(term))) return(term)
   if (identical(term, "1") || identical(term, "0")) return(term)
   if (grepl("^factor\\(([^()]+)\\)$", term)) {
     variable <- .rls_model_clean_factor_call(term)
@@ -60,7 +61,7 @@
   observed <- x[!is.na(x)]
   n_levels <- length(unique(observed))
   if (n_levels < 2L) {
-    stop(sprintf("Grouping variable `%s` has fewer than 2 observed levels.", group), call. = FALSE)
+    stop(sprintf("Grouping variable `%s` has fewer than 2 observed categories.", group), call. = FALSE)
   }
   if (is.numeric(x) && n_levels > max(20L, ceiling(length(observed) / 4))) {
     stop(sprintf("Variable '%s' is numeric with many unique values. Treat it as categorical or choose another grouping variable.", group), call. = FALSE)
@@ -146,13 +147,13 @@
     levels <- length(unique(data[[spec$group]][!is.na(data[[spec$group]])]))
     if (levels < 2L) {
       stop(sprintf(
-        "Grouping variable '%s' has only one observed level after missing-value filtering.",
+        "Grouping variable '%s' has only one observed category after missing-value filtering.",
         spec$group
       ), call. = FALSE)
     }
     if (levels < 3L) {
       warnings <- c(warnings, sprintf(
-        "Grouping variable '%s' has fewer than 3 levels. Random-effect estimates may be unstable.",
+        "Grouping variable '%s' has fewer than 3 categories. Random-effect estimates may be unstable.",
         spec$group
       ))
     }
@@ -197,7 +198,8 @@
     statistic = unname(statistic),
     df = unname(df),
     p_value = unname(p_value),
-    partial_r2 = NA_real_,
+    partial_r = NA_real_,
+    delta_r2 = NA_real_,
     stringsAsFactors = FALSE
   )
   rows <- .rls_model_coefficient_display_rows(
@@ -351,6 +353,9 @@
   } else {
     dataset <- .rls_dataset_record(data)
   }
+  captured_scope <- .rls_capture_analysis_scope(dataset, scope, .selected_rows)
+  scope <- captured_scope$fit_scope
+  .selected_rows <- captured_scope$rows
   response <- response %||% names(dataset$data)[[1L]]
   response <- .rls_model_validate_response(dataset$data, response, "response")
   fixed <- .rls_mixed_validate_fixed(dataset$data, fixed, response)
@@ -374,6 +379,8 @@
     link = link,
     method = method,
     scope = scope,
+    data_scope = captured_scope,
+    scope_request_pending = TRUE,
     selected_rows = if (!is.null(.selected_rows)) as.integer(.selected_rows) else
       if (scope != "all") ls_selected(dataset$group) else integer(),
     model_object = NULL,
@@ -421,11 +428,11 @@
     return(out)
   }
   type_for <- function(row_type, term_type) {
-    if (identical(row_type, "factor_parent")) return("Factor")
+    if (identical(row_type, "factor_parent")) return("Categorical")
     if (identical(row_type, "term_parent")) return("Term")
     if (identical(row_type, "coefficient") && identical(term_type, "numeric")) return("Numeric")
     if (identical(row_type, "coefficient") && identical(term_type, "intercept")) return(.rls_em_dash)
-    if (identical(row_type, "coefficient") && identical(term_type, "factor")) return("Factor")
+    if (identical(row_type, "coefficient") && identical(term_type, "factor")) return("Categorical")
     ""
   }
   value_or_dash <- function(row, name, digits = 3L) {
@@ -485,7 +492,7 @@
 
 .rls_mixed_group_fit_value <- function(record) {
   if (!nrow(record$group_summary)) return(.rls_em_dash)
-  paste0(record$group_summary$group, ": ", record$group_summary$levels, " levels", collapse = "; ")
+  paste0(record$group_summary$group, ": ", record$group_summary$levels, " categories", collapse = "; ")
 }
 
 .rls_mixed_fit_display <- function(record) {
@@ -573,7 +580,7 @@
   )
   if (!is.null(table$method)) header <- c(header, paste("Estimation:", table$method))
   if (!is.null(table$family)) {
-    header <- c(header, paste("Family:", table$family), paste("Link:", table$link))
+    header <- c(header, paste("Distribution:", table$family), paste("Link:", table$link))
   }
   blocks <- list(
     c(header, ""),
@@ -604,7 +611,7 @@
     paste("Scope:", table$scope)
   )
   if (!is.null(table$method)) header <- c(header, paste("Estimation:", table$method))
-  if (!is.null(table$family)) header <- c(header, paste("Family:", table$family), paste("Link:", table$link))
+  if (!is.null(table$family)) header <- c(header, paste("Distribution:", table$family), paste("Link:", table$link))
   blocks <- list(
     c(header, ""),
     "Fixed effects",
@@ -636,7 +643,7 @@
   )
   if (!is.null(table$method)) header <- c(header, paste0("Estimation: `", .rls_markdown_escape(table$method), "`"))
   if (!is.null(table$family)) {
-    header <- c(header, paste0("Family: `", .rls_markdown_escape(table$family), "`"),
+    header <- c(header, paste0("Distribution: `", .rls_markdown_escape(table$family), "`"),
                 paste0("Link: `", .rls_markdown_escape(table$link), "`"))
   }
   out <- c(
@@ -691,12 +698,7 @@
 .rls_mixed_sync_native <- function(record) {
   .rls_start_backend()
   dataset <- .rls_dataset_record(record$group)
-  try(.rls_send(c(
-    "REGISTER_DATASET",
-    record$group,
-    .rls_variable_payload(record$data, dataset$variable_metadata),
-    .rls_dataframe_payload(record$data, dataset$variable_metadata, dataset_record = dataset)
-  )), silent = TRUE)
+  try(.rls_register_native_dataset_if_needed(dataset, visible = TRUE), silent = TRUE)
   text <- .rls_render_mixed_model_native_text(.rls_mixed_model_table(record))
   lines <- strsplit(text, "\n", fixed = TRUE)[[1L]]
   random_payload <- unlist(lapply(record$random_effects, function(spec) {
@@ -726,6 +728,7 @@
 }
 
 .rls_mixed_refit_record <- function(record) {
+  record <- .rls_apply_scope_to_model_request(record, .rls_dataset_record(record$group))
   record$formula <- .rls_mixed_formula_string(record$response, record$fixed_effects, record$random_effects)
   if (identical(record$model_type, "generalized_linear_mixed_model")) {
     .rls_fit_generalized_mixed_model_record(record)
@@ -974,6 +977,11 @@ ls_mixed_model_scope <- function(model, scope = c("all", "selected", "unselected
                                  refit = TRUE, native = isTRUE(.rls_state$process_started)) {
   scope <- match.arg(scope)
   record <- .rls_mixed_model_record(model)
+  if (isTRUE(.rls_state$process_started)) {
+    if(scope=="all") ls_use_all_observations(record$group)
+    else if(scope=="selected") ls_use_selected_as_analysis_scope(record$group)
+    else .rls_send(c("SET_ANALYSIS_SCOPE_UNSELECTED",record$group))
+  }
   record$scope <- scope
   invisible(.rls_mixed_update_handle(record, refit = refit, native = native))
 }

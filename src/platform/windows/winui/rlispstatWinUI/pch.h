@@ -15,6 +15,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.ApplicationModel.Activation.h>
 #include <winrt/Microsoft.UI.Composition.h>
+#include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
@@ -25,9 +26,15 @@
 #include <winrt/Microsoft.UI.Xaml.Media.h>
 #include <winrt/Microsoft.UI.Xaml.Navigation.h>
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
+#include <winrt/Microsoft.Web.WebView2.Core.h>
 #include <winrt/Microsoft.UI.Dispatching.h>
+#include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Windows.Networking.Sockets.h>
+#include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.h>
+#include <winrt/Windows.UI.Core.h>
+#include <winrt/Windows.UI.Input.h>
 #include <winrt/Windows.UI.Text.h>
 #include <wil/cppwinrt_helpers.h>

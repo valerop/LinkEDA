@@ -4,10 +4,20 @@
 \alias{ls_compare_binary_regression_models}
 \title{Compare stored Binary Regression models}
 \usage{
-ls_compare_binary_regression_models(...)
+ls_compare_binary_regression_models(...,
+  native = isTRUE(.rls_state$process_started), .native_id = NULL,
+  .native_labels = NULL, .native_generation = 0L,
+  .native_specification_revisions = integer(),
+  .native_specification_fingerprints = character())
 }
 \arguments{
 \item{...}{Binary Regression model handles, or one list of handles.}
+
+\item{native}{Logical; open the native Windows comparison window.}
+
+\item{.native_id, .native_labels, .native_generation,
+.native_specification_revisions, .native_specification_fingerprints}{Internal
+immutable native-window identity and model-specification metadata.}
 }
 \value{
 A comparison object with \code{models} and adjacent \code{tests} data frames.

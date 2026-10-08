@@ -22,6 +22,7 @@
   record$diagnostics <- data.frame()
   record$diagnostics_version <- record$diagnostics_version + 1L
   record$status <- status
+  .rls_glm_mark_diagnostic_plots_stale(record$id)
   .rls_spreadplot_emit(
     "GLM_SPEC_CHANGED",
     group = record$group,
@@ -32,7 +33,19 @@
   record
 }
 
-.rls_glm_notify_diagnostic_plots <- function(record) {
+.rls_glm_mark_diagnostic_plots_stale <- function(model_id) {
+  ids <- ls(.rls_state$glm_diagnostic_plots, all.names = TRUE)
+  for (id in ids) {
+    plot <- get(id, envir = .rls_state$glm_diagnostic_plots)
+    if (!identical(plot$model_id, model_id)) next
+    plot$is_stale <- TRUE
+    plot$data <- data.frame()
+    assign(id, plot, envir = .rls_state$glm_diagnostic_plots)
+  }
+  invisible(TRUE)
+}
+
+.rls_glm_refresh_diagnostic_plots <- function(record) {
   ids <- ls(.rls_state$glm_diagnostic_plots, all.names = TRUE)
   for (id in ids) {
     plot <- get(id, envir = .rls_state$glm_diagnostic_plots)
@@ -40,10 +53,19 @@
       plot$displayed_fit_version <- record$fit_version
       plot$displayed_diagnostics_version <- record$diagnostics_version
       plot$is_stale <- FALSE
-      plot$data <- record$diagnostics
+      plot$data <- if (isTRUE(plot$type %in% c(
+          "observed_predicted_score_distribution",
+          "observed_predicted_distribution", "boundary_zero_fit"))) {
+        record$summary$observed_predicted_distribution %||% data.frame()
+      } else record$diagnostics
       assign(id, plot, envir = .rls_state$glm_diagnostic_plots)
     }
   }
+  invisible(TRUE)
+}
+
+.rls_glm_notify_diagnostic_plots <- function(record) {
+  .rls_glm_refresh_diagnostic_plots(record)
   .rls_spreadplot_emit(
     "GLM_DIAGNOSTICS_UPDATED",
     group = record$group,
@@ -55,12 +77,12 @@
   invisible(TRUE)
 }
 
-.rls_validate_glm_variable <- function(record, variable, role) {
+.rls_validate_glm_variable <- function(record, variable, role, numeric_only = TRUE) {
   variable <- .rls_validate_protocol_name(variable, role)
   if (!variable %in% names(record$data)) {
     stop(sprintf("Column `%s` was not found in the dataset.", variable), call. = FALSE)
   }
-  if (!is.numeric(record$data[[variable]])) {
+  if (numeric_only && !is.numeric(record$data[[variable]])) {
     stop(sprintf("`%s` must be numeric for this GLM phase.", variable), call. = FALSE)
   }
   variable
@@ -71,7 +93,26 @@
 }
 
 .rls_glm_data_for_fit <- function(record) {
-  .rls_model_data_for_term_types(record$data, record$term_types %||% list(), response = record$dependent)
+  data <- .rls_model_data_for_term_types(
+    record$data, record$term_types %||% list(), response = record$dependent
+  )
+  .rls_glm_apply_factor_references(data, record$factor_reference_levels %||% list())
+}
+
+.rls_glm_apply_factor_references <- function(data, references = list()) {
+  references <- references %||% list()
+  if (!length(references)) return(data)
+  for (variable in intersect(names(references), names(data))) {
+    reference <- as.character(references[[variable]])[[1L]]
+    values <- data[[variable]]
+    if (!is.factor(values) || is.ordered(values)) {
+      values <- .rls_model_factor_interpretation(values)
+    }
+    if (nzchar(reference) && reference %in% levels(values)) {
+      data[[variable]] <- stats::relevel(values, ref = reference)
+    }
+  }
+  data
 }
 
 .rls_glm_complete_data <- function(record) {
@@ -81,6 +122,22 @@
     record$scope %||% "all",
     record$selected_rows %||% integer()
   )
+}
+
+.rls_glm_center_complete_data <- function(complete, centered_predictors = character()) {
+  centered_predictors <- unique(as.character(centered_predictors %||% character()))
+  centered_predictors <- intersect(centered_predictors, names(complete$data))
+  centers <- numeric()
+  for (variable in centered_predictors) {
+    values <- complete$data[[variable]]
+    if (!is.numeric(values)) next
+    center <- mean(values, na.rm = TRUE)
+    if (!is.finite(center)) next
+    complete$data[[variable]] <- values - center
+    centers[[variable]] <- center
+  }
+  complete$predictor_centers <- centers
+  complete
 }
 
 .rls_compute_glm_diagnostics <- function(record, fit, complete) {
@@ -111,12 +168,43 @@
   coef_matrix <- as.data.frame(unclass(summary_fit$coefficients), stringsAsFactors = FALSE)
   names(coef_matrix) <- c("estimate", "std_error", "t_value", "p_value")
   coef_matrix$term <- rownames(summary_fit$coefficients)
-  coef_matrix$partial_r2 <- NA_real_
   df_resid <- stats::df.residual(fit)
   non_intercept <- coef_matrix$term != "(Intercept)"
-  coef_matrix$partial_r2[non_intercept] <-
-    coef_matrix$t_value[non_intercept]^2 / (coef_matrix$t_value[non_intercept]^2 + df_resid)
-  coef_matrix <- coef_matrix[, c("term", "estimate", "std_error", "t_value", "p_value", "partial_r2")]
+  coef_matrix$partial_r <- NA_real_
+  coef_matrix$partial_r[non_intercept] <- .rls_model_partial_r(
+    coef_matrix$t_value[non_intercept], df_resid
+  )
+  # Standardize only an ordinary numeric main effect, using exactly the
+  # observations in this fitted model. MI coefficient rows deliberately stay
+  # unavailable: a pooled standardized effect needs its own estimand.
+  coef_matrix$standardized_beta <- NA_real_
+  model_data <- stats::model.frame(fit)
+  outcome_sd <- stats::sd(stats::model.response(model_data))
+  term_delta_r2 <- .rls_model_term_delta_r2(fit)
+  coef_matrix$delta_r2 <- NA_real_
+  mm <- stats::model.matrix(fit)
+  assignment <- attr(mm, "assign")
+  term_labels <- attr(stats::terms(fit), "term.labels")
+  for (term_index in seq_along(term_labels)) {
+    term_label <- term_labels[[term_index]]
+    columns <- colnames(mm)[assignment == term_index]
+    if (length(columns) == 1L &&
+        length(.rls_model_interaction_parts(term_label)) < 2L &&
+        !identical(.rls_model_semantic_term_type(record$data, term_label, fit$xlevels), "factor")) {
+      row <- match(columns[[1L]], coef_matrix$term)
+      if (!is.na(row)) coef_matrix$delta_r2[[row]] <- term_delta_r2[[term_label]] %||% NA_real_
+      if (!is.na(row) && term_label %in% names(model_data) &&
+          is.numeric(model_data[[term_label]]) && is.finite(outcome_sd) &&
+          outcome_sd > 0) {
+        predictor_sd <- stats::sd(model_data[[term_label]])
+        if (is.finite(predictor_sd) && predictor_sd > 0) {
+          coef_matrix$standardized_beta[[row]] <-
+            coef_matrix$estimate[[row]] * predictor_sd / outcome_sd
+        }
+      }
+    }
+  }
+  coef_matrix <- coef_matrix[, c("term", "estimate", "std_error", "t_value", "p_value", "partial_r", "standardized_beta", "delta_r2")]
   rownames(coef_matrix) <- NULL
 
   fstat <- summary_fit$fstatistic
@@ -136,16 +224,31 @@
   ss_regression <- ss_total - ss_residual
   ms_regression <- if (df_model > 0) ss_regression / df_model else NA_real_
   ms_residual <- if (df_resid > 0) ss_residual / df_resid else NA_real_
+  term_tests <- .rls_model_term_omnibus_tests(
+    fit, term_labels, test = "wald_f"
+  )
+  parent_test_terms <- .rls_model_parent_test_terms(fit, record$data)
+  parent_term_tests <- term_tests[vapply(term_tests$term, function(term) {
+    any(vapply(parent_test_terms, .rls_model_terms_equivalent, logical(1L),
+               b = term))
+  }, logical(1L)), , drop = FALSE]
+  coefficient_rows <- .rls_model_coefficient_display_rows(
+    fit,
+    transform(coef_matrix, statistic = t_value),
+    record$data,
+    record$predictors,
+    statistic_name = "t",
+    term_delta_r2 = term_delta_r2
+  )
+  coefficient_rows <- .rls_model_apply_parent_term_tests(
+    coefficient_rows, parent_term_tests
+  )
   list(
     fit = fit,
     coefficients = coef_matrix,
-    coefficient_rows = .rls_model_coefficient_display_rows(
-      fit,
-      transform(coef_matrix, statistic = t_value),
-      record$data,
-      record$predictors,
-      statistic_name = "t"
-    ),
+    coefficient_rows = coefficient_rows,
+    parent_term_tests = parent_term_tests,
+    term_tests = .rls_as_global_term_tests(term_tests),
     summary = list(
       n_used = length(complete$rows),
       n_excluded = complete$excluded,
@@ -166,6 +269,7 @@
     ),
     rows_used = complete$rows,
     rows_excluded = setdiff(seq_len(nrow(record$data)), complete$rows),
+    predictor_centers = complete$predictor_centers %||% numeric(),
     diagnostics = .rls_compute_glm_diagnostics(record, fit, complete),
     status = sprintf("Model fitted successfully; %d rows used, %d excluded.", length(complete$rows), complete$excluded)
   )
@@ -200,10 +304,18 @@ ls_new_glm <- function(group = NULL) {
     multiple_imputation = NULL,
     coefficient_rows = data.frame(),
     term_types = list(),
+    centered_predictors = character(),
+    factor_reference_levels = list(),
     selected_rows = integer(),
     model_version = 0L,
     fit_version = 0L,
     diagnostics_version = 0L,
+    # Models created from R do not publish every intermediate fit until a
+    # native window has actually been opened.  Native-originated fit requests
+    # temporarily disable this flag and publish one compact MODEL_UPDATE after
+    # the calculation, avoiding a redundant dataset registration and
+    # MODEL_OPEN_POOLED round trip.
+    native_sync_enabled = FALSE,
     is_stale = TRUE,
     status = "Add at least one independent variable."
   )
@@ -236,17 +348,14 @@ ls_glm_window <- function(group = NULL) {
       warning("Add at least one independent variable before opening the pooled MI General Linear Model table.", call. = FALSE)
       return(model)
     }
+    model_record$native_sync_enabled <- TRUE
+    model <- .rls_assign_glm_model(model_record)
     .rls_glm_sync_native_pooled(model_record)
     return(model)
   }
   numeric <- .rls_numeric_variable_names(record$data, record$variable_metadata)
   .rls_start_backend()
-  .rls_send(c(
-    "REGISTER_DATASET",
-    record$group,
-    .rls_variable_payload(record$data, record$variable_metadata),
-    .rls_dataframe_payload(record$data, record$variable_metadata, dataset_record = record)
-  ))
+  .rls_register_native_dataset_if_needed(record, visible = TRUE)
   opened <- try(.rls_send(c("MODEL_OPEN", record$group)), silent = TRUE)
   if (inherits(opened, "try-error") && length(numeric) >= 2L) {
     plot <- ls_new_scatterplot(record$group, x = numeric[[2L]], y = numeric[[1L]])
@@ -267,7 +376,22 @@ ls_glm_set_dependent <- function(model, variable) {
   variable <- .rls_model_validate_response(record$data, variable, "variable")
   old <- record$dependent
   record$dependent <- variable
-  record$predictors <- setdiff(record$predictors, variable)
+  # A response cannot remain anywhere in the model's right-hand side.  Remove
+  # both the direct term and every interaction containing it, then prune all
+  # model-local interpretation metadata for the removed variable.
+  record$predictors <- .rls_model_remove_hierarchical_term(record$predictors, variable)
+  remove_named_term_state <- function(values) {
+    if (is.null(values) || !length(values) || is.null(names(values))) return(values)
+    keep <- !vapply(names(values), function(term) {
+      variable %in% .rls_model_interaction_parts(term)
+    }, logical(1L))
+    values[keep]
+  }
+  record$term_types <- remove_named_term_state(record$term_types)
+  record$factor_reference_levels <- remove_named_term_state(record$factor_reference_levels)
+  record$centered_predictors <- .rls_model_remove_hierarchical_term(
+    record$centered_predictors %||% character(), variable
+  )
   record <- .rls_glm_mark_model_changed(record)
   .rls_spreadplot_emit(
     "GLM_DEPENDENT_CHANGED",
@@ -313,8 +437,8 @@ ls_glm_add_predictor <- function(model, variable) {
 #' @export
 ls_glm_add_interaction <- function(model, var1, var2) {
   record <- .rls_glm_model_record(model)
-  var1 <- .rls_validate_glm_variable(record, var1, "var1")
-  var2 <- .rls_validate_glm_variable(record, var2, "var2")
+  var1 <- .rls_validate_glm_variable(record, var1, "var1", numeric_only = FALSE)
+  var2 <- .rls_validate_glm_variable(record, var2, "var2", numeric_only = FALSE)
   term <- paste(var1, var2, sep = ":")
   predictors <- .rls_model_add_hierarchical_term(record$predictors, record$data, term, response = record$dependent)
   if (!identical(predictors, record$predictors)) {
@@ -331,12 +455,13 @@ ls_glm_add_interaction <- function(model, var1, var2) {
 ls_glm_add_polynomial <- function(model, variable, degree = 2) {
   record <- .rls_glm_model_record(model)
   variable <- .rls_validate_glm_variable(record, variable, "variable")
-  if (!is.numeric(degree) || length(degree) != 1L || is.na(degree) || degree < 2) {
-    stop("`degree` must be a single number >= 2.", call. = FALSE)
+  if (!is.numeric(degree) || length(degree) != 1L || !is.finite(degree) || degree != trunc(degree) || degree < 2 || degree > 99) {
+    stop("`degree` must be a whole number from 2 to 99.", call. = FALSE)
   }
-  term <- sprintf("I(%s^%d)", variable, as.integer(degree))
-  if (!term %in% record$predictors) {
-    record$predictors <- c(record$predictors, term)
+  term <- .rls_model_polynomial_expr(variable, degree)
+  predictors <- .rls_model_add_hierarchical_term(record$predictors, record$data, term, record$dependent)
+  if (!identical(predictors, record$predictors)) {
+    record$predictors <- predictors
     record <- .rls_glm_mark_model_changed(record)
   } else {
     record$status <- "Model unchanged."
@@ -393,7 +518,11 @@ ls_glm_fit <- function(model) {
     stop("Add at least one independent variable before fitting.", call. = FALSE)
   }
   dataset <- .rls_dataset_record(record$group)
+  record <- .rls_apply_scope_to_model_request(record, dataset)
   record$analysis_backend <- .rls_analysis_backend(dataset, "linear_model")
+  executed_r_code <- .rls_linear_executed_r_code(
+    record, identical(record$analysis_backend, "multiple_imputation")
+  )
   .rls_spreadplot_emit("GLM_REFIT_REQUESTED", group = record$group, sender_id = record$id, model_id = record$id)
   if (identical(record$analysis_backend, "multiple_imputation")) {
     extracted <- .rls_mi_fit_linear_model_record(record)
@@ -401,13 +530,33 @@ ls_glm_fit <- function(model) {
     fit_record <- record
     fit_record$data <- .rls_glm_data_for_fit(record)
     complete <- .rls_glm_complete_data(fit_record)
+    complete <- .rls_glm_center_complete_data(complete, record$centered_predictors)
     if (nrow(complete$data) <= length(record$predictors) + 1L) {
       stop("Not enough complete cases to fit the model.", call. = FALSE)
     }
-    fit <- stats::lm(.rls_glm_formula_object(fit_record), data = complete$data)
+    fit <- stats::lm(
+      .rls_glm_formula_object(fit_record), data = complete$data,
+      na.action = stats::na.fail
+    )
     extracted <- .rls_glm_extract_fit(fit_record, fit, complete)
   }
   record[names(extracted)] <- extracted
+  verification <- .rls_linear_verification_r_code(
+    record, identical(record$analysis_backend, "multiple_imputation")
+  )
+  record <- .rls_attach_analysis_provenance(
+    record,
+    executed_r_code,
+    title = if (identical(record$analysis_backend, "multiple_imputation")) {
+      "Linear Model \u2014 Multiple Imputation"
+    } else "Linear Model",
+    output_code = .rls_linear_output_r_code(
+      identical(record$analysis_backend, "multiple_imputation")
+    ),
+    verification_code = list(model = verification$code),
+    verification_variables = verification$variables,
+    verification_warnings = verification$warnings
+  )
   record$fit_version <- record$fit_version + 1L
   record$diagnostics_version <- record$diagnostics_version + 1L
   record$is_stale <- FALSE
@@ -421,7 +570,9 @@ ls_glm_fit <- function(model) {
     payload = list(fit_version = record$fit_version, diagnostics_version = record$diagnostics_version)
   )
   .rls_glm_notify_diagnostic_plots(record)
-  if (identical(record$analysis_backend, "multiple_imputation") && isTRUE(.rls_state$process_started)) {
+  if (isTRUE(record$native_sync_enabled) &&
+      identical(record$analysis_backend, "multiple_imputation") &&
+      isTRUE(.rls_state$process_started)) {
     try(.rls_glm_sync_native_pooled(record), silent = TRUE)
   }
   handle
@@ -453,9 +604,25 @@ ls_glm_fit_summary <- function(model) {
 
 #' @rdname ls_glm_set_dependent
 #' @export
-ls_glm_partial_r2 <- function(model) {
+ls_glm_partial_r <- function(model) {
   coefs <- ls_glm_coefficients(model)
-  stats::setNames(coefs$partial_r2, coefs$term)
+  stats::setNames(coefs$partial_r, coefs$term)
+}
+
+#' @rdname ls_glm_set_dependent
+#' @export
+ls_glm_delta_r2 <- function(model) {
+  rows <- ls_glm_coefficient_rows(model)
+  values <- rows$delta_r2
+  names(values) <- rows$term
+  values[is.finite(values)]
+}
+
+#' @rdname ls_glm_set_dependent
+#' @export
+ls_glm_partial_r2 <- function(model) {
+  partial <- ls_glm_partial_r(model)
+  partial^2
 }
 
 #' @rdname ls_glm_set_dependent
@@ -492,16 +659,27 @@ ls_glm_refresh_diagnostics <- function(model) {
 
 #' @rdname ls_glm_set_dependent
 #' @export
-ls_glm_open_diagnostic <- function(model, type = c("residuals_vs_fitted", "observed_vs_fitted",
-                                                   "residuals_fitted", "observed_fitted"),
+ls_glm_open_diagnostic <- function(model, type = c("observed_vs_fitted", "residuals_vs_fitted",
+                                                   "residual_histogram", "normal_qq",
+                                                   "scale_location", "residuals_leverage",
+                                                   "cooks_distance", "observed_fitted",
+                                                   "residuals_fitted",
+                                                   "observed_predicted_score_distribution"),
                                    native = isTRUE(.rls_state$process_started)) {
   type <- match.arg(type)
   native_type <- switch(
     type,
     residuals_vs_fitted = "residuals_fitted",
     observed_vs_fitted = "observed_fitted",
+    residual_histogram = "residual_histogram",
+    normal_qq = "normal_qq",
+    scale_location = "scale_location",
+    residuals_leverage = "residuals_leverage",
+    cooks_distance = "cooks_distance",
     residuals_fitted = "residuals_fitted",
-    observed_fitted = "observed_fitted"
+    observed_fitted = "observed_fitted",
+    observed_predicted_score_distribution =
+      "observed_predicted_score_distribution"
   )
   record <- .rls_glm_model_record(model)
   if (is.null(record$fit)) record <- .rls_glm_model_record(ls_glm_fit(model))
@@ -518,7 +696,9 @@ ls_glm_open_diagnostic <- function(model, type = c("residuals_vs_fitted", "obser
     displayed_fit_version = record$fit_version,
     displayed_diagnostics_version = record$diagnostics_version,
     is_stale = FALSE,
-    data = record$diagnostics
+    data = if (identical(type, "observed_predicted_score_distribution"))
+      record$summary$observed_predicted_distribution %||% data.frame()
+    else record$diagnostics
   )
   .rls_spreadplot_register(
     id,
@@ -537,7 +717,10 @@ ls_glm_open_diagnostic <- function(model, type = c("residuals_vs_fitted", "obser
 }
 
 .rls_open_native_glm_diagnostic <- function(record, native_type) {
-  if (!native_type %in% c("residuals_fitted", "observed_fitted")) {
+  if (!native_type %in% c("observed_fitted", "residuals_fitted",
+                          "residual_histogram", "normal_qq", "scale_location",
+                          "residuals_leverage", "cooks_distance",
+                          "observed_predicted_score_distribution")) {
     stop(sprintf("Diagnostic `%s` is not available for the native linear model.", native_type), call. = FALSE)
   }
   if (!length(record$predictors)) {
@@ -545,12 +728,7 @@ ls_glm_open_diagnostic <- function(model, type = c("residuals_vs_fitted", "obser
   }
   .rls_start_backend()
   dataset <- .rls_dataset_record(record$group)
-  .rls_send(c(
-    "REGISTER_DATASET",
-    record$group,
-    .rls_variable_payload(record$data, dataset$variable_metadata),
-    .rls_dataframe_payload(record$data, dataset$variable_metadata, dataset_record = dataset)
-  ))
+  .rls_register_native_dataset_if_needed(dataset, record$data, visible = TRUE)
   plots <- try(ls_plots(), silent = TRUE)
   group_has_plot <- !inherits(plots, "try-error") && nrow(plots) > 0L && any(plots$group == record$group)
   if (!group_has_plot) {

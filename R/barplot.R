@@ -223,8 +223,8 @@
 
 .rls_default_barplot_visual_state <- function(y_levels,
                                               default_segment_alpha = 0.70,
-                                              show_patterns = TRUE,
-                                              segment_encoding_mode = "transparent_color_pattern") {
+                                              show_patterns = FALSE,
+                                              segment_encoding_mode = "transparent_color_only") {
   palette <- c("white")
   patterns <- c("diagonal_slash", "dots", "crosshatch", "vertical", "horizontal", "diagonal_backslash")
   if (!length(y_levels)) {
@@ -430,6 +430,7 @@ ls_new_barplot <- function(data = NULL, x = NULL, y = NULL,
                            sort_y = FALSE,
                            name = NULL) {
   group <- NULL
+  record <- NULL
   if (is.null(data) || (is.character(data) && length(data) == 1L && data %in% ls(envir = .rls_state$datasets))) {
     record <- .rls_dataset_record(data)
     data <- record$data
@@ -439,6 +440,16 @@ ls_new_barplot <- function(data = NULL, x = NULL, y = NULL,
   }
   if (is.null(x)) {
     x <- names(data)[[1L]]
+  }
+  if (!is.null(record)) {
+    .rls_mi_warn_current_version(record, "Bar chart")
+    if (is.null(name) && identical(record$dataset_type %||% "data_frame", "multiple_imputation")) {
+      name <- paste(
+        if (is.null(y)) paste("Bar chart of", paste(x, collapse = " + "))
+        else paste("Bar chart of", paste(x, collapse = " + "), "by", y),
+        .rls_mi_title_suffix(record)
+      )
+    }
   }
   ls_barplot(
     data = data, x = x, y = y, group = group, mode = mode, bar_width = bar_width,

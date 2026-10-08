@@ -40,7 +40,13 @@ int main()
             "transmission", "2", "manual", "auto",
             "DATAMETA", "2",
             "mpg", EncodeCommandField("Miles|per\tgallon"), EncodeCommandField("desc\nline"), "2",
-            "transmission", "", "NA", "-1"
+            "transmission", "", "NA", "-1",
+            "DATATYPEMETA", "2",
+            "mpg", "numeric", EncodeCommandField("integer"), "0", "factor",
+            "2", EncodeCommandField("Slow"), EncodeCommandField("Fast"),
+            "2", EncodeCommandField("Slow"), "0", EncodeCommandField("Fast"), "1",
+            "transmission", "factor", EncodeCommandField("logical"), "1", "",
+            "2", EncodeCommandField("manual"), EncodeCommandField("auto"), "0"
         };
         std::size_t cursor = 0;
         DataFrameModel df;
@@ -60,15 +66,21 @@ int main()
         assert(mpg->displayName == "Miles|per\tgallon");
         assert(mpg->description == "desc\nline");
         assert(mpg->decimals == 2);
+        assert(mpg->storageType == "integer");
+        assert(mpg->reversibleCategoryType == "factor");
+        assert((mpg->reversibleFactorLevels == std::vector<std::string>{"Slow", "Fast"}));
+        assert(mpg->numericMapping.at("Slow") == "0");
         assert(mpg->displayValues.size() == 2);
         assert(mpg->displayValues[0] == "21.0");
         assert(DisplayValueForDataFrameCell(df, *mpg, 0) == "21.0");
 
         const DataColumn *transmission = FindDataColumnInDataFrame(df, "transmission");
         assert(transmission != nullptr);
-        assert(transmission->type == "character");
+        assert(transmission->type == "factor");
         assert(transmission->displayName == "transmission");
         assert(transmission->description.empty());
+        assert(transmission->storageType == "logical");
+        assert(transmission->binary);
         assert((transmission->definedLevels == std::vector<std::string>{"manual", "auto"}));
     }
 
@@ -142,6 +154,48 @@ int main()
     }
 
     {
+        std::vector<std::string> lines = {
+            "DATAFRAME", "2", "1",
+            "score", "numeric", "4", "8",
+            "DATAPROVENANCE_V1",
+            "7", "recorded", "64617461203c2d206d7463617273", "R environment",
+            "2", "scores:row:10", "scores:row:20",
+            "1",
+            "scores:transformation:1", "Recode score", "recorded",
+            "646174612473636f7265203c2d20646174612473636f7265202a2032",
+            "1", "scores@6",
+            "1", "score",
+            "1", "score",
+            "2", "scores:row:10", "scores:row:20"
+        };
+        std::size_t cursor = 0;
+        DataFrameModel df;
+        bool parsed = false;
+        std::string error;
+        assert(ParseDataFramePayload(lines, cursor, "scores", df, &parsed, error));
+        assert(parsed);
+        assert(cursor == lines.size());
+        assert(error.empty());
+        assert(df.dataVersion == 7);
+        assert(df.provenance.origin == rlispstat::core::RCodeOrigin::Recorded);
+        assert(df.provenance.originCode == "data <- mtcars");
+        assert(df.provenance.originDescription == "R environment");
+        assert((df.stableRowIds == std::vector<std::string>{
+            "scores:row:10", "scores:row:20"}));
+        assert(df.provenance.currentVersion.datasetId == "scores");
+        assert(df.provenance.currentVersion.version == 7);
+        assert(df.provenance.history.size() == 1);
+        const auto &step = df.provenance.history.front();
+        assert(step.id == "scores:transformation:1");
+        assert(step.rCode == "data$score <- data$score * 2");
+        assert((step.parentVersionKeys == std::vector<std::string>{"scores@6"}));
+        assert((step.inputColumns == std::vector<std::string>{"score"}));
+        assert((step.outputColumns == std::vector<std::string>{"score"}));
+        assert((df.provenance.columnSteps.at("score") ==
+                std::vector<std::string>{"scores:transformation:1"}));
+    }
+
+    {
         DataFrameModel df;
         df.group = "imp data";
         df.rows = 2;
@@ -166,8 +220,74 @@ int main()
         std::ostringstream payload;
         WriteDataFramePayloadForR(payload, df, true);
         std::string text = payload.str();
-        assert(text.find("DATASET\nimp data\n2\n1\nage\nnumeric\n10\n20\n") == 0);
+        assert(text.find("DATASET\nimp data\n2\n1\nDATACELLS_PERCENT_V1\nage\nnumeric\n10\n20\n") == 0);
         assert(text.find("IMPUTATION_SPARSE\nmultiple_imputation\nimp1\nsource1\n2\n1\nversion\n1\nage\n1\n2\nNA\n20\n21\n") != std::string::npos);
+    }
+
+    {
+        DataFrameModel df;
+        df.group = "factor sync";
+        df.rows = 2;
+        DataColumn gender;
+        gender.name = "gender";
+        gender.type = "factor";
+        gender.values = {"1", "2"};
+        gender.displayValues = {"0", "1"};
+        gender.definedLevels = {"0", "1"};
+        df.columns.push_back(gender);
+
+        std::ostringstream payload;
+        WriteDataFramePayloadForR(payload, df, true);
+        const std::string text = payload.str();
+        assert(text.find("DATASET\nfactor sync\n2\n1\nDATACELLS_PERCENT_V1\ngender\nfactor\n0\n1\n") == 0);
+        assert(text.find("DATLEVELS\n1\ngender\n2\n0\n1\n") != std::string::npos);
+    }
+
+    {
+        // Some imported formats retain user labels as the declared factor
+        // levels while the stored cells remain one-based factor codes.  R
+        // analyses must receive the labels, not expose those storage codes.
+        DataFrameModel df;
+        df.group = "labelled factor sync";
+        df.rows = 3;
+        DataColumn gender;
+        gender.name = "gender";
+        gender.type = "factor";
+        gender.values = {"1", "2", "1"};
+        gender.definedLevels = {"Female", "Male"};
+        df.columns.push_back(gender);
+
+        std::ostringstream payload;
+        WriteDataFramePayloadForR(payload, df, true);
+        const std::string text = payload.str();
+        assert(text.find(
+            "DATASET\nlabelled factor sync\n3\n1\nDATACELLS_PERCENT_V1\ngender\nfactor\nFemale\nMale\nFemale\n") == 0);
+        assert(text.find("DATLEVELS\n1\ngender\n2\nFemale\nMale\n") != std::string::npos);
+    }
+
+    {
+        DataFrameModel df;
+        df.group = "labelled factor imputation";
+        df.rows = 2;
+        df.datasetType = "multiple_imputation";
+        df.imputationId = "labels-mi";
+        df.sourceDatasetId = "labels-source";
+        df.imputationCount = 2;
+        df.activeImputationVersion = 1;
+        DataColumn country;
+        country.name = "country";
+        country.type = "factor";
+        country.values = {"1", "2"};
+        country.definedLevels = {"Finland", "Greece"};
+        country.imputedMissing = {false, true};
+        country.imputationOriginalSparse[1] = "NA";
+        country.imputationValuesSparse = {{{1, "2"}}, {{1, "1"}}};
+        df.columns.push_back(country);
+
+        std::ostringstream payload;
+        WriteDataFramePayloadForR(payload, df, true);
+        const std::string text = payload.str();
+        assert(text.find("IMPUTATION_SPARSE\nmultiple_imputation\nlabels-mi\nlabels-source\n2\n1\nversion\n1\ncountry\n1\n2\nNA\nGreece\nFinland\n") != std::string::npos);
     }
 
     {

@@ -1,5 +1,11 @@
 # Example datasets
 
+The `statistical/` directory is LinkEDA's public testing library.  Open it from
+the Welcome window with **Open a statistical example…**.  The chooser shows a
+short purpose for every dataset; `statistical/README.md` contains the complete
+analysis and plot coverage matrix, and `statistical/catalog.csv` contains the
+same catalogue in machine-readable form.
+
 `mtcars.csv` is the R `datasets::mtcars` data frame with its row names retained
 as the `car` column.
 

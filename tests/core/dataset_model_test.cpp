@@ -1,5 +1,6 @@
 #include "../../src/core/dataset_model.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <map>
@@ -22,6 +23,7 @@ using rlispstat::core::DataColumnAllMissing;
 using rlispstat::core::DataColumnHasMissing;
 using rlispstat::core::DataColumnLooksBinaryNumeric;
 using rlispstat::core::DataColumnLooksGroupingCandidate;
+using rlispstat::core::DataColumnLooksLikeAnalysisId;
 using rlispstat::core::DataColumnLooksLikeId;
 using rlispstat::core::DataColumnMissingCount;
 using rlispstat::core::DataColumnObservedLevelCount;
@@ -31,7 +33,10 @@ using rlispstat::core::DataFrameModel;
 using rlispstat::core::DataFrameShowsAllImputations;
 using rlispstat::core::DataFrameImputationTooltipText;
 using rlispstat::core::DataFrameStatusText;
+using rlispstat::core::PlotImputationDisplayStatus;
+using rlispstat::core::PooledEffectPlotImputationStatus;
 using rlispstat::core::DataFrameWindowTitle;
+using rlispstat::core::WriteDataExportCSV;
 using rlispstat::core::DataSheetChooseDataColumnStatus;
 using rlispstat::core::DataSheetBackendPayloadUnavailableStatus;
 using rlispstat::core::DataSheetOpenTitle;
@@ -48,6 +53,7 @@ using rlispstat::core::DatasetDialogLabel;
 using rlispstat::core::DatasetNotRegisteredStatus;
 using rlispstat::core::ImportOrRegisterDatasetStatus;
 using rlispstat::core::BuildMissingDataImputationDialogState;
+using rlispstat::core::BuildMissingDataPatternColumn;
 using rlispstat::core::MissingDataImputationDialogState;
 using rlispstat::core::MiceDatasetSummaryText;
 using rlispstat::core::MiceSelectionSummaryText;
@@ -55,6 +61,7 @@ using rlispstat::core::MiceVariableStatusText;
 using rlispstat::core::NativeImportAllowedFileExtensions;
 using rlispstat::core::NativeImportDialogTitle;
 using rlispstat::core::NativeImportDatasetLoadedStatus;
+using rlispstat::core::ImportedVariableTypeReviewWarning;
 using rlispstat::core::NativeImportFailedTitle;
 using rlispstat::core::NativeImportSupportedFormatsText;
 using rlispstat::core::NativeImportPayloadMissingStatus;
@@ -142,6 +149,7 @@ using rlispstat::core::SafeDatasetNameForPath;
 using rlispstat::core::UniqueDataColumnName;
 using rlispstat::core::UniqueDatasetName;
 using rlispstat::core::SubsetDataFrame;
+using rlispstat::core::SubsetDataFrameColumns;
 using rlispstat::core::VariableRoleDisplayName;
 using rlispstat::core::VariableInformationDialogTitle;
 using rlispstat::core::VariableInformationText;
@@ -162,13 +170,20 @@ using rlispstat::core::VariableRenamedStatus;
 using rlispstat::core::VariableRoleChangedStatus;
 using rlispstat::core::VariableTypeDisplayName;
 using rlispstat::core::VariableTypeChangedStatus;
+using rlispstat::core::VariableTypeConversionSpecification;
 using rlispstat::core::VariableTypeEditingStatus;
+using rlispstat::core::VariableTypeIsCategorical;
 using rlispstat::core::VariableTypeIsFactorLike;
+using rlispstat::core::VariableTypeIsNumeric;
+using rlispstat::core::VariableTypeIsOrdinal;
 using rlispstat::core::VariableTypeIsSupported;
+using rlispstat::core::VariableTypeIsText;
 using rlispstat::core::VariableViewRowsForDataFrame;
 using rlispstat::core::VariableViewModelRoleSummary;
 using rlispstat::core::WriteDataFrameCSV;
 using rlispstat::core::MiceMethodOptions;
+using rlispstat::core::DataColumnFactorLevels;
+using rlispstat::core::DataColumnObservedLevels;
 using rlispstat::core::NativeImportRScript;
 using rlispstat::core::NativeMiceImputationRScript;
 using rlispstat::core::NativePooledAnalysisRScript;
@@ -205,6 +220,10 @@ int main()
     double parsed = 0.0;
     assert(ParseDataCellDouble(" 3.25 ", parsed));
     assert(parsed == 3.25);
+    assert(ParseDataCellDouble("17,5", parsed));
+    assert(parsed == 17.5);
+    assert(ParseDataCellDouble("15,", parsed));
+    assert(parsed == 15.0);
     assert(!ParseDataCellDouble("3abc", parsed));
     assert(closeEnough(ParseOptionalDataCellDouble("4.5"), 4.5));
     assert(!std::isfinite(ParseOptionalDataCellDouble("NA")));
@@ -216,22 +235,59 @@ int main()
     std::string importScript = NativeImportRScript();
     assert(importScript.find("REGISTER_DATASET") != std::string::npos);
     assert(importScript.find("haven::read_sav") != std::string::npos);
+    assert(importScript.find("attr(x, \"label\", exact = TRUE)") != std::string::npos);
+    assert(importScript.find("\"DATAMETA\"") != std::string::npos);
     assert(importScript.find("utils::read.csv") != std::string::npos);
     assert(importScript.find("utils::read.delim") != std::string::npos);
+    assert(importScript.find("na.strings = c(\"NA\", \"\")") != std::string::npos);
     assert(importScript.find("readxl::read_excel") != std::string::npos);
     assert(importScript.find("haven::read_dta") != std::string::npos);
     assert(importScript.find("haven::read_sas") != std::string::npos);
     assert(importScript.find("haven::read_xpt") != std::string::npos);
     assert(importScript.find("readRDS") != std::string::npos);
+    assert(importScript.find("inherits(imported$data, \"mids\")") != std::string::npos);
+    assert(importScript.find("mice::complete") != std::string::npos);
+    assert(importScript.find("IMPUTATION_SPARSE") != std::string::npos);
     assert(importScript.find("DATADISPLAY") != std::string::npos);
+    assert(importScript.find("DATLEVELS") != std::string::npos);
+    assert(importScript.find("identical(type, \"character\")") != std::string::npos);
+    assert(importScript.find("return(\"factor\")") != std::string::npos);
+    assert(importScript.find("distinct == length(observed)") == std::string::npos);
+    assert(importScript.find("return(\"character\")") != std::string::npos);
+    assert(importScript.find("length(attr(x, \"labels\", exact = TRUE))") != std::string::npos);
     std::string miceScript = NativeMiceImputationRScript();
     assert(miceScript.find("mice::mice") != std::string::npos);
+    assert(miceScript.find("LinkEDA:::.rls_decode_native_dataset_lines") == std::string::npos);
     assert(miceScript.find("IMPUTATION_SPARSE") != std::string::npos);
     assert(miceScript.find("Multiple imputation requires the mice package") != std::string::npos);
     std::string pooledScript = NativePooledAnalysisRScript();
+    assert(pooledScript.find("LinkEDA:::.rls_decode_native_dataset_lines") == std::string::npos);
     assert(pooledScript.find("ls_new_table1") != std::string::npos);
     assert(pooledScript.find(".rls_glm_pooled_native_payload") != std::string::npos);
     assert(pooledScript.find("ls_new_regression_comparison") != std::string::npos);
+    assert(pooledScript.find("MI_GGLM_SPEC_V2") != std::string::npos);
+    assert(pooledScript.find("ls_new_count_regression") != std::string::npos);
+    assert(pooledScript.find("count_distribution") != std::string::npos);
+    assert(pooledScript.find("factor_reference_levels") != std::string::npos);
+    assert(pooledScript.find("identical(lines[[i]], \"DATLEVELS\")") != std::string::npos);
+    assert(pooledScript.find("declared_levels[[name]]") != std::string::npos);
+    assert(pooledScript.find("finalize_types(data, original, completed, types, declared_levels)") != std::string::npos);
+    assert(pooledScript.find("model_record$scope <- scope") != std::string::npos);
+    assert(pooledScript.find("glm_interaction_plot") != std::string::npos);
+    assert(pooledScript.find("gglm_interaction_plot") != std::string::npos);
+    assert(pooledScript.find(".rls_interaction_native_plot_payload") != std::string::npos);
+    const std::size_t binaryConstructor =
+        pooledScript.find("do.call(LinkEDA::ls_new_binary_regression");
+    const std::size_t generalizedConstructor =
+        pooledScript.find("do.call(LinkEDA::ls_new_generalized_linear_model",
+                          binaryConstructor);
+    assert(binaryConstructor != std::string::npos);
+    assert(generalizedConstructor != std::string::npos);
+    assert(pooledScript.substr(
+        binaryConstructor, generalizedConstructor - binaryConstructor)
+        .find(".allow_intercept_only") == std::string::npos);
+    assert(pooledScript.substr(generalizedConstructor)
+        .find(".allow_intercept_only = TRUE") != std::string::npos);
 
     std::ostringstream csv;
     assert(WriteDataFrameCSV(csv, cars, {2}));
@@ -242,17 +298,41 @@ int main()
     assert(carsSubset.rows == 1);
     assert((carsSubset.columns[0].values == std::vector<std::string>{"22"}));
     assert((carsSubset.columns[1].values == std::vector<std::string>{"1"}));
+    DataFrameModel carsVariableSubset = SubsetDataFrameColumns(
+        cars, {"am", "am"}, "cars variables");
+    assert(carsVariableSubset.group == "cars variables");
+    assert(carsVariableSubset.rows == cars.rows);
+    assert(carsVariableSubset.columns.size() == 1);
+    assert(carsVariableSubset.columns[0].name == "am");
+    assert(carsVariableSubset.columns[0].description == "Transmission");
+    assert(carsVariableSubset.columns[0].values == cars.columns[1].values);
+    assert(carsVariableSubset.provenance.history.back().rCode.find(
+        "source_data[, c(\"am\"), drop = FALSE]") != std::string::npos);
 
     assert(NormalizeVariableType("Numérico") == "numeric");
+    assert(NormalizeVariableType("Categorical") == "factor");
+    assert(NormalizeVariableType("Ordinal") == "ordered");
     assert(NormalizeVariableType("ordered factor") == "ordered");
     assert(VariableTypeIsSupported("text"));
+    assert(VariableTypeIsNumeric("numeric"));
+    assert(VariableTypeIsCategorical("factor"));
+    assert(VariableTypeIsCategorical("ordered"));
+    assert(VariableTypeIsCategorical("logical"));
+    assert(!VariableTypeIsCategorical("character"));
+    assert(VariableTypeIsOrdinal("ordered"));
+    assert(VariableTypeIsText("character"));
+    assert(!VariableTypeIsText("factor"));
     assert(VariableTypeIsFactorLike("logical"));
+    assert(VariableTypeDisplayName("numeric") == "Numeric");
+    assert(VariableTypeDisplayName("factor") == "Categorical");
+    assert(VariableTypeDisplayName("ordered") == "Ordinal");
     assert(VariableTypeDisplayName("character") == "Text");
+    assert(VariableTypeDisplayName("logical") == "Categorical (binary)");
     assert(VariableRoleDisplayName("Predictor") == "Independent");
     assert(VariableTypeEditingStatus("mpg") == "Editing type for `mpg`.");
     assert(VariableTypeChangedStatus("mpg", "numeric") == "mpg is now treated as Numeric.");
     assert(VariableDecimalsUnavailableStatus("group", "factor") ==
-           "Decimals are available only for numeric variables; `group` is Factor.");
+           "Decimals are available only for Numeric variables; `group` is Categorical.");
     assert(VariableDecimalsInvalidStatus(false) == "Decimals must be an integer or blank for automatic.");
     assert(VariableDecimalsInvalidStatus(true) == "Decimals must be an integer from 0 to 12, or Automatic.");
     assert(VariableDecimalsChangedStatus("mpg", -1) == "Decimals for `mpg` set to automatic.");
@@ -265,12 +345,18 @@ int main()
     assert(VariableUnavailableStatus("mpg") == "Variable `mpg` is not available.");
     assert(DerivedDataColumnAddedStatus("selected_from_plot", "cars") ==
            "Added `selected_from_plot` to dataset `cars`.");
-    assert(VariableRoleChangedStatus("mpg", "dependent") == "Set `mpg` as response variable.");
-    assert(VariableRoleChangedStatus("wt", "predictor") == "Added `wt` as predictor.");
-    assert(VariableRoleChangedStatus("wt", "remove_predictor") == "Removed predictor role from `wt`.");
-    assert(VariableRoleChangedStatus("wt", "none") == "Cleared model role for `wt`.");
-    assert(VariableViewModelRoleSummary("", 0) == "Model roles: Y=(none) | predictors=0");
-    assert(VariableViewModelRoleSummary("mpg", 2) == "Model roles: Y=mpg | predictors=2");
+    assert(VariableRoleChangedStatus("mpg", "dependent") ==
+           "Set the default role for `mpg` to Dependent.");
+    assert(VariableRoleChangedStatus("wt", "predictor") ==
+           "Set the default role for `wt` to Independent.");
+    assert(VariableRoleChangedStatus("wt", "remove_predictor") ==
+           "Cleared the default role for `wt`.");
+    assert(VariableRoleChangedStatus("wt", "none") ==
+           "Cleared the default role for `wt`.");
+    assert(VariableViewModelRoleSummary("", 0) ==
+           "Default roles: dependent=(none) | independent=0");
+    assert(VariableViewModelRoleSummary("mpg", 2) ==
+           "Default roles: dependent=mpg | independent=2");
 
     DataFrameModel miceDf;
     miceDf.group = "mice";
@@ -289,6 +375,14 @@ int main()
     assert(DataColumnLooksLikeId(idCol));
     assert(DataColumnLooksLikeId(labelCol));
     assert(!DataColumnLooksLikeId(ageColForMice));
+    DataColumn implicitNumericId{"participant", "numeric", "", "", -1,
+        {"1", "2", "3", "4"}, {}, {}, {}, {}, {}, {}};
+    DataColumn distinctContinuous{"extra_drug_1", "numeric", "", "", -1,
+        {"0.7", "-1.6", "-0.2", "-1.2"}, {}, {}, {}, {}, {}, {}};
+    assert(DataColumnLooksLikeId(implicitNumericId));
+    assert(DataColumnLooksLikeId(distinctContinuous));
+    assert(DataColumnLooksLikeAnalysisId(implicitNumericId));
+    assert(!DataColumnLooksLikeAnalysisId(distinctContinuous));
     DataColumn binaryCol{"binary", "numeric", "", "", -1, {"0", "1", "1", "0", "NA"}, {}, {}, {}, {}, {}, {}};
     assert(DataColumnLooksBinaryNumeric(binaryCol));
     binaryCol.values = {"0", "2"};
@@ -311,8 +405,37 @@ int main()
     assert(DataColumnAllowsNumeric(*mpg, &message));
     assert(SetDataColumnType(*mpg, "factor", &message));
     assert(mpg->type == "factor");
+    assert((mpg->values == std::vector<std::string>{"1", "2"}));
+    assert((mpg->displayValues == std::vector<std::string>{"21", "22"}));
+    assert((mpg->definedLevels == std::vector<std::string>{"21", "22"}));
     assert(SetDataColumnType(*mpg, "numeric", &message));
     assert(mpg->type == "numeric");
+    assert((mpg->values == std::vector<std::string>{"21", "22"}));
+    assert(mpg->displayValues.empty());
+    DataColumn importedAge;
+    importedAge.name = "age";
+    importedAge.type = "character";
+    importedAge.values = {
+        "12", "13", "14", "15", "16", "17", "18", "19",
+        "17,5", "15,", "14 years", "NA"
+    };
+    assert(SetDataColumnType(importedAge, "numeric", &message));
+    assert(importedAge.type == "numeric");
+    assert(importedAge.values[8] == "17.5");
+    assert(importedAge.values[9] == "15");
+    assert(importedAge.values[10] == "NA");
+    assert(message == "age is now treated as Numeric; 1 non-numeric value was set to missing.");
+    DataFrameModel importedSurvey;
+    importedSurvey.group = "survey";
+    importedSurvey.rows = static_cast<int>(importedAge.values.size());
+    importedAge.type = "factor";
+    importedAge.values[10] = "14 years";
+    importedSurvey.columns.push_back(importedAge);
+    const std::string importReview = ImportedVariableTypeReviewWarning(importedSurvey);
+    assert(importReview.find("Review imported variable types:") != std::string::npos);
+    assert(importReview.find("`age` looks numeric") != std::string::npos);
+    assert(importReview.find("1 of 11 non-missing value is not numeric") != std::string::npos);
+    assert(importReview.find("imported as Categorical") != std::string::npos);
     assert(SetDataColumnDecimals(*mpg, 2, &message));
     assert(mpg->decimals == 2);
     assert(DisplayValueForCell(*mpg, 0) == "21.00");
@@ -346,7 +469,113 @@ int main()
     DataColumn *am = FindDataColumnInDataFrame(cars, "am");
     assert(am != nullptr);
     am->values = {"0", "manual"};
-    assert(!SetDataColumnType(*am, "numeric", &message));
+    assert(SetDataColumnType(*am, "numeric", &message));
+    assert((am->values == std::vector<std::string>{"0", "1"}));
+    DataColumn textFactor;
+    textFactor.name = "region";
+    textFactor.type = "character";
+    textFactor.values = {"North", "South", "East", "North", "NA"};
+    assert(SetDataColumnType(textFactor, "factor", &message));
+    assert(textFactor.type == "factor");
+    assert((textFactor.values == std::vector<std::string>{"1", "2", "3", "1", "NA"}));
+    assert((textFactor.displayValues == std::vector<std::string>{"North", "South", "East", "North", "NA"}));
+    assert((textFactor.definedLevels == std::vector<std::string>{"North", "South", "East"}));
+    assert((DataColumnFactorLevels(textFactor) ==
+            std::vector<std::string>{"North", "South", "East"}));
+    assert((DataColumnObservedLevels(textFactor) ==
+            std::vector<std::string>{"North", "South", "East"}));
+
+    DataColumn imputedGender;
+    imputedGender.name = "gender";
+    imputedGender.type = "factor";
+    imputedGender.values = {"1", "2", "1"};
+    imputedGender.displayValues = {"Female", "Male", "Female"};
+    imputedGender.definedLevels = {"Female", "Male"};
+    imputedGender.imputedMissing = {false, true, false};
+    imputedGender.imputationOriginalValues = {"Female", "NA", "Female"};
+    imputedGender.imputationValues = {
+        {"Female", "Male", "Female"},
+        {"Female", "Female", "Female"}
+    };
+    imputedGender.imputationOriginalSparse[1] = "NA";
+    imputedGender.imputationValuesSparse = {
+        {{1, "Male"}},
+        {{1, "Female"}}
+    };
+    assert(SetDataColumnType(imputedGender, "numeric", &message));
+    assert(imputedGender.type == "numeric");
+    assert((imputedGender.values == std::vector<std::string>{"0", "1", "0"}));
+    assert(imputedGender.displayValues.empty());
+    assert(imputedGender.definedLevels.empty());
+    assert((imputedGender.reversibleFactorLevels ==
+            std::vector<std::string>{"Female", "Male"}));
+    assert(imputedGender.imputationOriginalSparse.at(1) == "NA");
+    assert((imputedGender.imputationOriginalValues ==
+            std::vector<std::string>{"0", "NA", "0"}));
+    assert((imputedGender.imputationValues[0] ==
+            std::vector<std::string>{"0", "1", "0"}));
+    assert(imputedGender.imputationValuesSparse[0].at(1) == "1");
+    assert(imputedGender.imputationValuesSparse[1].at(1) == "0");
+    assert(SetDataColumnType(imputedGender, "factor", &message));
+    assert((imputedGender.definedLevels == std::vector<std::string>{"Female", "Male"}));
+    assert(imputedGender.reversibleFactorLevels.empty());
+    assert((imputedGender.values == std::vector<std::string>{"1", "2", "1"}));
+    assert((imputedGender.displayValues == std::vector<std::string>{"Female", "Male", "Female"}));
+    assert((imputedGender.imputationOriginalValues ==
+            std::vector<std::string>{"Female", "NA", "Female"}));
+    assert((imputedGender.imputationValues[0] ==
+            std::vector<std::string>{"Female", "Male", "Female"}));
+    assert(imputedGender.imputationValuesSparse[0].at(1) == "Male");
+    assert(imputedGender.imputationValuesSparse[1].at(1) == "Female");
+
+    std::ostringstream factorCsv;
+    DataFrameModel factorFrame;
+    factorFrame.group = "factor_frame";
+    factorFrame.rows = 5;
+    factorFrame.columns.push_back(textFactor);
+    assert(WriteDataFrameCSV(factorCsv, factorFrame));
+    assert(factorCsv.str().find("1,North") != std::string::npos);
+    std::ostringstream factorExportCsv;
+    assert(WriteDataExportCSV(factorExportCsv, factorFrame));
+    assert(factorExportCsv.str() ==
+           "region\nNorth\nSouth\nEast\nNorth\nNA\n");
+    assert(SetDataFrameCellValue(factorFrame, "region", 1, "West", &message));
+    assert(factorFrame.columns[0].values[1] == "4");
+    assert(factorFrame.columns[0].displayValues[1] == "West");
+    assert(factorFrame.columns[0].definedLevels.back() == "West");
+    assert(!SetDataColumnType(factorFrame.columns[0], "numeric", &message));
+    VariableTypeConversionSpecification regionMapping;
+    regionMapping.numericMapping = {{"North", "1"}, {"South", "2"},
+                                    {"East", "3"}, {"West", "4"}};
+    assert(SetDataColumnType(factorFrame.columns[0], "numeric", &message,
+                             &regionMapping));
+    assert((factorFrame.columns[0].values ==
+            std::vector<std::string>{"1", "4", "3", "1", "NA"}));
+    assert(factorFrame.columns[0].numericMapping.at("West") == "4");
+    assert(SetDataColumnType(factorFrame.columns[0], "factor", &message));
+    assert((factorFrame.columns[0].displayValues ==
+            std::vector<std::string>{"North", "West", "East", "North", "NA"}));
+    VariableTypeConversionSpecification reorderedCategories;
+    reorderedCategories.categoryOrder = {"West", "East", "South", "North"};
+    assert(SetDataColumnType(factorFrame.columns[0], "ordered", &message,
+                             &reorderedCategories));
+    assert((factorFrame.columns[0].definedLevels ==
+            std::vector<std::string>{"West", "East", "South", "North"}));
+    assert((factorFrame.columns[0].values ==
+            std::vector<std::string>{"4", "1", "2", "4", "NA"}));
+
+    DataColumn longOrdinal;
+    longOrdinal.name = "rating";
+    longOrdinal.type = "ordered";
+    for (int level = 1; level <= 12; ++level) {
+        longOrdinal.values.push_back(std::to_string(level));
+        longOrdinal.displayValues.push_back("L" + std::to_string(level));
+        longOrdinal.definedLevels.push_back("L" + std::to_string(level));
+    }
+    assert(SetDataColumnType(longOrdinal, "numeric", &message));
+    assert(longOrdinal.values.front() == "1");
+    assert(longOrdinal.values.back() == "12");
+    assert(message.find("equally spaced") != std::string::npos);
     assert(!IsValidVariableName("bad|name", &message));
     assert(SafeDataColumnSuffix("mpg vs wt [cars]!") == "mpg_vs_wt_cars");
     assert(SafeDataColumnSuffix("___") == "plot");
@@ -371,7 +600,10 @@ int main()
     std::string info = VariableInformationText(cars, "fuel");
     assert(info.find("Variable: fuel") != std::string::npos);
     assert(info.find("Dataset: cars") != std::string::npos);
-    assert(info.find("Analysis type: numeric") != std::string::npos);
+    assert(info.find("Dataset type: Ordinary data") != std::string::npos);
+    assert(info.find("Statistical type: Numeric") != std::string::npos);
+    assert(info.find("Analysis type:") == std::string::npos);
+    assert(info.find("R storage: double") != std::string::npos);
     assert(info.find("Description: Miles per gallon") != std::string::npos);
     assert(info.find("Displayed decimals: 2") != std::string::npos);
     assert(info.find("Rows: 2") != std::string::npos);
@@ -438,6 +670,38 @@ int main()
     score.type = "numeric";
     score.values = {"1", "2", "NA"};
     imputed.columns.push_back(score);
+    DataColumn group;
+    group.name = "group";
+    group.type = "factor";
+    group.values = {"A", "NA", "C"};
+    group.definedLevels = {"A", "B", "C"};
+    group.imputedMissing = {false, true, false};
+    group.imputationOriginalSparse[1] = "NA";
+    group.imputationValuesSparse.resize(2);
+    group.imputationValuesSparse[0][1] = "B";
+    group.imputationValuesSparse[1][1] = "C";
+    DataFrameModel exportImputed = imputed;
+    exportImputed.imputationCount = 2;
+    exportImputed.columns.push_back(group);
+    exportImputed.imputationProcess = "original-mids-process";
+    DataFrameModel miVariableSubset = SubsetDataFrameColumns(
+        exportImputed, {"group", "age"}, "selected MI variables");
+    assert(miVariableSubset.datasetType == "multiple_imputation");
+    assert(miVariableSubset.rows == exportImputed.rows);
+    assert(miVariableSubset.imputationCount == exportImputed.imputationCount);
+    assert(miVariableSubset.imputationProcess.empty());
+    assert(miVariableSubset.columns.size() == 2);
+    assert(miVariableSubset.columns[0].name == "age");
+    assert(miVariableSubset.columns[1].name == "group");
+    assert(miVariableSubset.columns[0].imputationValuesSparse == age.imputationValuesSparse);
+    assert(miVariableSubset.columns[1].imputationValuesSparse == group.imputationValuesSparse);
+    std::ostringstream imputedExportCsv;
+    assert(WriteDataExportCSV(imputedExportCsv, exportImputed));
+    assert(imputedExportCsv.str() ==
+           ".imp,.id,age,score,group\n"
+           "0,1,18,1,A\n0,2,NA,2,NA\n0,3,23,NA,C\n"
+           "1,1,18,1,A\n1,2,20,2,B\n1,3,23,NA,C\n"
+           "2,1,18,1,A\n2,2,21,2,C\n2,3,23,NA,C\n");
 
     const DataColumn *ageCol = FindDataColumnInDataFrame(imputed, "age");
     const DataColumn *scoreCol = FindDataColumnInDataFrame(imputed, "score");
@@ -452,15 +716,15 @@ int main()
     assert(DisplayValueForDataFrameCell(imputed, *ageCol, 1) == "20 | 21 | NA | NA | NA");
     assert(DataFrameShowsAllImputations(imputed));
     assert(DataFrameWindowTitle("imp") == "Data Sheet - imp");
-    assert(MiceVariableStatusText(age, imputed.rows) == "numeric, 1 missing");
+    assert(MiceVariableStatusText(age, imputed.rows) == "Numeric, 1 missing");
     DataColumn allMissing = age;
     allMissing.values = {"NA", "NA", "NA"};
-    assert(MiceVariableStatusText(allMissing, imputed.rows) == "numeric, 3 missing, all missing");
+    assert(MiceVariableStatusText(allMissing, imputed.rows) == "Numeric, 3 missing, all missing");
     DataColumn idColumn = score;
     idColumn.name = "id";
     idColumn.type = "character";
     idColumn.values = {"1", "2", "3"};
-    assert(MiceVariableStatusText(idColumn, imputed.rows) == "character, 0 missing, id-like");
+    assert(MiceVariableStatusText(idColumn, imputed.rows) == "Text, 0 missing, id-like");
     DataColumn unsupportedColumn = score;
     unsupportedColumn.type = "date";
     unsupportedColumn.values = {"1", "1", "2"};
@@ -481,7 +745,7 @@ int main()
     assert(VariableViewTitle() == "Variable View");
     assert(VariableViewWindowTitle("imp") == "Variable View - imp");
     assert(VariableViewInstructionText() ==
-           "Click Name or Description to edit. Click Type, Decimals, or Role to choose an action.");
+           "Click Name or Description to edit. Click Type or Decimals to choose an action.");
     assert(VariableDescriptionDialogTitle("age") == "Description for age");
     assert(VariableDescriptionDialogInformationText() ==
            "Edit the explanatory text used by Variable Information and the Variable View.");
@@ -521,7 +785,7 @@ int main()
     assert(imputationDialog.instructionHint ==
            "Select variables to impute, choose a mice method, and select predictors. ID-like columns are left unchecked by default.");
     assert(imputationDialog.methodHint ==
-           "Methods: numeric pmm/norm/cart; binary factors logreg; multi-level factors polyreg/cart.");
+           "Methods: numeric pmm/norm/cart; binary categorical variables logreg; multi-category variables polyreg/cart.");
     assert(imputationDialog.imputeColumnTitle == "Impute");
     assert(imputationDialog.typeMissingColumnTitle == "Type / missing");
     assert(imputationDialog.methodColumnTitle == "Method");
@@ -529,6 +793,28 @@ int main()
     assert(imputationDialog.unavailableDatasetRowText == "Dataset is no longer available.");
     assert(imputationDialog.unsupportedMethodTitle == "unsupported");
     assert(imputationDialog.predictorUseTitle == "Use");
+
+    DataFrameModel patternData;
+    patternData.group = "missing";
+    patternData.rows = 4;
+    patternData.columns = {
+        {"Age", "numeric", "Age", "", -1, {"20", "NA", "30", "NA"}},
+        {"Blood", "numeric", "Blood", "", -1, {"1", "2", "NA", "NA"}}
+    };
+    DataColumn patternColumn;
+    std::string patternError;
+    assert(BuildMissingDataPatternColumn(
+        patternData, {"Age", "Blood"}, patternColumn, &patternError));
+    assert(patternColumn.name == "missing_pattern");
+    assert(patternColumn.type == "factor");
+    assert((patternColumn.values == std::vector<std::string>{"0", "a1", "b2", "ab3"}));
+    patternData.columns.push_back(patternColumn);
+    assert(BuildMissingDataPatternColumn(
+        patternData, {"Age"}, patternColumn, &patternError));
+    assert(patternColumn.name == "missing_pattern_2");
+    assert(!BuildMissingDataPatternColumn(
+        patternData, {}, patternColumn, &patternError));
+    assert(patternError == "Select at least one variable.");
     assert(imputationDialog.noImputeVariablesStatus ==
            "Select at least one variable with missing values to impute.");
     assert(imputationDialog.noPredictorVariablesStatus ==
@@ -548,12 +834,52 @@ int main()
     assert(std::find(importExtensions.begin(), importExtensions.end(), "xlsx") != importExtensions.end());
     const std::vector<rlispstat::core::NativeImportFileFilter> importFilters =
         rlispstat::core::NativeImportFileFilters();
-    assert(importFilters.size() == 7);
+    assert(importFilters.size() == 8);
     assert(importFilters.front().identifier == "all");
     assert(importFilters.front().extensions == importExtensions);
-    assert(importFilters[1].identifier == "spss");
-    assert((importFilters[1].extensions == std::vector<std::string>{"sav", "zsav"}));
+    assert(importFilters[1].identifier == "mice");
+    assert((importFilters[1].extensions ==
+            std::vector<std::string>{"rds", "rda", "RData"}));
+    assert(importFilters[2].identifier == "spss");
+    assert((importFilters[2].extensions == std::vector<std::string>{"sav", "zsav"}));
     assert(importFilters.back().identifier == "r");
+    const std::vector<rlispstat::core::NativeDataExportFileFilter> exportFilters =
+        rlispstat::core::NativeDataExportFileFilters();
+    assert(exportFilters.size() == 9);
+    assert(exportFilters.front().identifier == "csv");
+    assert(exportFilters[1].identifier == "xlsx");
+    assert(exportFilters[2].identifier == "sav");
+    assert(exportFilters[4].identifier == "dta");
+    assert(exportFilters[5].identifier == "xpt");
+    assert(exportFilters.back().identifier == "tsv");
+    assert(rlispstat::core::NativeDataExportFormatForExtension(".CSV") == "csv");
+    assert(rlispstat::core::NativeDataExportFormatForExtension("txt") == "tsv");
+    assert(rlispstat::core::NativeDataExportFormatForExtension("RData") == "rdata");
+    assert(rlispstat::core::NativeDataExportFormatForExtension("sas7bdat").empty());
+    const std::string exportScript = rlispstat::core::NativeDataExportRScript();
+    assert(exportScript.find("LinkEDA:::.rls_export_data_frame") != std::string::npos);
+    assert(exportScript.find("mice::as.mids") != std::string::npos);
+    assert(exportScript.find("LinkEDA:::.rls_export_r_object") != std::string::npos);
+    assert(exportScript.find("read.csv") != std::string::npos);
+    assert(exportScript.find("metadata_path") != std::string::npos);
+    DataFrameModel exportFrame;
+    exportFrame.rows = 2;
+    DataColumn exportGroup;
+    exportGroup.name = "group";
+    exportGroup.type = "factor";
+    exportGroup.values = {"Control", "Treatment"};
+    exportGroup.definedLevels = {"Control", "Treatment"};
+    exportFrame.columns = {exportGroup};
+    std::ostringstream exportMetadata;
+    assert(rlispstat::core::WriteDataExportMetadataCSV(exportMetadata, exportFrame));
+    assert(exportMetadata.str().find("variable,type,level_index,level") == 0);
+    assert(exportMetadata.str().find("group,factor,1,Control") != std::string::npos);
+    assert(rlispstat::core::NativeDataExportSuccessStatus("xlsx", false) ==
+           "The active dataset was exported as Excel.");
+    assert(rlispstat::core::NativeDataExportSuccessStatus("sav", true) ==
+           "The multiple-imputation dataset was exported as SPSS in long format with .imp and .id columns.");
+    assert(rlispstat::core::NativeDataExportSuccessStatus("rds", true) ==
+           "The multiple-imputation dataset was exported as a mice mids object in RDS format and can be reimported with its imputations preserved.");
     assert(NativeImportTemporaryScriptFailedStatus() == "Could not create temporary import script.");
     assert(NativeImportRscriptLaunchFailedStatus() == "Could not run Rscript for data import.");
     assert(NativeImportRscriptFailedStatus() == "Rscript failed while importing the selected file.");
@@ -576,26 +902,58 @@ int main()
     assert(NativePooledAnalysisPayloadMissingStatus() ==
            "The R/mice analysis did not return a native table payload.");
     assert(NativePooledAnalysisOpenedStatus() == "Opened pooled multiple-imputation analysis.");
+    std::string imputedInfo = VariableInformationText(imputed, "age");
+    assert(imputedInfo.find("Dataset type: Multiple imputation") != std::string::npos);
+    assert(imputedInfo.find("Imputations: m = 5") != std::string::npos);
+    assert(imputedInfo.find("Data displayed: Compact preview across all 5 imputations") !=
+           std::string::npos);
     assert(DataFrameStatusText(imputed, 2) ==
            "imp: 3 rows, 2 variables, 2 selected | Showing compact all-imputation preview across 5 imputations");
+    assert(PlotImputationDisplayStatus(imputed, false) ==
+           "All imputations selected in the Data Sheet; this descriptive plot shows imputation 1 of 5 (not pooled).");
+    assert(PlotImputationDisplayStatus(imputed, true) ==
+           "All 5 imputations selected; points show imputation 1 and uncertainty glyphs summarize all imputations.");
+    assert(PooledEffectPlotImputationStatus(imputed) ==
+           "Effect estimates are pooled across all 5 imputations; no single imputation is displayed.");
     assert(DataFrameImputationTooltipText(imputed, *ageCol, 1) ==
            "Originally missing. Showing a compact preview across 5 imputations.");
 
     DataFrameModel active = imputed;
     active.imputationDisplayMode = "version";
     active.activeImputationVersion = 2;
+    std::string activeInfo = VariableInformationText(active, "age");
+    assert(activeInfo.find("Data displayed: Imputation 2 of 5") != std::string::npos);
     assert(DisplayValueForDataFrameCell(active, *FindDataColumnInDataFrame(active, "age"), 1) == "21");
     assert(DataFrameStatusText(active, 1) ==
            "imp: 3 rows, 2 variables, 1 selected | Showing imputation: 2 of 5");
+    assert(PlotImputationDisplayStatus(active, false) ==
+           "Showing imputation 2 of 5 (not pooled).");
     assert(DataFrameImputationTooltipText(active, *FindDataColumnInDataFrame(active, "age"), 1) ==
            "Originally missing. Imputed value in imputation 2.");
+    DataFrameModel editedImputation = active;
+    std::string imputedEditMessage;
+    assert(SetDataFrameCellValue(editedImputation, "age", 1, "22", &imputedEditMessage));
+    assert(ImputationVersionValueForCell(
+               *FindDataColumnInDataFrame(editedImputation, "age"), 1, 1) == "22");
+    assert(ImputationVersionValueForCell(
+               *FindDataColumnInDataFrame(editedImputation, "age"), 1, 0) == "20");
+    editedImputation.imputationDisplayMode = "original";
+    assert(!SetDataFrameCellValue(editedImputation, "age", 1, "23", &imputedEditMessage));
     active.imputationDisplayMode = "original";
+    std::string originalInfo = VariableInformationText(active, "age");
+    assert(originalInfo.find("Data displayed: Original incomplete data") != std::string::npos);
     assert(DisplayValueForDataFrameCell(active, *FindDataColumnInDataFrame(active, "age"), 1) == "NA");
     assert(DataFrameStatusText(active, 0) ==
            "imp: 3 rows, 2 variables, 0 selected | Showing original incomplete data");
+    assert(PlotImputationDisplayStatus(active, false) ==
+           "Showing original incomplete data (not pooled).");
     assert(DataFrameImputationTooltipText(active, *FindDataColumnInDataFrame(active, "age"), 1) ==
            "Originally missing. Showing original incomplete data.");
     assert(DataFrameImputationTooltipText(active, *FindDataColumnInDataFrame(active, "score"), 0).empty());
+    DataFrameModel ordinaryEffectData = active;
+    ordinaryEffectData.datasetType = "data_frame";
+    ordinaryEffectData.imputationCount = 0;
+    assert(PooledEffectPlotImputationStatus(ordinaryEffectData).empty());
     active.imputationDisplayMode = "version";
     active.activeImputationVersion = 1;
     ApplyImputationDisplayModeToStoredValues(active);

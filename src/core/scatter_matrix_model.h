@@ -37,6 +37,10 @@ struct ScatterMatrixVariableSeries {
     std::vector<double> values;
 };
 
+std::string ScatterMatrixFitPanelId(const PlotModel &model,
+                                    std::size_t row, std::size_t column);
+void InvalidateScatterMatrixFits(PlotModel &model);
+
 struct ScatterMatrixNumericRange {
     double minimum = 0.0;
     double maximum = 1.0;

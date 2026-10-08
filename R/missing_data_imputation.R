@@ -85,7 +85,13 @@
 
 .rls_mi_supported_predictor <- function(record, variable) {
   type <- .rls_mi_type(record, variable)
-  type %in% c("numeric", "factor", "logical", "character")
+  type %in% c("numeric", "factor", "ordered", "logical", "character")
+}
+
+.rls_mi_effective_nlevels <- function(x) {
+  if (is.factor(x)) return(nlevels(droplevels(x)))
+  observed <- x[!is.na(x)]
+  length(unique(unclass(observed)))
 }
 
 .rls_mi_default_method <- function(record, variable) {
@@ -106,11 +112,11 @@
     nlevels <- nlevels(observed)
     return(if (nlevels <= 2L) "logreg" else "polyreg")
   }
-  if (identical(type, "factor")) {
-    nlevels <- nlevels(droplevels(x))
+  if (type %in% c("factor", "ordered")) {
+    nlevels <- .rls_mi_effective_nlevels(x)
     if (nlevels <= 2L) {
       "logreg"
-    } else if (is.ordered(x)) {
+    } else if (identical(type, "ordered") || is.ordered(x)) {
       "polr"
     } else {
       "polyreg"
@@ -132,11 +138,12 @@
   if (identical(type, "character")) {
     return(c("logreg", "polyreg", "cart", "rf"))
   }
-  if (identical(type, "factor")) {
-    if (is.ordered(x) && nlevels(droplevels(x)) > 2L) {
+  if (type %in% c("factor", "ordered")) {
+    if ((identical(type, "ordered") || is.ordered(x)) &&
+        .rls_mi_effective_nlevels(x) > 2L) {
       return(c("polr", "cart", "rf"))
     }
-    if (nlevels(droplevels(x)) <= 2L) {
+    if (.rls_mi_effective_nlevels(x) <= 2L) {
       return(c("logreg", "cart", "rf"))
     }
     return(c("polyreg", "cart", "rf"))
@@ -249,6 +256,23 @@
       data[[variable]] <- factor(data[[variable]], levels = c(FALSE, TRUE))
     } else if (identical(type, "character")) {
       data[[variable]] <- factor(data[[variable]])
+    } else if (type %in% c("factor", "ordered")) {
+      original <- (record$original_data %||% record$data)[[variable]]
+      labels <- attr(original, "labels", exact = TRUE)
+      if (!is.null(labels) && length(labels)) {
+        data[[variable]] <- factor(
+          data[[variable]],
+          levels = unname(labels),
+          labels = names(labels),
+          ordered = identical(type, "ordered")
+        )
+      } else {
+        data[[variable]] <- factor(
+          data[[variable]],
+          levels = if (is.factor(original)) levels(original) else NULL,
+          ordered = identical(type, "ordered") || is.ordered(original)
+        )
+      }
     }
   }
   data
@@ -266,6 +290,63 @@
   .rls_unique_dataset_name(name %||% paste(source_name, "imputed"))
 }
 
+.rls_mi_dput_code <- function(value) {
+  paste(capture.output(dput(value)), collapse = "\n")
+}
+
+.rls_mi_recorded_provenance_code <- function(record, variables_for_mice,
+                                             mice_arguments) {
+  source_id <- .rls_r_string_literal(record$source_dataset_id)
+  source_version <- as.integer(record$source_data_version %||% 1L)
+  metadata_code <- .rls_mi_dput_code(record$variable_metadata)
+  variables_code <- .rls_r_character_vector(variables_for_mice)
+  arguments_code <- .rls_mi_dput_code(mice_arguments)
+  paste(
+    paste0("source_data <- LinkEDA::ls_get_data_version(", source_id,
+           ", version = ", source_version, "L)"),
+    "if (inherits(source_data, \"linkeda_multiple_imputation_version\")) source_data <- source_data$data",
+    paste0("source_data <- source_data[", .rls_mi_dput_code(record$original_row_ids), ", , drop = FALSE]"),
+    "source_record <- list(",
+    "  data = source_data,",
+    "  original_data = source_data,",
+    paste0("  variable_metadata = ", metadata_code),
+    ")",
+    paste0("variables_for_mice <- ", variables_code),
+    "data_for_mice <- LinkEDA:::.rls_mi_prepare_data_for_mice(source_record, variables_for_mice)",
+    paste0("mice_arguments <- ", arguments_code),
+    "mids_object <- do.call(mice::mice, c(list(data = data_for_mice), mice_arguments))",
+    sep = "\n"
+  )
+}
+
+.rls_mi_import_provenance_code <- function(path = NA_character_, source = "",
+                                           mids = NULL) {
+  # The path received here may be a FIFO/TCP-backed staging copy created by
+  # the native importer.  It is transport state, not user provenance.  Even
+  # when a durable source path exists, LinkEDA did not record the original R
+  # import expression and must not invent one after the fact.
+  metadata <- if (inherits(mids, "mids")) {
+    list(
+      m = as.integer(mids$m %||% 0L),
+      method = mids$method %||% character(),
+      predictorMatrix = mids$predictorMatrix %||% NULL,
+      visitSequence = mids$visitSequence %||% NULL,
+      iteration = as.integer(mids$iteration %||% 0L),
+      call = if (is.null(mids$call)) NULL else paste(deparse(mids$call), collapse = " ")
+    )
+  } else {
+    list(source_description = as.character(source %||% "")[[1L]])
+  }
+  paste(
+    "# Reconstructed from mids metadata.",
+    "# This may not be identical to the original code.",
+    "# The original creation/import expression was not recorded; no file-reading",
+    "# call can be inferred from LinkEDA's internal transport copy.",
+    paste0("mids_metadata <- ", .rls_mi_dput_code(metadata)),
+    sep = "\n"
+  )
+}
+
 .rls_register_imputed_dataset <- function(record, make_active = TRUE) {
   dataset_name <- .rls_mi_completed_name(record$source_dataset_id, record$name)
   data <- record$completed_datasets[[record$active_version]]
@@ -273,7 +354,9 @@
     dataset_name,
     data,
     source = sprintf("Multiple imputation from %s", record$source_dataset_id),
-    activate = FALSE
+    activate = FALSE,
+    provenance_origin = record$provenance_origin %||% "unavailable",
+    provenance_code = record$provenance_code %||% ""
   )
   dataset_record <- .rls_dataset_record(dataset_id)
   dataset_record$dataset_type <- "multiple_imputation"
@@ -288,9 +371,31 @@
   dataset_record$imputation_display_mode <- record$display_mode
   dataset_record$imputation_count <- record$m
   dataset_record$original_row_ids <- record$original_row_ids
+  dataset_record$stable_row_ids <- as.character(record$stable_row_ids %||%
+    paste0(record$source_dataset_id, ":row:", record$original_row_ids))
+  attr(dataset_record$data, "linkeda_row_ids") <- dataset_record$stable_row_ids
+  attr(dataset_record$original_data, "linkeda_row_ids") <- dataset_record$stable_row_ids
+  dataset_record$completed_datasets <- lapply(dataset_record$completed_datasets, function(data) {
+    attr(data, "linkeda_row_ids") <- dataset_record$stable_row_ids
+    data
+  })
+  dataset_record$data_provenance <- list(
+    schema = "LinkEDADataProvenance/v1",
+    origin = record$provenance_origin %||% "unavailable",
+    origin_code = record$provenance_code %||% "",
+    origin_description = record$provenance_description %||%
+      sprintf("Multiple imputation from %s", record$source_dataset_id),
+    history = list()
+  )
+  dataset_record$original_row_names <- record$original_row_names %||%
+    row.names(record$original_data)
   dataset_record$variable_metadata <- record$variable_metadata
   dataset_record$metadata <- record$variable_metadata
+  if (!is.null(record$import_name_map)) {
+    dataset_record$import_name_map <- record$import_name_map
+  }
   .rls_set_dataset_record(dataset_record)
+  .rls_store_data_version(dataset_record)
   record$dataset_id <- dataset_id
   record$group <- dataset_id
   if (isTRUE(make_active)) {
@@ -320,16 +425,22 @@
   dataset_record$imputation_display_mode <- record$display_mode
   dataset_record$imputation_count <- record$m
   dataset_record$original_row_ids <- record$original_row_ids
+  dataset_record$original_row_names <- record$original_row_names %||%
+    row.names(record$original_data)
   .rls_set_dataset_record(dataset_record)
+  .rls_store_data_version(dataset_record)
   if (isTRUE(.rls_state$process_started)) {
-    try(.rls_send(c(
+    .rls_send(c(
       "REGISTER_DATASET",
       dataset_record$group,
       .rls_variable_payload(dataset_record$data, dataset_record$variable_metadata),
       .rls_dataframe_payload(dataset_record$data, dataset_record$variable_metadata, dataset_record = dataset_record)
-    )), silent = TRUE)
+    ))
+    if (identical(.rls_state$active_dataset, dataset_record$group)) {
+      .rls_send(c("SET_ACTIVE_DATASET", dataset_record$group))
+    }
     if (isTRUE(open_sheet)) {
-      try(.rls_send(c("DATA_OPEN_DATA_SHEET", dataset_record$group)), silent = TRUE)
+      .rls_send(c("DATA_OPEN_DATA_SHEET", dataset_record$group))
     }
   }
   invisible(record)
@@ -351,6 +462,255 @@
     )
   }
   out
+}
+
+.rls_mi_align_named_vector <- function(values, original_names, clean_names,
+                                       default = "") {
+  out <- rep(default, length(clean_names))
+  if (length(values)) {
+    values <- as.character(values)
+    if (!is.null(names(values)) && all(original_names %in% names(values))) {
+      out <- unname(values[original_names])
+    } else if (length(values) == length(clean_names)) {
+      out <- unname(values)
+    }
+  }
+  names(out) <- clean_names
+  out[is.na(out)] <- default
+  out
+}
+
+.rls_mi_align_predictor_matrix <- function(values, original_names, clean_names) {
+  p <- length(clean_names)
+  fallback <- matrix(0, nrow = p, ncol = p,
+                     dimnames = list(clean_names, clean_names))
+  if (is.null(values)) {
+    return(fallback)
+  }
+  values <- as.matrix(values)
+  if (!is.null(rownames(values)) && !is.null(colnames(values)) &&
+      all(original_names %in% rownames(values)) &&
+      all(original_names %in% colnames(values))) {
+    values <- values[original_names, original_names, drop = FALSE]
+  }
+  if (!identical(dim(values), c(p, p))) {
+    return(fallback)
+  }
+  storage.mode(values) <- "numeric"
+  dimnames(values) <- list(clean_names, clean_names)
+  values
+}
+
+.rls_mi_validate_completed_datasets <- function(completed, original_data,
+                                                original_row_names = NULL) {
+  if (!is.list(completed) || !length(completed)) {
+    stop("The mice object did not produce any completed datasets.", call. = FALSE)
+  }
+  expected_names <- names(original_data)
+  expected_rows <- nrow(original_data)
+  if (is.null(original_row_names)) original_row_names <- row.names(original_data)
+  compatible_column <- function(original, candidate) {
+    if (is.factor(original)) {
+      return(is.factor(candidate) &&
+        identical(is.ordered(candidate), is.ordered(original)) &&
+        identical(levels(candidate), levels(original)))
+    }
+    if (is.numeric(original)) return(is.numeric(candidate))
+    if (is.character(original)) return(is.character(candidate))
+    if (is.logical(original)) return(is.logical(candidate))
+    identical(class(candidate), class(original))
+  }
+  for (version in seq_along(completed)) {
+    data <- completed[[version]]
+    if (!is.data.frame(data)) {
+      stop(sprintf("Completed imputation %d is not a data frame.", version),
+           call. = FALSE)
+    }
+    if (nrow(data) != expected_rows) {
+      stop(sprintf("Completed imputation %d does not match the source row count.",
+                   version), call. = FALSE)
+    }
+    if (!identical(names(data), expected_names)) {
+      stop(sprintf("Completed imputation %d does not have the source variables in the same order.",
+                   version), call. = FALSE)
+    }
+    if (!identical(row.names(data), original_row_names)) {
+      stop(sprintf("Completed imputation %d does not preserve the source row identity.",
+                   version), call. = FALSE)
+    }
+    incompatible <- expected_names[!vapply(expected_names, function(variable) {
+      compatible_column(original_data[[variable]], data[[variable]])
+    }, logical(1L))]
+    if (length(incompatible)) {
+      stop(sprintf(
+        "Completed imputation %d has an incompatible type or categories for variable `%s`.",
+        version, incompatible[[1L]]
+      ), call. = FALSE)
+    }
+  }
+  invisible(completed)
+}
+
+.rls_register_mids_dataset <- function(mids, name, source = "mice mids object",
+                                       path = NA_character_, make_active = TRUE) {
+  .rls_require_mice()
+  if (!inherits(mids, "mids")) {
+    stop("`object` must be a mice `mids` object.", call. = FALSE)
+  }
+  if (!is.data.frame(mids$data) || !nrow(mids$data) || !ncol(mids$data)) {
+    stop("The mice `mids` object does not contain a non-empty source data frame.",
+         call. = FALSE)
+  }
+  m <- suppressWarnings(as.integer(mids$m))
+  if (length(m) != 1L || is.na(m) || m < 1L) {
+    stop("The mice `mids` object does not contain a valid number of imputations.",
+         call. = FALSE)
+  }
+
+  cleaned <- .rls_clean_imported_data(as.data.frame(mids$data, stringsAsFactors = FALSE))
+  original_data <- cleaned$data
+  name_map <- cleaned$name_map
+  original_names <- name_map$original_name
+  clean_names <- name_map$variable_name
+
+  completed <- tryCatch(
+    lapply(seq_len(m), function(version) {
+      data <- as.data.frame(mice::complete(mids, action = version),
+                            stringsAsFactors = FALSE)
+      if (nrow(data) != nrow(original_data)) {
+        stop(sprintf("Completed imputation %d does not match the source data dimensions.",
+                     version), call. = FALSE)
+      }
+      if (!anyDuplicated(original_names) && all(original_names %in% names(data))) {
+        data <- data[original_names]
+      }
+      if (ncol(data) != ncol(original_data)) {
+        stop(sprintf("Completed imputation %d does not contain the selected variables.",
+                     version), call. = FALSE)
+      }
+      .rls_apply_import_name_map(data, name_map)
+    }),
+    error = function(e) {
+      stop(sprintf("The completed datasets could not be extracted from the mice object: %s",
+                   conditionMessage(e)), call. = FALSE)
+    }
+  )
+  .rls_mi_validate_completed_datasets(
+    completed, original_data, original_row_names = row.names(mids$data)
+  )
+
+  method_vector <- .rls_mi_align_named_vector(
+    mids$method, original_names, clean_names, default = ""
+  )
+  predictor_matrix <- .rls_mi_align_predictor_matrix(
+    mids$predictorMatrix, original_names, clean_names
+  )
+  missing_mask <- .rls_mi_missing_mask(original_data, clean_names)
+  impute_variables <- clean_names[
+    vapply(original_data, anyNA, logical(1L)) | nzchar(method_vector)
+  ]
+  predictor_variables <- clean_names[
+    colSums(abs(predictor_matrix), na.rm = TRUE) > 0
+  ]
+  metadata <- .rls_variable_metadata(original_data, infer_imported_types = TRUE)
+  metadata$original_name <- name_map$original_name[
+    match(metadata$variable_name, name_map$variable_name)
+  ]
+
+  name <- .rls_safe_dataset_name(name %||% "mice imputation")
+  id <- .rls_imputation_id(name)
+  maxit <- suppressWarnings(as.integer(mids$iteration %||% 0L))
+  if (!length(maxit) || is.na(maxit[[1L]])) maxit <- 0L
+  record <- list(
+    id = id,
+    dataset_id = NULL,
+    group = NULL,
+    source_dataset_id = paste0(name, " source"),
+    name = name,
+    original_data = original_data,
+    original_row_ids = seq_len(nrow(original_data)),
+    stable_row_ids = paste0(name, ":row:", seq_len(nrow(original_data))),
+    original_row_names = row.names(mids$data),
+    variable_metadata = metadata,
+    impute_variables = impute_variables,
+    predictor_variables = predictor_variables,
+    methods = method_vector[impute_variables],
+    method_vector = method_vector,
+    predictor_matrix = predictor_matrix,
+    m = m,
+    maxit = maxit[[1L]],
+    seed = NULL,
+    mids_object = mids,
+    completed_datasets = completed,
+    missing_cell_mask = missing_mask,
+    imputed_cell_map = .rls_mi_build_cell_map(original_data, completed, missing_mask),
+    active_version = 1L,
+    display_mode = "version",
+    created_at = Sys.time(),
+    fit_version = 1L,
+    warnings = character(),
+    errors = character(),
+    pooling = list(engine = "mice", with = "mice::with", pool = "mice::pool",
+                   rubin_rules_ready = TRUE),
+    plot_metadata = list(active_version = 1L, missing_cell_mask = missing_mask),
+    import_name_map = name_map,
+    import_source = source,
+    import_path = path,
+    provenance_origin = if (length(path) && !is.na(path) && nzchar(path))
+      "reconstructed" else "unavailable",
+    provenance_code = .rls_mi_import_provenance_code(path, source, mids),
+    provenance_description = source
+  )
+  .rls_set_imputation_record(record)
+  record <- .rls_register_imputed_dataset(record, make_active = make_active)
+  dataset_record <- .rls_dataset_record(record$dataset_id)
+  dataset_record$source <- source
+  dataset_record$path <- if (length(path) && !is.na(path) && nzchar(path)) {
+    normalizePath(path, mustWork = FALSE)
+  } else {
+    NA_character_
+  }
+  dataset_record$import_name_map <- name_map
+  dataset_record$imported_mids <- TRUE
+  dataset_record$original_row_names <- record$original_row_names
+  .rls_set_dataset_record(dataset_record)
+  .rls_set_imputation_record(record)
+  invisible(record$dataset_id)
+}
+
+#' Import an existing mice multiple-imputation object
+#'
+#' Imports a `mice::mids` object without discarding its separate completed
+#' datasets. LinkEDA analyses therefore use their multiple-imputation backend
+#' and pool estimates across imputations. `object` may also be a path to an RDS,
+#' RDA, or RData file containing a `mids` object.
+#'
+#' @param object A `mice::mids` object, or a path to an R file containing one.
+#' @param name Optional name for the imported imputed dataset.
+#' @param make_active Logical. If `TRUE`, the imported dataset becomes active.
+#' @return Invisibly returns the registered dataset name.
+#' @rdname ls_import_data
+#' @export
+ls_import_mice <- function(object, name = NULL, make_active = TRUE) {
+  if (is.character(object) && length(object) == 1L && !is.na(object) &&
+      file.exists(object)) {
+    ext <- tolower(tools::file_ext(object))
+    if (identical(ext, "rds")) {
+      return(ls_import_rds(object, name = name, make_active = make_active))
+    }
+    if (ext %in% c("rda", "rdata")) {
+      return(ls_import_rdata(object, name = name, make_active = make_active))
+    }
+    stop("A mice import path must use .rds, .rda, or .RData.", call. = FALSE)
+  }
+  if (!inherits(object, "mids")) {
+    stop("`object` must be a mice `mids` object or a path containing one.",
+         call. = FALSE)
+  }
+  .rls_register_mids_dataset(
+    object, name = name %||% "mice imputation", source = "mice mids object",
+    path = NA_character_, make_active = make_active
+  )
 }
 
 #' Multiple imputation for missing data
@@ -378,6 +738,11 @@ ls_new_missing_data_imputation <- function(data = NULL,
                                            predictor_matrix = NULL,
                                            name = NULL) {
   record <- .rls_mi_data_record(data, name = name)
+  scope_snapshot <- .rls_capture_analysis_scope(record)
+  if (!scope_snapshot$n) stop("The global analysis scope contains no observations.", call.=FALSE)
+  if (scope_snapshot$kind != "all")
+    record <- .rls_dataset_subset_original_rows(record, scope_snapshot$rows)
+
   if (!is.numeric(m) || length(m) != 1L || is.na(m) || m < 1L) {
     stop("`m` must be a positive integer.", call. = FALSE)
   }
@@ -417,9 +782,13 @@ ls_new_missing_data_imputation <- function(data = NULL,
     dataset_id = NULL,
     group = NULL,
     source_dataset_id = record$group,
+    source_data_version = as.integer(record$data_version %||% 1L),
+    data_scope = scope_snapshot,
     name = name,
     original_data = record$data,
     original_row_ids = record$original_row_ids %||% seq_len(nrow(record$data)),
+    stable_row_ids = as.character(record$stable_row_ids %||%
+      paste0(record$group, ":row:", seq_len(nrow(record$data)))),
     variable_metadata = record$variable_metadata,
     impute_variables = impute,
     predictor_variables = predictors,
@@ -440,7 +809,10 @@ ls_new_missing_data_imputation <- function(data = NULL,
     warnings = character(),
     errors = character(),
     pooling = list(engine = "mice", with = "mice::with", pool = "mice::pool", rubin_rules_ready = TRUE),
-    plot_metadata = list(active_version = 1L, missing_cell_mask = missing_mask)
+    plot_metadata = list(active_version = 1L, missing_cell_mask = missing_mask),
+    provenance_origin = "unavailable",
+    provenance_code = "",
+    provenance_description = sprintf("Multiple imputation from %s", record$group)
   )
   .rls_set_imputation_record(imputation_record)
 }
@@ -467,6 +839,7 @@ ls_run_imputation <- function(imputation, ..., open_data = TRUE, make_active = T
   if (!is.null(record$seed)) {
     mice_args$seed <- record$seed
   }
+  recorded_arguments <- mice_args[names(mice_args) != "data"]
   mids <- tryCatch(
     withCallingHandlers(
       do.call(mice::mice, mice_args),
@@ -495,6 +868,10 @@ ls_run_imputation <- function(imputation, ..., open_data = TRUE, make_active = T
   record$fit_version <- record$fit_version + 1L
   record$imputed_cell_map <- .rls_mi_build_cell_map(record$original_data, completed, record$missing_cell_mask)
   record$plot_metadata$active_version <- record$active_version
+  record$provenance_origin <- "recorded"
+  record$provenance_code <- .rls_mi_recorded_provenance_code(
+    record, variables_for_mice, recorded_arguments
+  )
   record <- .rls_register_imputed_dataset(record, make_active = make_active)
   .rls_set_imputation_record(record)
   .rls_sync_imputed_dataset_record(record, open_sheet = isTRUE(open_data))
@@ -628,12 +1005,12 @@ print.rlispstat_imputation_summary <- function(x, ...) {
   if (!identical(record$dataset_type %||% "data_frame", "multiple_imputation")) {
     return("")
   }
-  if (identical(record$imputation_display_mode, "all")) {
-    return(sprintf(" [all %d imputations]", record$imputation_count))
-  }
   if (identical(record$imputation_display_mode, "original")) {
     return(" [original incomplete data]")
   }
+  # Ordinary descriptive plots are built from `record$data`, which is the
+  # active completed dataset even while the sheet displays all imputations.
+  # Do not label those plots as pooled or as if all m data sets were stacked.
   sprintf(" [imputation %d of %d]", record$active_imputation_version, record$imputation_count)
 }
 
@@ -641,11 +1018,29 @@ print.rlispstat_imputation_summary <- function(x, ...) {
   if (!identical(record$dataset_type %||% "data_frame", "multiple_imputation")) {
     return(invisible(FALSE))
   }
+  display_mode <- record$imputation_display_mode %||% "version"
+  detail <- if (identical(display_mode, "original")) {
+    "the original incomplete data"
+  } else if (identical(display_mode, "all")) {
+    sprintf(
+      paste0(
+        "imputation %d of %d even though the data sheet is displaying all ",
+        "imputations; this ordinary command is not a combined MI analysis"
+      ),
+      record$active_imputation_version,
+      record$imputation_count
+    )
+  } else {
+    sprintf(
+      "imputation %d of %d",
+      record$active_imputation_version,
+      record$imputation_count
+    )
+  }
   warning(sprintf(
-    "%s is using imputation %d of %d for this command. Use the multiple-imputation aware analysis entry point when you need pooled results.",
+    "%s is using %s. Use a multiple-imputation-aware analysis when a combined estimate is defined.",
     analysis,
-    record$active_imputation_version,
-    record$imputation_count
+    detail
   ), call. = FALSE)
   invisible(TRUE)
 }

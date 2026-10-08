@@ -21,6 +21,7 @@ using rlispstat::core::BoxplotOptionsResponseText;
 using rlispstat::core::BoxplotH0SimulationCenterX;
 using rlispstat::core::BoxplotH0SimulationResult;
 using rlispstat::core::BoxplotGroupOrderMenuOptions;
+using rlispstat::core::BoxplotGroupSpans;
 using rlispstat::core::BoxplotLayout;
 using rlispstat::core::BoxplotMenuState;
 using rlispstat::core::BoxplotNoMoreNumericVariablesTitle;
@@ -188,6 +189,41 @@ int main()
     assert(groupedBoxplot.boxplotPoints[1].row == 3);
     assert(groupedBoxplot.boxplotPoints[1].category == "NA");
     assert(groupedBoxplot.boxplotCategories == std::vector<std::string>({"4", "NA", "8"}));
+
+    groupedDf.columns.push_back(
+        DataColumn{"gear", "factor", "", "", -1,
+                   {"manual", "manual", "automatic", "manual", "manual"},
+                   {}, {}, {}, {}, {}, {}});
+    groupedBoxplot.boxplotGroupingVariables = {"cyl", "gear"};
+    groupedBoxplot.xLabel = "cyl + gear";
+    RebuildGroupedBoxplotPointsFromDataFrame(groupedBoxplot, groupedDf);
+    assert(groupedBoxplot.boxplotPoints.size() == 4);
+    assert(groupedBoxplot.boxplotGroupingVariables ==
+           std::vector<std::string>({"cyl", "gear"}));
+    assert(groupedBoxplot.boxplotCategoryLevels.size() == 4);
+    assert(groupedBoxplot.boxplotCategoryLevels[0] ==
+           std::vector<std::string>({"4", "manual"}));
+    BoxplotLayout nestedLayout = layout;
+    nestedLayout.categories = groupedBoxplot.boxplotCategories;
+    nestedLayout.categoryLevels = groupedBoxplot.boxplotCategoryLevels;
+    const double outerGap = BoxplotCategoryCenter(nestedLayout,
+        groupedBoxplot.boxplotCategories[1]) - BoxplotCategoryCenter(nestedLayout,
+        groupedBoxplot.boxplotCategories[0]);
+    const double innerGap = BoxplotCategoryCenter(nestedLayout,
+        groupedBoxplot.boxplotCategories[2]) - BoxplotCategoryCenter(nestedLayout,
+        groupedBoxplot.boxplotCategories[1]);
+    assert(outerGap > 2.0 * innerGap);
+    const auto nestedSpans = BoxplotGroupSpans(nestedLayout);
+    assert(!nestedSpans.empty());
+    assert(nestedSpans.front().firstCategoryIndex == 0);
+    assert(nestedSpans.front().lastCategoryIndex >=
+           nestedSpans.front().firstCategoryIndex);
+    BoxplotLayout repeatedLevelLayout = layout;
+    repeatedLevelLayout.categories = {"A/x", "A/y", "B/x", "B/z"};
+    repeatedLevelLayout.categoryLevels = {
+        {"A", "x"}, {"A", "y"}, {"B", "x"}, {"B", "z"}};
+    assert(BoxplotCategoriesForLevelValue(repeatedLevelLayout, 1, "x") ==
+           std::set<std::string>({"A/x", "B/x"}));
 
     Rect brush{connected.x - 4.0, connected.y - 4.0, 8.0, 8.0};
     assert(SelectBoxplotCasesInBrush(geometry, brush) == S({1}));

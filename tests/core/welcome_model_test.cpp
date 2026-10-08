@@ -33,9 +33,16 @@ int main()
            "Documentation is a work in progress.");
     assert(model.version == "1.2.3");
     assert(model.capabilities.canChooseRDataFrame);
-    assert(model.exampleItems.size() == 2);
+    assert(model.exampleItems.size() == 18);
     assert(model.exampleItems[0].id == "mtcars");
     assert(model.exampleItems[1].id == "Alien");
+    assert(model.exampleItems[2].id == "anscombe");
+    assert(model.exampleItems.back().id == "nhanes_mice");
+    assert(FindWelcomeExample("Alien") != nullptr);
+    assert(FindWelcomeExample("Alien")->fileName == "Alien.csv");
+    assert(FindWelcomeExample("insurance_claims") != nullptr);
+    assert(FindWelcomeExample("insurance_claims")->fileName == "insurance_claims.csv");
+    assert(FindWelcomeExample("does-not-exist") == nullptr);
     assert(WelcomeAuthorLine(model.credits) ==
            "Pedro Valero-Mora \xC2\xB7 University of Valencia");
     assert(WelcomeAuthorAccessibilityText(model.credits) ==

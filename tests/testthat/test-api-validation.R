@@ -76,6 +76,129 @@ test_that("a stale native connection is reset before relaunching", {
   expect_false(exists("stale_group", envir = state$groups, inherits = FALSE))
 })
 
+test_that("missing native control path reports a connection failure cleanly", {
+  state <- LinkEDA:::.rls_state
+  saved <- list(started = state$process_started, path = state$control_path)
+  on.exit({
+    state$process_started <- saved$started
+    state$control_path <- saved$path
+  }, add = TRUE)
+  state$process_started <- TRUE
+  state$control_path <- NULL
+
+  expect_error(LinkEDA:::.rls_send("PING"),
+               "Could not connect to the LinkEDA native backend", fixed = TRUE)
+  expect_false(state$process_started)
+  expect_null(state$control_path)
+})
+
+test_that("a welcome launch retries when Quit wins after the startup probe", {
+  starts <- 0L
+  welcomes <- 0L
+  resets <- 0L
+  testthat::local_mocked_bindings(
+    .rls_start_backend = function() { starts <<- starts + 1L; invisible(TRUE) },
+    .rls_send = function(lines, ...) {
+      if (identical(lines[[1L]], "WELCOME_LAUNCH")) {
+        welcomes <<- welcomes + 1L
+        if (welcomes == 1L) stop("LinkEDA is closing", call. = FALSE)
+      }
+      "OK"
+    },
+    .rls_reset_backend_connection = function(...) {
+      resets <<- resets + 1L
+      invisible(TRUE)
+    },
+    .package = "LinkEDA"
+  )
+  expect_silent(LinkEDA())
+  expect_identical(c(starts, welcomes, resets), c(2L, 2L, 1L))
+})
+
+test_that("a stale macOS FIFO fails promptly without a reader", {
+  skip_if(.Platform$OS.type == "windows")
+  path <- tempfile("linkeda-stale-fifo-")
+  expect_identical(system2("mkfifo", path), 0L)
+  on.exit(unlink(path), add = TRUE)
+  state <- LinkEDA:::.rls_state
+  old <- list(started = state$process_started, path = state$control_path)
+  on.exit({
+    state$process_started <- old$started
+    state$control_path <- old$path
+  }, add = TRUE)
+  state$process_started <- TRUE
+  state$control_path <- path
+  elapsed <- system.time(expect_error(
+    LinkEDA:::.rls_send(c("WELCOME_LAUNCH", "from_existing_r", "0.0.1", "none")),
+    "no longer accepting commands"
+  ))[["elapsed"]]
+  expect_lt(elapsed, 3)
+})
+
+test_that("Windows startup prefers WinUI before consulting the console fallback", {
+  skip_if_not(file.exists(file.path(linkeda_source_test_root(), "src", "platform", "windows", "winui", "LinkEDA")),
+              "Windows UI sources are absent from the macOS checkout")
+  skip_if_not(.Platform$OS.type == "windows")
+  state <- LinkEDA:::.rls_state
+  saved <- list(
+    process_started = state$process_started,
+    control_port = state$control_port,
+    backend_kind = state$backend_kind
+  )
+  on.exit({
+    state$process_started <- saved$process_started
+    state$control_port <- saved$control_port
+    state$backend_kind <- saved$backend_kind
+  }, add = TRUE)
+  state$process_started <- FALSE
+  state$control_port <- NULL
+  state$backend_kind <- NULL
+
+  calls <- character()
+  testthat::local_mocked_bindings(
+    .rls_send_winui = function(lines) {
+      calls <<- c(calls, lines[[1L]])
+      state$process_started <- TRUE
+      state$control_port <- 39072L
+      state$backend_kind <- "winui"
+      "OK"
+    },
+    .rls_backend_path = function() stop("console fallback must not be queried"),
+    .rls_start_backend_task_poll = function() invisible(TRUE),
+    .package = "LinkEDA"
+  )
+  withr::local_options(list(LinkEDA.launch = TRUE, LinkEDA.use_winui = TRUE))
+
+  expect_true(LinkEDA:::.rls_start_backend())
+  expect_identical(state$backend_kind, "winui")
+  expect_identical(calls, c("PING", "LIST_PLOTS"))
+})
+
+test_that("Windows startup rejects an obsolete WinUI protocol clearly", {
+  skip_if_not(.Platform$OS.type == "windows")
+  state <- LinkEDA:::.rls_state
+  saved_started <- state$process_started
+  on.exit({ state$process_started <- saved_started }, add = TRUE)
+  state$process_started <- FALSE
+
+  testthat::local_mocked_bindings(
+    .rls_send_winui = function(lines) {
+      if (identical(lines[[1L]], "PING")) return("OK")
+      stop("unknown command", call. = FALSE)
+    },
+    .rls_backend_path = function() stop("console backend missing", call. = FALSE),
+    .rls_reset_backend_connection = function(clear_views = TRUE) {
+      state$process_started <- FALSE
+      invisible(TRUE)
+    },
+    .package = "LinkEDA"
+  )
+  withr::local_options(list(LinkEDA.launch = TRUE, LinkEDA.use_winui = TRUE))
+
+  expect_error(LinkEDA:::.rls_start_backend(), "WinUI reported: unknown command", fixed = TRUE)
+  expect_false(state$process_started)
+})
+
 test_that("plot registry helpers track local object metadata", {
   plot_id <- "plot_test_registry"
   LinkEDA:::`.rls_register_plot`(plot_id, "g_registry", "x", "y", mtcars, seq_len(nrow(mtcars)))
@@ -104,15 +227,186 @@ test_that("DataDesk helpers classify variable types", {
   d <- data.frame(
     x = 1:3,
     f = factor(c("a", "b", "a")),
+    o = ordered(c("low", "high", "low"), levels = c("low", "high")),
     c = letters[1:3],
     l = c(TRUE, FALSE, TRUE),
     date = as.Date("2026-01-01") + 0:2
   )
   expect_equal(vapply(d, LinkEDA:::.rls_variable_type, character(1L)),
-               c(x = "numeric", f = "factor", c = "character", l = "logical", date = "datetime"))
+               c(x = "numeric", f = "factor", o = "ordered", c = "character",
+                 l = "logical", date = "datetime"))
   payload <- LinkEDA:::.rls_variable_payload(d)
   expect_true("VARMETA" %in% payload)
   expect_true("factor" %in% payload)
+})
+
+test_that("file-import inference recognizes coded categories conservatively", {
+  d <- data.frame(
+    id = seq_len(32),
+    cyl = rep(c(4, 6, 8), length.out = 32),
+    am = rep(c(0, 1), 16),
+    score = seq(10.25, 18, length.out = 32),
+    rounded_measure = rep(1:12, length.out = 32),
+    planet = rep(c("Aurelia", "Borealis", "Cygnus"), length.out = 32),
+    happy = rep(c("no", "yes"), 16),
+    notes = sprintf("case-specific note %02d", seq_len(32)),
+    stringsAsFactors = FALSE
+  )
+  metadata <- LinkEDA:::.rls_variable_metadata(d, infer_imported_types = TRUE)
+  types <- setNames(metadata$current_analysis_type, metadata$variable_name)
+  expect_equal(types[c("id", "cyl", "am", "score", "rounded_measure",
+                       "planet", "happy", "notes")],
+               c(id = "numeric", cyl = "numeric", am = "numeric",
+                 score = "numeric", rounded_measure = "numeric",
+                 planet = "factor", happy = "factor", notes = "character"))
+
+  expect_equal(LinkEDA:::.rls_metadata_levels(metadata, "planet"), c("Aurelia", "Borealis", "Cygnus"))
+  payload <- LinkEDA:::.rls_dataframe_payload(d, metadata = metadata)
+  expect_true("DATLEVELS" %in% payload)
+
+  labelled <- structure(c(1, 2, 1, 2), labels = c(Control = 1, Treatment = 2))
+  expect_equal(LinkEDA:::.rls_imported_variable_type(labelled, "arm"), "factor")
+
+  imported_age <- rep(as.character(12:19), length.out = 270)
+  imported_age[c(11, 71, 141, 211)] <- c("11-vuotta", "11.V", "14 vuotta", "18 vuotias")
+  imported_age[[31]] <- "17,5"
+  imported_age[[61]] <- "15,"
+  age_data <- data.frame(age = imported_age, stringsAsFactors = FALSE)
+  age_metadata <- LinkEDA:::.rls_variable_metadata(age_data, infer_imported_types = TRUE)
+  expect_equal(age_metadata$current_analysis_type, "character")
+  warnings <- LinkEDA:::.rls_import_numeric_type_warnings(age_data, age_metadata)
+  expect_length(warnings, 1L)
+  expect_match(warnings, "`age` looks numeric, but 4 of 270 non-missing values are not numeric", fixed = TRUE)
+  expect_match(warnings, "imported as Text", fixed = TRUE)
+})
+
+test_that("native cell edits synchronize the registered R dataset", {
+  group <- ls_register_dataset(
+    "native_sync_data", data.frame(score = c(1, 2), category = c(4, 6))
+  )
+  on.exit(ls_unregister_dataset(group), add = TRUE)
+  exchange <- tempfile("rlispstat-sync-")
+  dir.create(exchange)
+  payload <- file.path(exchange, "dataset.txt")
+  writeLines(c(
+    "DATASET", group, "2", "2",
+    "score", "numeric", "9", "2",
+    "category", "factor", "4", "8"
+  ), payload, useBytes = TRUE)
+  testthat::local_mocked_bindings(
+    .rls_send = function(lines) "OK",
+    .package = "LinkEDA"
+  )
+
+  expect_true(LinkEDA:::.rls_handle_r_dataset_sync_needed(c(
+    "R_DATASET_SYNC_NEEDED", "request-1", group, payload
+  )))
+  record <- LinkEDA:::.rls_dataset_record(group)
+  expect_equal(record$data$score, c(9, 2))
+  expect_equal(as.character(record$data$category), c("4", "8"))
+  expect_equal(record$variable_metadata$current_analysis_type,
+               c("numeric", "factor"))
+  expect_true(record$modified)
+  expect_false(dir.exists(exchange))
+})
+
+test_that("native dataset synchronization restores a registry lost after R restart", {
+  group <- "native_recovery_data"
+  if (group %in% ls_datasets()$name) ls_unregister_dataset(group)
+  on.exit(ls_unregister_dataset(group), add = TRUE)
+  exchange <- tempfile("rlispstat-sync-")
+  dir.create(exchange)
+  payload <- file.path(exchange, "dataset.txt")
+  writeLines(c(
+    "DATASET", group, "3", "2",
+    "score", "numeric", "1", "2", "3",
+    "arm", "factor", "control", "treatment", "control"
+  ), payload, useBytes = TRUE)
+  testthat::local_mocked_bindings(
+    .rls_send = function(lines) "OK",
+    .package = "LinkEDA"
+  )
+
+  expect_false(group %in% ls_datasets()$name)
+  expect_true(LinkEDA:::.rls_handle_r_dataset_sync_needed(c(
+    "R_DATASET_SYNC_NEEDED", "request-recovery", group, payload
+  )))
+  record <- LinkEDA:::.rls_dataset_record(group)
+  expect_equal(record$data$score, c(1, 2, 3))
+  expect_equal(as.character(record$data$arm),
+               c("control", "treatment", "control"))
+  expect_equal(record$variable_metadata$current_analysis_type,
+               c("numeric", "factor"))
+  expect_false(dir.exists(exchange))
+})
+
+test_that("native cell synchronization carries the edited data version to R", {
+  group <- "native_cell_version_sync"
+  if (group %in% ls_datasets()$name) ls_unregister_dataset(group)
+  ls_register_dataset(group, data.frame(score = c(1, 2)))
+  on.exit(ls_unregister_dataset(group), add = TRUE)
+  exchange <- tempfile("rlispstat-sync-")
+  dir.create(exchange)
+  payload <- file.path(exchange, "dataset.txt")
+  writeLines(c("DATASET", group, "2", "1", "score", "numeric", "1", "3",
+               "DATA_VERSION_V1", "2"), payload, useBytes = TRUE)
+  testthat::local_mocked_bindings(
+    .rls_send = function(lines) "OK",
+    .package = "LinkEDA"
+  )
+  expect_true(LinkEDA:::.rls_handle_r_dataset_sync_needed(c(
+    "R_DATASET_SYNC_NEEDED", "request-edit", group, payload
+  )))
+  record <- LinkEDA:::.rls_dataset_record(group)
+  expect_equal(record$data$score, c(1, 3))
+  expect_identical(record$data_version, 2L)
+})
+
+test_that("a native derived category is available to R analyses after synchronization", {
+  group <- "native_derived_category_sync"
+  if (group %in% ls_datasets()$name) ls_unregister_dataset(group)
+  ls_register_dataset(group, data.frame(score = c(1, 2, 3)))
+  on.exit(ls_unregister_dataset(group), add = TRUE)
+  exchange <- tempfile("rlispstat-sync-")
+  dir.create(exchange)
+  payload <- file.path(exchange, "dataset.txt")
+  writeLines(c("DATASET", group, "3", "2", "DATACELLS_PERCENT_V1",
+               "score", "numeric", "1", "2", "3",
+               "point_color_from_plot", "factor", "green", "yellow", "green",
+               "DATA_VERSION_V1", "2"), payload, useBytes = TRUE)
+  testthat::local_mocked_bindings(.rls_send = function(lines) "OK", .package = "LinkEDA")
+  expect_true(LinkEDA:::.rls_handle_r_dataset_sync_needed(c(
+    "R_DATASET_SYNC_NEEDED", "request-derived", group, payload
+  )))
+  record <- LinkEDA:::.rls_dataset_record(group)
+  expect_identical(record$data_version, 2L)
+  expect_identical(as.character(record$data$point_color_from_plot),
+                   c("green", "yellow", "green"))
+  expect_true("point_color_from_plot" %in% names(record$data))
+})
+
+test_that("an older native sync payload cannot roll back the R dataset", {
+  group <- "native_cell_stale_sync"
+  if (group %in% ls_datasets()$name) ls_unregister_dataset(group)
+  ls_register_dataset(group, data.frame(score = c(1, 2)))
+  on.exit(ls_unregister_dataset(group), add = TRUE)
+  record <- LinkEDA:::.rls_dataset_record(group)
+  record$data$score[[2L]] <- 4
+  record <- LinkEDA:::.rls_advance_data_version(
+    record, "Test edit", origin = "unavailable", columns = "score")
+  LinkEDA:::.rls_set_dataset_record(record)
+  exchange <- tempfile("rlispstat-sync-")
+  dir.create(exchange)
+  payload <- file.path(exchange, "dataset.txt")
+  writeLines(c("DATASET", group, "2", "1", "score", "numeric", "1", "3",
+               "DATA_VERSION_V1", "1"), payload, useBytes = TRUE)
+  testthat::local_mocked_bindings(.rls_send = function(lines) "OK", .package = "LinkEDA")
+  expect_false(LinkEDA:::.rls_handle_r_dataset_sync_needed(c(
+    "R_DATASET_SYNC_NEEDED", "request-stale", group, payload
+  )))
+  current <- LinkEDA:::.rls_dataset_record(group)
+  expect_equal(current$data$score, c(1, 4))
+  expect_identical(current$data_version, 2L)
 })
 
 test_that("dataset registration accepts the data-first comparison example", {
@@ -206,8 +500,9 @@ test_that("R-side GLM model fits lm-style multiple regression", {
   m <- ls_glm_fit(m)
   coefs <- ls_glm_coefficients(m)
   fit_summary <- ls_glm_fit_summary(m)
-  partial <- ls_glm_partial_r2(m)
-  expect_true(all(c("term", "estimate", "std_error", "t_value", "p_value", "partial_r2") %in% names(coefs)))
+  partial <- ls_glm_partial_r(m)
+  delta <- ls_glm_delta_r2(m)
+  expect_true(all(c("term", "estimate", "std_error", "t_value", "p_value", "partial_r", "delta_r2") %in% names(coefs)))
   expect_true(all(c("(Intercept)", "wt", "hp") %in% coefs$term))
   expect_equal(fit_summary$n_excluded, 1L)
   expect_true(is.finite(fit_summary$r_squared))
@@ -216,6 +511,7 @@ test_that("R-side GLM model fits lm-style multiple regression", {
   expect_true(is.finite(fit_summary$global_p))
   expect_true(is.na(partial[["(Intercept)"]]))
   expect_true(is.finite(partial[["wt"]]))
+  expect_true(is.finite(delta[["wt"]]))
   expect_equal(ls_glm_rows_excluded(m), 1L)
   expect_false(1L %in% ls_glm_rows_used(m))
 
@@ -245,19 +541,82 @@ test_that("model term removal drops dependent higher-order interactions", {
   )
 })
 
+test_that("GLM country interaction keeps fitted treatment identities", {
+  d <- expand.grid(
+    baseline = 0:3,
+    study_group = c("control", "treatment"),
+    country = c("Greece", "Finland"),
+    KEEP.OUT.ATTRS = FALSE,
+    stringsAsFactors = FALSE
+  )
+  # Preserve the reported failure condition: Greece occurs first in the data,
+  # while factor() and the fitted treatment contrast use Finland as reference.
+  d <- d[order(match(d$country, c("Greece", "Finland"))), , drop = FALSE]
+  d$response <- 2 + 0.3547 * d$baseline +
+    ifelse(d$country == "Greece", -0.3930 - 0.2011 * d$baseline, 0) +
+    ifelse(d$study_group == "treatment", 0.25, 0)
+  typed <- LinkEDA:::.rls_model_data_for_term_types(
+    d, list(country = "factor", study_group = "factor"), response = "response"
+  )
+  fit <- stats::lm(
+    response ~ baseline + study_group + country + baseline:country,
+    data = typed
+  )
+  coding <- LinkEDA:::.rls_model_factor_codings(fit)$country
+  expect_equal(coding$levels, c("Finland", "Greece"))
+  expect_equal(coding$reference, "Finland")
+  expect_equal(unname(coding$coding[, 1L]), c(0, 1))
+
+  coefficient_matrix <- summary(fit)$coefficients
+  coefficients <- data.frame(
+    term = rownames(coefficient_matrix),
+    estimate = coefficient_matrix[, "Estimate"],
+    std_error = coefficient_matrix[, "Std. Error"],
+    statistic = coefficient_matrix[, "t value"],
+    p_value = coefficient_matrix[, "Pr(>|t|)"],
+    partial_r = LinkEDA:::.rls_model_partial_r(
+      coefficient_matrix[, "t value"], stats::df.residual(fit)
+    ),
+    delta_r2 = NA_real_,
+    check.names = FALSE
+  )
+  rows <- LinkEDA:::.rls_model_coefficient_display_rows(fit, coefficients, typed)
+  reference <- rows[rows$source_term == "country" & rows$row_type == "reference", ]
+  expect_equal(reference$level, "Finland")
+  interaction <- rows[
+    rows$source_term == "baseline:country" & rows$row_type == "coefficient",
+  ]
+  expect_equal(interaction$level, "Greece")
+  expect_equal(interaction$reference_level, "Finland")
+  expect_match(interaction$display_label, "baseline × country = Greece \\(vs Finland\\)")
+  expect_equal(unname(stats::coef(fit)[["baseline"]]), 0.3547, tolerance = 1e-9)
+  expect_equal(
+    unname(stats::coef(fit)[["baseline"]] + stats::coef(fit)[["baseline:countryGreece"]]),
+    0.1536,
+    tolerance = 1e-9
+  )
+})
+
 test_that("native GLM interaction report computes simple slopes", {
-  skip_if_not(file.exists(LinkEDA:::.rls_backend_path()))
+  backend_ready <- tryCatch({
+    if (.Platform$OS.type == "windows") {
+      isTRUE(LinkEDA:::.rls_start_backend())
+    } else {
+      backend <- LinkEDA:::.rls_backend_path()
+      nzchar(backend) && file.exists(backend) && isTRUE(LinkEDA:::.rls_start_backend())
+    }
+  }, error = function(e) FALSE)
+  skip_if_not(backend_ready)
   d <- data.frame(
     y = c(12, 14, 16, 18, 25, 30, 35, 40),
     x = rep(1:4, 2),
     g = factor(rep(c("A", "B"), each = 4))
   )
   group <- ls_register_dataset("glm_native_interaction_report", d)
-  LinkEDA:::.rls_start_backend()
   on.exit(ls_close_all(), add = TRUE)
   record <- LinkEDA:::.rls_dataset_record(group)
   LinkEDA:::.rls_send(c(
-    "REGISTER_DATASET",
+    "REGISTER_DATASET_SILENT",
     record$group,
     LinkEDA:::.rls_variable_payload(record$data, record$variable_metadata),
     LinkEDA:::.rls_dataframe_payload(record$data, record$variable_metadata, dataset_record = record)
@@ -267,6 +626,17 @@ test_that("native GLM interaction report computes simple slopes", {
   expect_equal(LinkEDA:::.rls_send(c("MODEL_ADD_TERM", record$group, "g")), "OK")
   expect_equal(LinkEDA:::.rls_send(c("MODEL_ADD_TERM", record$group, "x:g")), "OK")
 
+  expect_error(
+    LinkEDA:::.rls_send(c("MODEL_INTERACTION_REPORT", record$group, "x:g")),
+    "requires a completed R fit", fixed = TRUE)
+  model <- ls_new_glm(record$group)
+  ls_glm_set_dependent(model, "y")
+  ls_glm_add_predictor(model, "x")
+  ls_glm_add_predictor(model, "g")
+  ls_glm_add_predictor(model, "x:g")
+  model <- ls_glm_fit(model)
+  expect_true(LinkEDA:::.rls_glm_sync_native_update(
+    LinkEDA:::.rls_glm_model_record(model)))
   reply <- LinkEDA:::.rls_send(c("MODEL_INTERACTION_REPORT", record$group, "x:g"))
   report <- utils::URLdecode(sub("^OK\t", "", reply))
   expect_match(report, "Type: continuous by categorical", fixed = TRUE)
@@ -278,7 +648,7 @@ test_that("native GLM interaction report computes simple slopes", {
   expect_match(report, "A - B slope difference\t-3.0000", fixed = TRUE)
 
   plot_reply <- LinkEDA:::.rls_send(c("MODEL_OPEN_INTERACTION_PLOT", record$group, "x:g"))
-  expect_match(plot_reply, "^OK\tglm_interaction_")
+  expect_match(plot_reply, "^OK\tpooled_interaction_glm_native_interaction_report_")
 })
 
 test_that("GLM diagnostics are versioned live model data keyed by original rows", {
@@ -400,6 +770,37 @@ test_that("linear model interactions are semantically typed and grouped", {
   expect_gt(nrow(children), 0)
   expect_true(all(children$term_type == "factor_factor_interaction"))
   expect_true(all(children$term %in% colnames(stats::model.matrix(LinkEDA:::.rls_glm_model_record(m)$fit))))
+})
+
+test_that("changing the linear response removes it from predictors and interactions", {
+  cities <- data.frame(
+    monthly_rent_eur = c(900, 1200, 1600, 2100, 2500, 3100),
+    apartment_price_eur_m2 = c(2400, 3300, 5200, 7200, 8600, 11000),
+    region = factor(c("Europe", "Europe", "Europe", "Asia", "Asia", "America"))
+  )
+  ls_register_dataset("glm_response_cascade", cities)
+  m <- ls_new_glm("glm_response_cascade")
+  ls_glm_set_dependent(m, "monthly_rent_eur")
+  ls_glm_add_predictor(m, "apartment_price_eur_m2")
+  ls_glm_add_predictor(m, "region")
+  ls_glm_add_predictor(m, "apartment_price_eur_m2:region")
+
+  record <- LinkEDA:::.rls_glm_model_record(m)
+  record$term_types <- list(apartment_price_eur_m2 = "numeric", region = "factor")
+  record$centered_predictors <- "apartment_price_eur_m2"
+  record$factor_reference_levels <- list(region = "Europe")
+  LinkEDA:::.rls_assign_glm_model(record)
+
+  ls_glm_set_dependent(m, "apartment_price_eur_m2")
+  changed <- LinkEDA:::.rls_glm_model_record(m)
+  expect_equal(changed$dependent, "apartment_price_eur_m2")
+  expect_equal(changed$predictors, "region")
+  expect_false(any(vapply(changed$predictors, function(term) {
+    "apartment_price_eur_m2" %in% LinkEDA:::.rls_model_interaction_parts(term)
+  }, logical(1L))))
+  expect_false("apartment_price_eur_m2" %in% names(changed$term_types))
+  expect_false("apartment_price_eur_m2" %in% changed$centered_predictors)
+  expect_equal(changed$factor_reference_levels$region, "Europe")
 })
 
 test_that("SpreadPlot manager routes GLM and row-state messages", {
@@ -616,6 +1017,19 @@ test_that("regression comparison diagnostics are model-specific", {
   expect_true(s2_after$displayed_fit_version > v2)
   expect_equal(s3_after$displayed_fit_version, v3)
   expect_equal(s2_after$model_id, model_ids[[2]])
+  expect_equal(s2_after$data$fitted, s1_after$data$fitted, tolerance = 1e-12)
+  expect_equal(s2_after$data$residual, s1_after$data$residual, tolerance = 1e-12)
+
+  # A later change to Base refreshes only the diagnostic bound to Base.  The
+  # Extended window remains attached to its stable model id and latest fit.
+  ls_regression_comparison_set_term(cmp, "Base", "hp", included = TRUE)
+  s1_changed <- ls_glm_diagnostic_state(d1)
+  s2_unchanged <- ls_glm_diagnostic_state(d2)
+  s3_unchanged <- ls_glm_diagnostic_state(d3)
+  expect_true(s1_changed$displayed_fit_version > s1_after$displayed_fit_version)
+  expect_equal(s2_unchanged$displayed_fit_version, s2_after$displayed_fit_version)
+  expect_equal(s3_unchanged$displayed_fit_version, s3_after$displayed_fit_version)
+  expect_equal(s2_unchanged$model_id, model_ids[[2]])
 })
 
 test_that("regression comparison supports model-specific responses", {
@@ -668,7 +1082,7 @@ test_that("regression comparison fit rows include global p and superscript R lab
   expect_equal(null_rows$value[null_rows$label == "p"], "\u2014")
 })
 
-test_that("regression comparison coefficient details use compact R-squared typography", {
+test_that("regression comparison coefficient details distinguish partial r and delta R-squared", {
   ls_register_dataset("regcmpdetails", mtcars)
   cmp <- ls_new_regression_comparison(
     data = "regcmpdetails",
@@ -681,13 +1095,14 @@ test_that("regression comparison coefficient details use compact R-squared typog
   intercept <- LinkEDA:::.rls_regcmp_coefficient_detail_text(state, "Extended", "(Intercept)")
 
   expect_match(detail, "; ", fixed = TRUE)
-  expect_match(detail, "Partial R\u00b2", fixed = TRUE)
+  expect_match(detail, "Partial r", fixed = TRUE)
+  expect_match(detail, "\u0394R\u00b2", fixed = TRUE)
   expect_match(detail, "\u03b2 = ")
   expect_false(grepl("R2|R\\^2|NA", detail))
   expect_match(intercept, "\u03b2 = \u2014", fixed = TRUE)
 })
 
-test_that("regression comparison unnamed models use Untitled labels", {
+test_that("regression comparison unnamed models use numbered Model labels", {
   ls_register_dataset("regcmpuntitled", mtcars)
   cmp <- ls_new_regression_comparison(
     data = "regcmpuntitled",
@@ -697,12 +1112,11 @@ test_that("regression comparison unnamed models use Untitled labels", {
   )
   state <- ls_regression_comparison_state(cmp)
   expect_equal(vapply(state$models, `[[`, character(1), "label"),
-               c("Untitled 1", "Untitled 2", "Named"))
-  expect_false(any(grepl("^Model [0-9]+$", vapply(state$models, `[[`, character(1), "label"))))
+               c("Model 1", "Model 2", "Named"))
 
   ls_regression_comparison_add_model(cmp, terms = "qsec")
   state2 <- ls_regression_comparison_state(cmp)
-  expect_true("Untitled 3" %in% vapply(state2$models, `[[`, character(1), "label"))
+  expect_true("Model 3" %in% vapply(state2$models, `[[`, character(1), "label"))
   expect_equal(anyDuplicated(vapply(state2$models, `[[`, character(1), "id")), 0L)
 })
 
@@ -751,7 +1165,7 @@ test_that("regression comparison keeps factor display rows grouped after type ch
     native = FALSE
   )
   state <- ls_regression_comparison_state(cmp)
-  state$term_types <- list(hp = "factor")
+  state$models[[1L]]$term_types <- list(hp = "factor")
   state <- LinkEDA:::.rls_regcmp_fit_model(state, 1L)
   state$term_rows <- unique(c("(Intercept)", state$models[[1L]]$terms))
   rows <- LinkEDA:::.rls_regcmp_display_rows(state)
@@ -762,6 +1176,187 @@ test_that("regression comparison keeps factor display rows grouped after type ch
   expect_true(all(startsWith(rows$term[seq.int(hp_index + 1L, hp_index + 3L)], "hp=")))
   expect_false(any(rows$term[seq.int(hp_index + 1L, hp_index + 3L)] %in% c("mpg", "cyl")))
   expect_equal(LinkEDA:::.rls_model_term_without_level_suffixes("cyl=6:am"), "cyl:am")
+})
+
+test_that("regression comparison model columns inherit a non-empty shared response", {
+  ls_register_dataset("regcmp_shared_response", mtcars)
+  on.exit(ls_unregister_dataset("regcmp_shared_response"), add = TRUE)
+
+  cmp <- ls_new_regression_comparison(
+    data = "regcmp_shared_response",
+    response = "mpg",
+    models = list(
+      "Untitled 1" = list(response = "", terms = c("wt", "hp"))
+    ),
+    native = FALSE
+  )
+  state <- ls_regression_comparison_state(cmp)
+
+  expect_identical(state$models[[1L]]$response, "mpg")
+  expect_s3_class(state$models[[1L]]$fitted_lm, "lm")
+  expect_s3_class(state$models[[1L]]$fit, "lm")
+  expect_equal(state$models[[1L]]$summary$n_used, nrow(mtcars))
+})
+
+test_that("regression comparison refits the Alien predictor sequence", {
+  alien <- data.frame(
+    humans_eaten = rep(1:20, 3),
+    planet = factor(rep(c("Aurelia", "Borealis", "Cygnus"), each = 20)),
+    blue_eyes = rep(c(0, 1, 2, 3, 4), 12),
+    eggs = rep(c(0, 1, 3, 2, 5, 4), 10)
+  )
+  ls_register_dataset("regcmp_alien_sequence", alien)
+  on.exit(ls_unregister_dataset("regcmp_alien_sequence"), add = TRUE)
+
+  cmp <- ls_new_regression_comparison(
+    data = "regcmp_alien_sequence",
+    response = "humans_eaten",
+    models = list("Untitled 1" = character()),
+    native = FALSE
+  )
+  versions <- integer()
+  for (term in c("planet", "blue_eyes", "eggs")) {
+    ls_regression_comparison_set_term(cmp, "Untitled 1", term, included = TRUE)
+    state <- ls_regression_comparison_state(cmp)
+    versions <- c(versions, state$models[[1L]]$fit_version)
+    expect_s3_class(state$models[[1L]]$fitted_lm, "lm")
+    expect_s3_class(state$models[[1L]]$fit, "lm")
+    expect_equal(state$models[[1L]]$summary$n_used, nrow(alien))
+    expect_true(term %in% state$models[[1L]]$terms)
+  }
+
+  expect_true(all(diff(versions) > 0L))
+  final <- ls_regression_comparison_state(cmp)$models[[1L]]
+  expect_true(all(c("planet", "blue_eyes", "eggs") %in% final$terms))
+  expect_true(any(final$coefficient_rows$source_term == "planet"))
+  expect_true(all(is.finite(c(final$summary$r_squared,
+                              final$summary$adj_r_squared,
+                              final$summary$residual_se))))
+})
+
+test_that("regression comparison predictor edits are model-specific and survive refits", {
+  data <- data.frame(
+    y = c(7, 10, 13, 16, 10, 15, 20, 25, 8, 12, 16, 20),
+    x = rep(1:4, 3),
+    planet = factor(rep(c("A", "B", "C"), each = 4))
+  )
+  ls_register_dataset("regcmp_model_edits", data)
+  on.exit(ls_unregister_dataset("regcmp_model_edits"), add = TRUE)
+
+  comparison <- ls_new_regression_comparison(
+    data = "regcmp_model_edits",
+    response = "y",
+    models = list(Raw = "x", Edited = "x"),
+    native = FALSE
+  )
+  state <- ls_regression_comparison_state(comparison)
+  raw_fit <- state$models[[1L]]$fitted_lm
+  raw_intercept <- unname(stats::coef(raw_fit)[["(Intercept)"]])
+  raw_slope <- unname(stats::coef(raw_fit)[["x"]])
+
+  state$models[[2L]]$centered_predictors <- "x"
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  centered_fit <- state$models[[2L]]$fitted_lm
+  expect_identical(state$models[[1L]]$centered_predictors, character())
+  expect_equal(state$models[[2L]]$centered_predictors, "x")
+  expect_equal(stats::fitted(centered_fit), stats::fitted(raw_fit), tolerance = 1e-10)
+  expect_equal(unname(stats::coef(centered_fit)[["x"]]), raw_slope, tolerance = 1e-10)
+  expect_false(isTRUE(all.equal(
+    unname(stats::coef(centered_fit)[["(Intercept)"]]), raw_intercept
+  )))
+
+  state$models[[2L]]$centered_predictors <- character()
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  expect_equal(stats::coef(state$models[[2L]]$fitted_lm), stats::coef(raw_fit), tolerance = 1e-10)
+
+  state$models[[2L]]$term_types <- list(x = "factor")
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  expect_identical(state$models[[1L]]$term_types, list())
+  expect_identical(state$models[[2L]]$term_types, list(x = "factor"))
+  expect_true(is.numeric(state$models[[1L]]$fitted_lm$model$x))
+  expect_true(is.factor(state$models[[2L]]$fitted_lm$model$x))
+  expect_equal(length(grep("^x", names(stats::coef(state$models[[1L]]$fitted_lm)))), 1L)
+  expect_equal(length(grep("^x", names(stats::coef(state$models[[2L]]$fitted_lm)))), 3L)
+  expect_true(all(c("x", "x=1", "x=2", "x=3", "x=4") %in%
+                    state$models[[2L]]$coefficient_rows$term))
+
+  factor_fitted <- stats::fitted(state$models[[2L]]$fitted_lm)
+  state$models[[2L]]$factor_reference_levels <- list(x = "3")
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  expect_equal(stats::fitted(state$models[[2L]]$fitted_lm), factor_fitted,
+               tolerance = 1e-10)
+  expect_identical(levels(state$models[[2L]]$fitted_lm$model$x)[[1L]], "3")
+  expect_false(any(grepl("^x3$", names(stats::coef(state$models[[2L]]$fitted_lm)))))
+
+  state$models[[2L]]$term_types <- list(x = "numeric")
+  state$models[[2L]]$factor_reference_levels <- list()
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  expect_true(is.numeric(state$models[[2L]]$fitted_lm$model$x))
+  expect_equal(stats::coef(state$models[[2L]]$fitted_lm), stats::coef(raw_fit), tolerance = 1e-10)
+})
+
+test_that("regression comparison rebuilds interactions after centering and type edits", {
+  data <- data.frame(
+    y = c(7, 10, 13, 16, 10, 15, 20, 25, 8, 12, 16, 20),
+    x = rep(1:4, 3),
+    planet = factor(rep(c("A", "B", "C"), each = 4))
+  )
+  ls_register_dataset("regcmp_interaction_edits", data)
+  on.exit(ls_unregister_dataset("regcmp_interaction_edits"), add = TRUE)
+  comparison <- ls_new_regression_comparison(
+    data = "regcmp_interaction_edits",
+    response = "y",
+    models = list(Raw = c("x", "planet", "x:planet"),
+                  Edited = c("x", "planet", "x:planet")),
+    native = FALSE
+  )
+  state <- ls_regression_comparison_state(comparison)
+  raw_fit <- state$models[[1L]]$fitted_lm
+
+  state$models[[2L]]$centered_predictors <- "x"
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  expect_equal(stats::fitted(state$models[[2L]]$fitted_lm),
+               stats::fitted(raw_fit), tolerance = 1e-9)
+  expect_true(any(grepl("x:planet", names(stats::coef(state$models[[2L]]$fitted_lm)), fixed = TRUE)))
+
+  state$models[[2L]]$centered_predictors <- character()
+  state$models[[2L]]$term_types <- list(x = "factor")
+  state$models[[2L]]$is_stale <- TRUE
+  state <- LinkEDA:::.rls_regcmp_fit_model(state, 2L)
+  expect_true(is.factor(state$models[[2L]]$fitted_lm$model$x))
+  expect_true(any(grepl("x2:planet", names(stats::coef(state$models[[2L]]$fitted_lm)), fixed = TRUE)))
+  expect_true(is.numeric(state$models[[1L]]$fitted_lm$model$x))
+  expect_identical(state$models[[1L]]$term_types, list())
+})
+
+test_that("regression comparison model specifications preserve factor references", {
+  data <- data.frame(
+    y = c(7, 10, 13, 16, 10, 15, 20, 25, 8, 12, 16, 20),
+    x = rep(1:4, 3)
+  )
+  ls_register_dataset("regcmp_factor_reference_spec", data)
+  on.exit(ls_unregister_dataset("regcmp_factor_reference_spec"), add = TRUE)
+
+  comparison <- ls_new_regression_comparison(
+    data = "regcmp_factor_reference_spec",
+    response = "y",
+    models = list(Factor = list(
+      terms = "x",
+      term_types = list(x = "factor"),
+      factor_reference_levels = list(x = "3")
+    )),
+    native = FALSE
+  )
+  model <- ls_regression_comparison_state(comparison)$models[[1L]]
+  expect_identical(model$factor_reference_levels, list(x = "3"))
+  expect_identical(levels(model$fitted_lm$model$x)[[1L]], "3")
+  expect_false(any(grepl("^x3$", names(stats::coef(model$fitted_lm)))))
 })
 
 test_that("generalized linear model fits, validates links, renders factors, and exports", {
@@ -779,10 +1374,29 @@ test_that("generalized linear model fits, validates links, renders factors, and 
   expect_true(all(c("cyl", "cyl=4", "cyl=6", "cyl=8") %in% rows$term))
   expect_equal(rows$row_type[rows$term == "cyl=4"], "reference")
   expect_equal(unique(rows$statistic_name[rows$row_type == "factor_level"]), "z")
+  coefficient_rows <- rows[rows$row_type %in% c("coefficient", "factor_level"), , drop = FALSE]
+  coefficient_rows <- coefficient_rows[is.finite(coefficient_rows$std_error), , drop = FALSE]
+  expect_true(nrow(coefficient_rows) > 0L)
+  expect_true(all(is.finite(coefficient_rows$ci_lower)))
+  expect_true(all(is.finite(coefficient_rows$ci_upper)))
+  expect_equal(
+    coefficient_rows$ci_lower,
+    coefficient_rows$estimate - stats::qnorm(0.975) * coefficient_rows$std_error,
+    tolerance = 1e-10
+  )
+  expect_equal(
+    coefficient_rows$ci_upper,
+    coefficient_rows$estimate + stats::qnorm(0.975) * coefficient_rows$std_error,
+    tolerance = 1e-10
+  )
   summary <- ls_generalized_linear_model_fit_summary(g)
   expect_equal(summary$family, "binomial")
   expect_equal(summary$link, "logit")
   expect_true(is.finite(summary$residual_deviance))
+  expect_true(summary$converged)
+  expect_gte(summary$iterations, 1L)
+  expect_gte(summary$rank, 1L)
+  expect_gte(summary$parameter_count, summary$rank)
 
   diag <- ls_generalized_linear_model_diagnostics(g)
   expect_true(all(c("original_row_id", "fitted_response_scale", "linear_predictor",
@@ -804,10 +1418,21 @@ test_that("generalized linear model fits, validates links, renders factors, and 
     native = FALSE
   )
   expect_equal(ls_generalized_linear_model_fit_summary(gp)$family, "poisson")
+  poisson_rows <- ls_generalized_linear_model_coefficient_rows(gp)
+  expect_true(all(is.finite(poisson_rows$ci_lower[poisson_rows$row_type == "coefficient"])))
+  poisson_payload <- LinkEDA:::.rls_native_generalized_state_payload(
+    LinkEDA:::.rls_generalized_glm_record(gp)
+  )
+  ci_marker <- match("GENERALIZED_CI_V1", poisson_payload)
+  expect_true(is.finite(ci_marker))
+  expect_identical(poisson_payload[[ci_marker + 1L]], as.character(nrow(poisson_rows)))
+  meta_marker <- match("GENERALIZED_META_V1", poisson_payload)
+  expect_true(is.finite(meta_marker))
+  expect_identical(poisson_payload[[meta_marker + 1L]], "TRUE")
   expect_error(
     ls_new_generalized_linear_model(data = "gglmcars", response = "am", terms = "wt",
                                     family = "poisson", link = "logit", native = FALSE),
-    "Invalid link"
+    "Link `logit` is not available for Poisson"
   )
   text <- LinkEDA:::.rls_render_table_text(ls_generalized_linear_model_table(g))
   expect_match(text, "Generalized Linear Model")
@@ -817,6 +1442,105 @@ test_that("generalized linear model fits, validates links, renders factors, and 
   ls_export_generalized_linear_model_table(g, pdf)
   expect_true(file.exists(pdf))
   expect_gt(file.info(pdf)$size, 0)
+})
+
+test_that("convergence metadata is present for every supported GLM family", {
+  family_cases <- list(
+    gaussian = list(data = mtcars, response = "mpg", link = "identity"),
+    binomial = list(data = mtcars, response = "am", link = "logit"),
+    poisson = list(data = warpbreaks, response = "breaks", link = "log"),
+    Gamma = list(data = mtcars, response = "mpg", link = "inverse"),
+    inverse.gaussian = list(data = mtcars, response = "mpg", link = "1/mu^2"),
+    quasibinomial = list(data = mtcars, response = "am", link = "logit"),
+    quasipoisson = list(data = warpbreaks, response = "breaks", link = "log")
+  )
+  for (family_name in names(family_cases)) {
+    case <- family_cases[[family_name]]
+    predictor <- if (identical(case$response, "breaks")) "tension" else "wt"
+    model <- ls_new_generalized_linear_model(
+      data = case$data,
+      response = case$response,
+      terms = predictor,
+      family = family_name,
+      link = case$link,
+      native = FALSE
+    )
+    fit_summary <- ls_generalized_linear_model_fit_summary(model)
+    expect_true(fit_summary$converged, info = family_name)
+    expect_true(fit_summary$iterations >= 1L, info = family_name)
+    payload <- LinkEDA:::.rls_native_generalized_state_payload(
+      LinkEDA:::.rls_generalized_glm_record(model)
+    )
+    marker <- match("GENERALIZED_META_V1", payload)
+    expect_true(is.finite(marker), info = family_name)
+    expect_identical(payload[[marker + 1L]], "TRUE", info = family_name)
+  }
+})
+
+test_that("model numeric interpretation uses 0/1 only for binary labels", {
+  typed <- LinkEDA:::.rls_model_data_for_term_types(
+    data.frame(
+      y = seq_len(6L),
+      happy = rep(c("no", "yes"), 3L),
+      numeric_factor = factor(rep(c("10", "20", "30"), 2L))
+    ),
+    list(happy = "numeric", numeric_factor = "numeric"),
+    response = "y"
+  )
+  expect_equal(typed$happy, rep(c(0, 1), 3L))
+  expect_equal(typed$numeric_factor, rep(c(10, 20, 30), 2L))
+
+  source <- data.frame(
+    y = c(2, 4, 3, 7, 5, 10),
+    happy = rep(c("no", "yes"), 3L),
+    stringsAsFactors = FALSE
+  )
+  model <- ls_new_generalized_linear_model(
+    data = source,
+    response = "y",
+    terms = "happy",
+    family = "gaussian",
+    link = "identity",
+    term_types = list(happy = "numeric"),
+    native = FALSE
+  )
+  record <- LinkEDA:::.rls_generalized_glm_record(model)
+  expect_equal(record$summary$n_used, nrow(source))
+  expect_equal(record$fit$model$happy, rep(c(0, 1), 3L))
+  expect_true(is.finite(unname(stats::coef(record$fit)[["happy"]])))
+  expect_identical(source$happy, rep(c("no", "yes"), 3L))
+
+  expect_error(
+    LinkEDA:::.rls_model_data_for_term_types(
+      data.frame(y = 1:3, nominal = c("Low", "Middle", "High")),
+      list(nominal = "numeric"), response = "y"
+    ),
+    "explicit global numeric mapping"
+  )
+})
+
+test_that("model factor interpretation preserves ordered levels and permits references", {
+  source <- data.frame(
+    y = seq_len(9L),
+    rating = ordered(rep(c("low", "mid", "high"), 3L),
+                     levels = c("low", "mid", "high"))
+  )
+  typed <- LinkEDA:::.rls_model_data_for_term_types(
+    source, list(rating = "factor"), response = "y"
+  )
+  expect_true(is.factor(typed$rating))
+  expect_false(is.ordered(typed$rating))
+  expect_identical(levels(typed$rating), c("low", "mid", "high"))
+  expect_true(is.ordered(source$rating))
+
+  referenced <- LinkEDA:::.rls_glm_apply_factor_references(
+    typed, list(rating = "mid")
+  )
+  expect_identical(levels(referenced$rating), c("mid", "low", "high"))
+  expect_identical(
+    colnames(stats::model.matrix(y ~ rating, data = referenced)),
+    c("(Intercept)", "ratinglow", "ratinghigh")
+  )
 })
 
 test_that("generalized linear model accepts interaction terms", {
@@ -858,6 +1582,153 @@ test_that("generalized linear model interactions are semantically typed and grou
   expect_true(all(children$term %in% colnames(stats::model.matrix(LinkEDA:::.rls_generalized_glm_record(g)$fit))))
 })
 
+test_that("generalized model specifications preserve family semantics across transformations", {
+  set.seed(314159)
+  n <- 120L
+  x <- rep(seq(-2.5, 2.5, length.out = n / 3L), 3L)
+  group_code <- rep(c(1, 2, 3), each = n / 3L)
+  group_shift <- c(`1` = -0.4, `2` = 0.7, `3` = 0.1)[as.character(group_code)]
+  gaussian_data <- data.frame(
+    y = 10 + 1.25 * x + group_shift +
+      c(`1` = 0.2, `2` = -0.15, `3` = 0.35)[as.character(group_code)] * x +
+      stats::rnorm(n, sd = 0.35),
+    x = x,
+    group_code = group_code
+  )
+  ls_register_dataset("gglm_shared_spec_gaussian", gaussian_data)
+  on.exit(ls_unregister_dataset("gglm_shared_spec_gaussian"), add = TRUE)
+
+  make_gaussian <- function(centered = character(), reference = "1") {
+    ls_new_generalized_linear_model(
+      data = "gglm_shared_spec_gaussian",
+      response = "y",
+      terms = c("x", "group_code", "x:group_code"),
+      family = "gaussian",
+      link = "identity",
+      term_types = list(group_code = "factor"),
+      centered_predictors = centered,
+      factor_reference_levels = list(group_code = reference),
+      native = FALSE
+    )
+  }
+
+  raw <- LinkEDA:::.rls_generalized_glm_record(make_gaussian())
+  centered <- LinkEDA:::.rls_generalized_glm_record(make_gaussian("x"))
+  rereferenced <- LinkEDA:::.rls_generalized_glm_record(make_gaussian(reference = "2"))
+
+  expect_identical(centered$centered_predictors, "x")
+  expect_identical(centered$term_types, list(group_code = "factor"))
+  expect_identical(rereferenced$factor_reference_levels, list(group_code = "2"))
+  expect_identical(levels(rereferenced$fit$model$group_code)[[1L]], "2")
+  expect_false(any(grepl("^group_code2$", names(stats::coef(rereferenced$fit)))))
+
+  for (changed in list(centered, rereferenced)) {
+    expect_equal(stats::predict(changed$fit, type = "response"),
+                 stats::predict(raw$fit, type = "response"), tolerance = 1e-9)
+    expect_equal(stats::predict(changed$fit, type = "link"),
+                 stats::predict(raw$fit, type = "link"), tolerance = 1e-9)
+    expect_equal(stats::deviance(changed$fit), stats::deviance(raw$fit), tolerance = 1e-9)
+    expect_equal(as.numeric(stats::logLik(changed$fit)),
+                 as.numeric(stats::logLik(raw$fit)), tolerance = 1e-9)
+    expect_equal(stats::AIC(changed$fit), stats::AIC(raw$fit), tolerance = 1e-9)
+  }
+  expect_identical(LinkEDA:::.rls_dataset_record("gglm_shared_spec_gaussian")$data$x,
+                   gaussian_data$x)
+  expect_true(is.numeric(LinkEDA:::.rls_dataset_record("gglm_shared_spec_gaussian")$data$group_code))
+
+  changed_family <- ls_generalized_linear_model_set_family(make_gaussian("x", "2"), "Gamma", "log")
+  changed_state <- ls_generalized_linear_model_state(changed_family)
+  expect_identical(changed_state$centered_predictors, "x")
+  expect_identical(changed_state$factor_reference_levels, list(group_code = "2"))
+  expect_identical(changed_state$term_types, list(group_code = "factor"))
+  expect_identical(changed_state$family, "Gamma")
+  expect_identical(changed_state$link, "log")
+})
+
+test_that("binomial and Poisson generalized fits are invariant to shared reparameterization", {
+  set.seed(271828)
+  n <- 180L
+  x <- rep(seq(-2, 2, length.out = n / 3L), 3L)
+  group <- factor(rep(c("A", "B", "C"), each = n / 3L), levels = c("A", "B", "C"))
+  group_lp <- c(A = -0.35, B = 0.55, C = 0.1)[as.character(group)]
+  interaction_lp <- c(A = 0.15, B = -0.2, C = 0.3)[as.character(group)] * x
+  binomial_data <- data.frame(
+    y = stats::rbinom(n, 1, stats::plogis(-0.2 + 0.65 * x + group_lp + interaction_lp)),
+    x = x,
+    group = group
+  )
+  poisson_data <- data.frame(
+    y = stats::rpois(n, exp(1.1 + 0.22 * x + group_lp / 2 + interaction_lp / 3)),
+    x = x,
+    group = group
+  )
+
+  compare_parameterizations <- function(data, family, link, prefix) {
+    ls_register_dataset(prefix, data)
+    on.exit(ls_unregister_dataset(prefix), add = TRUE)
+    make_model <- function(centered = character(), reference = "A") {
+      LinkEDA:::.rls_generalized_glm_record(ls_new_generalized_linear_model(
+        data = prefix,
+        response = "y",
+        terms = c("x", "group", "x:group"),
+        family = family,
+        link = link,
+        centered_predictors = centered,
+        factor_reference_levels = list(group = reference),
+        native = FALSE
+      ))
+    }
+    raw <- make_model()
+    centered <- make_model("x")
+    rereferenced <- make_model(reference = "B")
+    expect_identical(raw$summary$family, family)
+    expect_identical(raw$summary$link, link)
+    expect_identical(levels(rereferenced$fit$model$group)[[1L]], "B")
+    for (changed in list(centered, rereferenced)) {
+      expect_equal(stats::predict(changed$fit, type = "response"),
+                   stats::predict(raw$fit, type = "response"), tolerance = 1e-8)
+      expect_equal(stats::predict(changed$fit, type = "link"),
+                   stats::predict(raw$fit, type = "link"), tolerance = 1e-8)
+      expect_equal(stats::deviance(changed$fit), stats::deviance(raw$fit), tolerance = 1e-8)
+      expect_equal(as.numeric(stats::logLik(changed$fit)),
+                   as.numeric(stats::logLik(raw$fit)), tolerance = 1e-8)
+      expect_equal(stats::AIC(changed$fit), stats::AIC(raw$fit), tolerance = 1e-8)
+    }
+    expect_identical(LinkEDA:::.rls_dataset_record(prefix)$data$x, data$x)
+  }
+
+  compare_parameterizations(binomial_data, "binomial", "logit", "gglm_shared_spec_binomial")
+  compare_parameterizations(poisson_data, "poisson", "log", "gglm_shared_spec_poisson")
+})
+
+test_that("native generalized payload carries the shared model specification", {
+  model <- ls_new_generalized_linear_model(
+    data = data.frame(y = c(2, 4, 5, 7, 9, 12), x = 1:6, group = c(1, 1, 2, 2, 3, 3)),
+    response = "y",
+    terms = c("x", "group", "x:group"),
+    family = "gaussian",
+    term_types = list(group = "factor"),
+    centered_predictors = "x",
+    factor_reference_levels = list(group = "2"),
+    native = FALSE,
+    .native_generation = 23L
+  )
+  payload <- LinkEDA:::.rls_generalized_glm_native_payload(
+    LinkEDA:::.rls_generalized_glm_record(model)
+  )
+  marker <- match("MODEL_SPEC_V1", payload)
+  expect_true(is.finite(marker))
+  expect_identical(payload[[marker + 1L]], "1")
+  expect_identical(payload[[marker + 2L]], "x")
+  expect_identical(payload[[marker + 3L]], "1")
+  expect_identical(payload[[marker + 4L]], "group")
+  expect_identical(payload[[marker + 5L]], "2")
+  result_marker <- match("GGLM_RESULT_V1", payload)
+  expect_true(is.finite(result_marker))
+  expect_identical(payload[[result_marker + 1L]], "23")
+  expect_true(match("ANALYSIS_PROVENANCE_V2", payload) > result_marker)
+})
+
 test_that("native generalized linear model payload compacts high-cardinality factors", {
   set.seed(1)
   d <- data.frame(
@@ -878,10 +1749,13 @@ test_that("native generalized linear model payload compacts high-cardinality fac
   expect_gt(nrow(record$coefficient_rows), 200)
   compact <- LinkEDA:::.rls_native_compact_factor_coefficient_rows(record$coefficient_rows)
   expect_lt(nrow(compact), 60)
-  expect_true(any(grepl("more levels", compact$display_label, fixed = TRUE)))
+  expect_true(any(grepl("more categories", compact$display_label, fixed = TRUE)))
 
   payload <- LinkEDA:::.rls_native_generalized_state_payload(record)
-  expect_lt(sum(nchar(payload)), 10000)
+  # Provenance grows independently of the compacted statistical rows.
+  # Confirm that only the compact factor rows enter the result transport.
+  expect_true(any(grepl("more categories", payload, fixed = TRUE)))
+  expect_false(any(grepl("x = 250", payload, fixed = TRUE)))
 })
 
 test_that("native generalized linear model tasks report R fit errors", {
@@ -900,6 +1774,47 @@ test_that("native generalized linear model tasks report R fit errors", {
   )
 })
 
+test_that("generalized GLM native requests preserve the legacy prefix and parse model extensions", {
+  legacy <- paste(
+    c("GGLM_NEEDED", "g1", "cars", "cyl", "poisson", "log", "selected",
+      "1", "mpg", "1", "mpg", "numeric", "GENERALIZED", "", "", "2", "1", "60"),
+    collapse = "\t"
+  )
+  parsed_legacy <- LinkEDA:::.rls_parse_generalized_glm_needed(
+    strsplit(legacy, "\t", fixed = TRUE)[[1L]]
+  )
+  expect_identical(parsed_legacy$terms, "mpg")
+  expect_identical(parsed_legacy$term_types, list(mpg = "numeric"))
+  expect_identical(parsed_legacy$selected_rows, c(1L, 60L))
+  expect_identical(parsed_legacy$centered_predictors, character())
+  expect_identical(parsed_legacy$factor_reference_levels, list())
+  expect_identical(parsed_legacy$generation, 0L)
+
+  extended <- paste0(
+    legacy,
+    "\tMODEL_SPEC_V1\t1\tmpg\t1\tgear\t4\tGGLM_REQUEST_V1\t17"
+  )
+  parsed_extended <- LinkEDA:::.rls_parse_generalized_glm_needed(
+    strsplit(extended, "\t", fixed = TRUE)[[1L]]
+  )
+  expect_identical(parsed_extended$selected_rows, c(1L, 60L))
+  expect_identical(parsed_extended$centered_predictors, "mpg")
+  expect_identical(parsed_extended$factor_reference_levels, list(gear = "4"))
+  expect_identical(parsed_extended$generation, 17L)
+
+  bounded <- sub(
+    "GGLM_REQUEST_V1",
+    "BOUNDED_RESPONSE_V1\t0\t100\tGGLM_REQUEST_V1",
+    extended,
+    fixed = TRUE
+  )
+  parsed_bounded <- LinkEDA:::.rls_parse_generalized_glm_needed(
+    strsplit(bounded, "\t", fixed = TRUE)[[1L]]
+  )
+  expect_equal(parsed_bounded$response_bounds, c(0, 100))
+  expect_identical(parsed_bounded$generation, 17L)
+})
+
 test_that("Pearson correlation matrices compute pairwise/listwise cells and export", {
   d <- data.frame(
     x = c(1, 2, 3, 4, NA),
@@ -908,6 +1823,10 @@ test_that("Pearson correlation matrices compute pairwise/listwise cells and expo
     label = letters[1:5]
   )
   ls_register_dataset("corrdata", d)
+  cm_empty <- ls_new_correlation_matrix(data = "corrdata", native = FALSE)
+  empty_state <- ls_correlation_matrix_state(cm_empty)
+  expect_identical(empty_state$variables, character())
+  expect_equal(nrow(empty_state$results), 0L)
   cm <- ls_new_correlation_matrix(
     data = "corrdata",
     variables = c("x", "y", "z"),
@@ -980,6 +1899,11 @@ test_that("quick cluster builds a dendrogram object and supports variable update
   )
   ls_register_dataset("clusterdata", d)
 
+  den_empty <- ls_new_quick_cluster(data = "clusterdata", native = FALSE)
+  empty_state <- ls_dendrogram_state(den_empty)
+  expect_identical(empty_state$variables, character())
+  expect_null(empty_state$hclust)
+
   den <- ls_new_quick_cluster(
     data = "clusterdata",
     variables = c("x", "y", "z"),
@@ -1009,7 +1933,9 @@ test_that("quick cluster builds a dendrogram object and supports variable update
     ls_new_quick_cluster(data = "clusterdata", variables = c("x", "label"), native = FALSE),
     "must be numeric"
   )
-  expect_error(ls_dendrogram_remove_variable(den2, "z"), "at least one")
+  den2 <- ls_dendrogram_remove_variable(den2, "z")
+  expect_identical(ls_dendrogram_state(den2)$variables, character())
+  expect_null(ls_dendrogram_state(den2)$hclust)
 })
 
 test_that("regression comparison refits only affected model for term changes", {
@@ -1092,7 +2018,7 @@ test_that("comparison table export contains model columns and exact p row", {
   md <- tempfile(fileext = ".md")
   ls_export_regression_comparison_table(cmp, md, format = "md")
   expect_true(file.exists(md))
-  expect_match(paste(readLines(md), collapse = "\n"), "R\u00b2")
+  expect_match(paste(readLines(md, encoding = "UTF-8"), collapse = "\n"), "R\u00b2")
 })
 
 test_that("linked plot export creates non-empty academic graphics without native backend", {
@@ -1147,6 +2073,8 @@ test_that("linked plot export creates non-empty academic graphics without native
 })
 
 test_that("coordinated native themes use the existing plot-theme registry and R export path", {
+  expect_identical(LinkEDA:::.rls_plot_themes[[1L]], "publication")
+  expect_equal(LinkEDA:::.rls_plot_theme_colors("publication")$point, "#0072B2")
   expect_true(all(c("manet", "vista", "beige", "datadesk", "garish") %in% LinkEDA:::.rls_plot_themes))
   expect_equal(LinkEDA:::.rls_plot_theme_colors("manet")$background, "#FFFCA3")
   expect_equal(LinkEDA:::.rls_plot_theme_colors("manet")$accent, "#66FF00")
@@ -1191,4 +2119,11 @@ test_that("coordinated native themes use the existing plot-theme registry and R 
   expect_false(identical(exported_svg[["vista"]], exported_svg[["beige"]]))
   expect_false(identical(exported_svg[["vista"]], exported_svg[["datadesk"]]))
   expect_false(identical(exported_svg[["datadesk"]], exported_svg[["garish"]]))
+})
+
+test_that("API validation leaves no native backend attached to later tests", {
+  expect_silent(ls_close_all())
+  LinkEDA:::.rls_reset_backend_connection(clear_views = TRUE)
+  expect_false(LinkEDA:::.rls_state$process_started)
+  expect_null(LinkEDA:::.rls_state$backend_kind)
 })

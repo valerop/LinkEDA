@@ -21,6 +21,7 @@ using rlispstat::core::PlotCopyFailedStatus;
 using rlispstat::core::PlotCopyFailedTitle;
 using rlispstat::core::PlotColorForName;
 using rlispstat::core::PlotColorForNameOrHex;
+using rlispstat::core::PlotLightColorForNameOrHex;
 using rlispstat::core::PlotExportFailedStatus;
 using rlispstat::core::PlotExportFailedTitle;
 using rlispstat::core::PlotExportFileExtension;
@@ -118,7 +119,7 @@ int main()
 
     std::vector<std::string> themes = PlotThemeNames();
     assert(!themes.empty());
-    assert(themes.front() == "classic");
+    assert(themes.front() == "publication");
     assert(PlotThemeIsValid("cowplot"));
     assert(PlotThemeIsValid("economist"));
     assert(PlotThemeIsValid("manet"));
@@ -126,6 +127,19 @@ int main()
     assert(PlotThemeIsValid("beige"));
     assert(PlotThemeIsValid("datadesk"));
     assert(PlotThemeIsValid("garish"));
+    assert(PlotThemeIsValid("publication"));
+    assert(PlotThemeDisplayName("publication") == "Default");
+    const auto publication = PlotThemeStyleForName("publication");
+    assert(std::abs(publication.background.r - 1.0) < 0.001);
+    assert(std::abs(publication.panel.r - 1.0) < 0.001);
+    assert(!publication.showMinorGrid);
+    assert(publication.showPanelBorder);
+    assert(publication.showAxisTickMarks);
+    const auto blackAndWhite = PlotThemeStyleForName("bw");
+    assert(blackAndWhite.showMinorGrid);
+    assert(blackAndWhite.showPanelBorder);
+    assert(!blackAndWhite.showAxisTickMarks);
+    assert(publication.majorGrid.r > blackAndWhite.majorGrid.r);
     assert(!PlotThemeIsValid("unknown"));
     assert(PlotThemeDisplayName("theme_modern") == "Modern");
     assert(PlotThemeDisplayName("fivethirtyeight") == "FiveThirtyEight");
@@ -168,7 +182,7 @@ int main()
         "classic", "minimal", "bw", "gray", "cowplot", "ipsum", "theme_tq",
         "theme_modern", "tufte", "economist", "fivethirtyeight"
     };
-    assert(std::equal(historicalThemes.begin(), historicalThemes.end(), themes.begin()));
+    assert(std::equal(historicalThemes.begin(), historicalThemes.end(), themes.begin() + 1));
     for (const std::string &name : historicalThemes) {
         assert(!PlotThemeStyleForName(name).coordinatedMarks);
     }
@@ -229,7 +243,7 @@ int main()
     assert(FormatNameColumnHeader() == "Name");
     assert(FormatTypeColumnHeader() == "Type");
     assert(FormatDecimalsColumnHeader() == "Decimals");
-    assert(FormatRoleColumnHeader() == "Role");
+    assert(FormatRoleColumnHeader() == "Default role (Experimental)");
     assert(FormatDescriptionColumnHeader() == "Description");
     assert(FormatDefaultResetColorMenuItemTitle() == "Default / Reset color");
 
@@ -258,6 +272,18 @@ int main()
     assert(std::abs(gray.g - 0.45) < 0.001);
     assert(std::abs(gray.a - 0.4) < 0.001);
 
+    auto diagnosticRed = PlotColorForName("red", 0.7);
+    assert(diagnosticRed.r > 0.8);
+    assert(diagnosticRed.g < 0.1);
+    assert(diagnosticRed.b < 0.1);
+    assert(std::abs(diagnosticRed.a - 0.7) < 0.001);
+
+    auto namedBlack = PlotColorForName("BLACK", 0.6);
+    assert(std::abs(namedBlack.r) < 0.001);
+    assert(std::abs(namedBlack.g) < 0.001);
+    assert(std::abs(namedBlack.b) < 0.001);
+    assert(std::abs(namedBlack.a - 0.6) < 0.001);
+
     auto unknownColor = PlotColorForName("nonexistent");
     assert(std::abs(unknownColor.r - 0.070) < 0.001);
     assert(std::abs(unknownColor.g - 0.080) < 0.001);
@@ -268,6 +294,11 @@ int main()
     assert(std::abs(hexColor.g - 0.4) < 0.001);
     assert(std::abs(hexColor.b - 0.6) < 0.001);
     assert(std::abs(hexColor.a - 0.5) < 0.001);
+    auto lightHexColor = PlotLightColorForNameOrHex("#336699", 0.5);
+    assert(lightHexColor.r > hexColor.r);
+    assert(lightHexColor.g > hexColor.g);
+    assert(lightHexColor.b > hexColor.b);
+    assert(std::abs(lightHexColor.a - 0.5) < 0.001);
 
     auto whiteColor = PlotColorForNameOrHex("WHITE", 0.6);
     assert(std::abs(whiteColor.r - 1.0) < 0.001);

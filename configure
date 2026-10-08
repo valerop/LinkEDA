@@ -6,8 +6,12 @@ mkdir -p inst/bin
 case "$(uname -s)" in
   Darwin)
     : "${CXX:=clang++}"
-    $CXX -std=c++17 \
+    : "${MACOSX_DEPLOYMENT_TARGET:=14.0}"
+    export MACOSX_DEPLOYMENT_TARGET
+    rm -f inst/bin/LinkEDA
+    $CXX -std=c++17 -mmacosx-version-min="$MACOSX_DEPLOYMENT_TARGET" \
       src/core/backend_runtime.cpp \
+      src/core/analysis_initialization.cpp \
       src/core/binary_regression_export.cpp \
       src/core/analysis_scope.cpp \
       src/core/application_state.cpp \
@@ -17,9 +21,11 @@ case "$(uname -s)" in
       src/core/command_model.cpp \
       src/core/correlation_model.cpp \
       src/core/dataset_model.cpp \
+      src/core/linkeda_document.cpp \
       src/core/dataset_protocol.cpp \
       src/core/dendrogram_model.cpp \
       src/core/dimensionality_model.cpp \
+      src/core/scale_analysis_model.cpp \
       src/core/export_model.cpp \
       src/core/trellis_scatterplot_model.cpp \
       src/core/format_model.cpp \
@@ -32,6 +38,7 @@ case "$(uname -s)" in
       src/core/model_terms.cpp \
       src/core/plot_coordinator.cpp \
       src/core/plot_geometry.cpp \
+      src/core/provenance_model.cpp \
       src/core/recording_model.cpp \
       src/core/scatter_matrix_model.cpp \
       src/core/scatterplot_model.cpp \
@@ -47,7 +54,7 @@ case "$(uname -s)" in
       -x objective-c++ \
       src/platform/macos/macos_posix_io.cpp \
       src/platform/macos/binary_regression_pdf_macos.mm \
-      src/platform/macos/rlispstat_macos_app.mm \
+      src/platform/macos/linkeda_macos_app.mm \
       src/native/backend_macos.mm \
       -framework Cocoa \
       -framework ImageIO \
@@ -57,8 +64,10 @@ case "$(uname -s)" in
     ;;
   MINGW*|MSYS*|CYGWIN*)
     : "${CXX:=g++}"
+    rm -f inst/bin/rlispstat_backend.exe
     $CXX -std=c++17 \
       src/core/backend_runtime.cpp \
+      src/core/analysis_initialization.cpp \
       src/core/binary_regression_export.cpp \
       src/core/analysis_scope.cpp \
       src/core/application_state.cpp \
@@ -68,9 +77,11 @@ case "$(uname -s)" in
       src/core/command_model.cpp \
       src/core/correlation_model.cpp \
       src/core/dataset_model.cpp \
+      src/core/linkeda_document.cpp \
       src/core/dataset_protocol.cpp \
       src/core/dendrogram_model.cpp \
       src/core/dimensionality_model.cpp \
+      src/core/scale_analysis_model.cpp \
       src/core/export_model.cpp \
       src/core/trellis_scatterplot_model.cpp \
       src/core/format_model.cpp \
@@ -83,6 +94,7 @@ case "$(uname -s)" in
       src/core/model_terms.cpp \
       src/core/plot_coordinator.cpp \
       src/core/plot_geometry.cpp \
+      src/core/provenance_model.cpp \
       src/core/recording_model.cpp \
       src/core/scatter_matrix_model.cpp \
       src/core/scatterplot_model.cpp \

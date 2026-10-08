@@ -26,7 +26,9 @@ enum class ExportCapability {
     CopyTabDelimitedText,
     SaveCsv,
     SaveApaPdf,
-    SaveDisplayedPdf
+    SaveDisplayedPdf,
+    ShowRCode,
+    ShowRPublicationCode
 };
 
 enum class ExportSurfaceKind {
@@ -49,6 +51,8 @@ struct ExportMenuAction {
     std::string title;
     std::string command;
     bool separatorBefore = false;
+    std::string categoryIdentifier;
+    std::string categoryTitle;
 };
 
 struct ExportDimensions {
@@ -74,6 +78,10 @@ ExportCapabilities StandardTableExportCapabilities(ExportPlatform platform,
 std::vector<ExportMenuAction> BuildExportMenuActions(
     const ExportCapabilities &capabilities,
     ExportPlatform platform);
+// R Code is a nested, extensible export category. Callers supply availability
+// from the selected object's stored provenance/specification.
+std::vector<ExportMenuAction> BuildRCodeExportMenuActions(bool hasRCode,
+                                                          bool hasPublicationCode);
 std::vector<ExportAuditIssue> AuditExportSurfaceRegistry(
     const std::vector<ExportSurfaceRegistration> &surfaces,
     ExportPlatform platform);
@@ -81,6 +89,9 @@ std::vector<ExportSurfaceRegistration> DefaultExportSurfaceRegistry(
     ExportPlatform platform);
 std::string SafeExportBaseName(const std::string &value,
                                const std::string &fallback = "rlispstat-export");
+// Convert an RFC-style CSV report to tab-delimited display text without
+// splitting quoted labels or warnings at their internal commas.
+std::string CsvReportToTabDelimited(const std::string &csv);
 
 } // namespace core
 } // namespace rlispstat

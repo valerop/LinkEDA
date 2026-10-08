@@ -302,3 +302,49 @@
   })
   invisible(NULL)
 }
+
+#' Open a linear model trellis
+#'
+#' Fits the same linear-model specification independently in the panels formed
+#' by one or two categorical conditioning variables. Panel calculations are
+#' performed in R; Windows only presents the shared model-trellis state.
+#'
+#' @param group Registered dataset or dataset group name.
+#' @param response Numeric response variable.
+#' @param terms Optional model terms used in every panel.
+#' @param columns Categorical conditioning variable displayed in columns.
+#' @param rows Optional categorical conditioning variable displayed in rows.
+#' @param p_adjustment Multiplicity adjustment across panels.
+#' @return A native model-trellis handle.
+#' @export
+ls_new_model_trellis <- function(group = NULL, response, terms = character(),
+                                 columns, rows = NULL,
+                                 p_adjustment = c("holm", "bonferroni", "none")) {
+  record <- .rls_dataset_record(group)
+  response <- .rls_validate_protocol_name(response, "response")
+  columns <- .rls_validate_protocol_name(columns, "columns")
+  if (!is.null(rows)) rows <- .rls_validate_protocol_name(rows, "rows")
+  p_adjustment <- match.arg(p_adjustment)
+  required <- c(response, columns, rows %||% character())
+  missing <- setdiff(required, names(record$data))
+  if (length(missing)) stop(sprintf("Column `%s` was not found in the dataset.", missing[[1L]]), call. = FALSE)
+  if (!is.numeric(record$data[[response]])) stop("`response` must name a numeric variable.", call. = FALSE)
+  if (!is.null(rows) && identical(rows, columns)) stop("`rows` and `columns` must be different.", call. = FALSE)
+  terms <- as.character(terms %||% character())
+  if (anyNA(terms)) stop("`terms` must not contain missing values.", call. = FALSE)
+  terms <- unique(vapply(terms, function(term)
+    .rls_model_validate_term(record$data, term, response = response, what = "term"), character(1L)))
+  if (.Platform$OS.type == "windows") {
+    .rls_register_native_dataset_if_needed(record, sender = .rls_send_winui)
+  } else {
+    .rls_start_backend()
+    .rls_register_native_dataset_if_needed(record)
+  }
+  reply <- .rls_send(c("ANALYZE_LINEAR_MODEL_TRELLIS", record$group, response,
+    rows %||% "", columns, p_adjustment, as.character(length(terms)), terms))
+  id <- .rls_parse_records(reply)[[1L]]
+  structure(list(id = id, group = record$group, response = response,
+                 terms = terms, rows = rows, columns = columns,
+                 p_adjustment = p_adjustment),
+            class = "rlispstat_model_trellis")
+}

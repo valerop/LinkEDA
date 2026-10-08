@@ -3,10 +3,13 @@
 
 #include <cstddef>
 #include <limits>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "plot_geometry.h"
+#include "provenance_model.h"
 
 namespace rlispstat {
 namespace core {
@@ -30,21 +33,30 @@ struct DendrogramState {
     std::vector<int> caseRows;
     std::vector<DendrogramMergeModel> merges;
     std::vector<int> leafOrder;
+    bool verticalFlip = false;
+    bool rotate270 = false;
+    bool rotateCaseLabels90 = false;
+    std::string labelVariable;
+    bool labelVariableConfigured = false;
+    std::map<int, std::string> rowLabels;
+    std::string colorByVariable;
+    std::map<int, std::string> colorByRowColors;
+    std::vector<std::pair<std::string, std::string>> colorByLegendItems;
+    // Semantic legend level -> original case rows. Keep selection identity
+    // independent from palette colors, which may be reused by multiple levels.
+    std::map<std::string, std::vector<int>> colorByLegendRows;
+    bool colorByLegendVisible = true;
+    double colorByLegendX = 0.72;
+    double colorByLegendY = 0.10;
     int modelVersion = 0;
+    std::uint64_t requestRevision = 0;
+    std::uint64_t sourceDataVersion = 0;
+    int displayedImputation = 1;
+    bool rFitPending = false;
+    std::string status;
+    AnalysisProvenance provenance;
     PlotModel seed;
     bool hasSeed = false;
-};
-
-struct DendrogramFitInput {
-    std::vector<std::string> variables;
-    std::vector<std::vector<double>> columns;
-    std::string distance = "euclidean";
-    std::string linkage = "average";
-    std::string missingMode = "pairwise";
-    // Stable 1-based original row IDs. Empty means all rows unless
-    // restrictRows is true, in which case the explicit scope is empty.
-    std::vector<int> includedRows;
-    bool restrictRows = false;
 };
 
 struct DendrogramFitResult {
@@ -119,11 +131,21 @@ struct DendrogramLeafGeometry {
     Rect labelRect;
     std::string label;
     bool showLabel = false;
+    bool labelRotated90 = false;
 };
 
 struct DendrogramBranchSegment {
     Point start;
     Point end;
+    std::vector<int> rows;
+};
+
+struct DendrogramJoinGeometry {
+    int mergeIndex = -1;
+    Point point;
+    Point segmentStart;
+    Point segmentEnd;
+    std::vector<int> rows;
 };
 
 struct DendrogramPlotGeometry {
@@ -132,6 +154,7 @@ struct DendrogramPlotGeometry {
     double maxHeight = 1.0;
     std::vector<DendrogramLeafGeometry> leaves;
     std::vector<DendrogramBranchSegment> branches;
+    std::vector<DendrogramJoinGeometry> joins;
 };
 
 struct DendrogramSelectionGestureResult {
@@ -153,6 +176,8 @@ std::string DendrogramLinkageControlLabel();
 std::string DendrogramMissingDataControlLabel();
 std::string DendrogramDistanceControlLabel(const std::string &distance);
 std::string DendrogramAtLeastOneVariableStatus();
+std::string DendrogramAddVariablesStatus();
+std::string DendrogramEmptyPlotStatus(std::size_t variableCount);
 std::string DendrogramColorSelectedCasesTitle(const std::string &color);
 std::string DendrogramVariablesButtonTitle(std::size_t variableCount);
 std::string DendrogramNoNumericVariablesTitle();
@@ -167,6 +192,8 @@ std::string DendrogramAverageLinkageTitle();
 std::string DendrogramCompleteLinkageTitle();
 std::string DendrogramSingleLinkageTitle();
 DendrogramSize DendrogramPreferredContentSize(std::size_t caseCount);
+DendrogramSize DendrogramViewportContentSize(std::size_t caseCount, double width,
+                                            double height, bool fitTree, bool rotated);
 DendrogramWindowLayout BuildDendrogramWindowLayout(double dendrogramWidth,
                                                    double dendrogramHeight,
                                                    double visibleWidth,
@@ -182,17 +209,32 @@ DendrogramVariableUpdateResult DendrogramVariablesAfterToggle(
     std::size_t minimumVariables = 1);
 DendrogramContextMenuState BuildDendrogramContextMenuState(
     const std::string &selectedColor);
+std::vector<std::string> DendrogramVariableCaptionLines(const std::vector<std::string> &variables, double width);
 DendrogramPlotGeometry BuildDendrogramPlotGeometry(
     const std::vector<int> &caseRows,
     const std::vector<DendrogramMergeModel> &merges,
     const std::vector<int> &leafOrder,
     double boundsWidth,
-    double boundsHeight);
+    double boundsHeight,
+    bool verticalFlip = false,
+    const std::map<int, std::string> &rowLabels = {},
+    bool rotate270 = false,
+    bool rotateCaseLabels90 = false,
+    double variableHeaderHeight = 0.0);
 int DendrogramNearestLeafRowAtPoint(const DendrogramPlotGeometry &geometry,
                                     const Point &point,
                                     double maxDistance);
 std::vector<int> DendrogramLeafRowsInRect(const DendrogramPlotGeometry &geometry,
                                           const Rect &rect);
+std::vector<int> DendrogramJoinRowsAtPoint(const DendrogramPlotGeometry &geometry,
+                                           const Point &point,
+                                           double maxDistance = 9.0);
+bool DendrogramBranchIsFullySelected(const DendrogramBranchSegment &branch,
+                                     const std::set<int> &selectedRows);
+std::string DendrogramUniformBranchColor(
+    const DendrogramBranchSegment &branch,
+    const std::map<int, std::string> &manualRowColors,
+    const std::map<int, std::string> &groupedRowColors);
 DendrogramSelectionGestureResult DendrogramSelectionRowsForGesture(
     const DendrogramPlotGeometry &geometry,
     const Rect &brush,
@@ -200,7 +242,23 @@ DendrogramSelectionGestureResult DendrogramSelectionRowsForGesture(
     double minimumBrushSize = 3.0,
     double maxClickDistance = 9.0);
 
-DendrogramFitResult FitDendrogram(const DendrogramFitInput &input);
+bool SetDendrogramLabelVariable(DendrogramState &state,
+                                const DataFrameModel &dataframe,
+                                const std::string &variable,
+                                std::string *error = nullptr);
+bool SetDendrogramColorByVariable(DendrogramState &state,
+                                  const DataFrameModel &dataframe,
+                                  const std::string &variable,
+                                  std::string *error = nullptr);
+std::set<int> DendrogramColorLegendRows(const DendrogramState &state,
+                                        const std::string &level);
+bool DendrogramColorLegendMatchesLinkedRowColors(
+    const DendrogramState &state,
+    const std::map<int, std::string> &linkedRowColors);
+
+// Decode R's hclust tree; native code only validates topology and renders it.
+bool ReadDendrogramRTree(const std::vector<std::string> &payload, std::size_t &cursor,
+                        DendrogramFitResult &result, std::string &error);
 std::string DendrogramCopyWindowTitle();
 
 size_t DendrogramRowCountForVariables(PlotModel *model,
