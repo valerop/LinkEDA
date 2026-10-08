@@ -16,13 +16,16 @@ available for Apple Silicon Macs running macOS 14 or later.
 
 - A standalone installer with a private R 4.6 runtime.
 - A smaller installer that uses an existing Apple Silicon R 4.6 installation.
+- A precompiled R package for users who prefer to start LinkEDA from R or
+  RStudio.
 - Both editions include the R packages used by the application, exact LinkEDA
   source archives and third-party notices.
 - Native linked data sheets, plots, scopes, model windows, export and example
   data in a normal Applications-folder installation.
 
 The application is ad-hoc signed for internal integrity. The packages are not
-yet signed with an Apple Developer ID or notarised by Apple.
+yet signed with an Apple Developer ID or notarised by Apple. The download page
+explains the one-time approval through **System Settings > Privacy & Security**.
 
 [Download the macOS installers](getting-started.qmd#download){.button .button-primary}
 
