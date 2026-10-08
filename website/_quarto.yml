@@ -48,7 +48,13 @@ website:
   page-footer:
     left: "LinkEDA — experimental software"
     center: "Pedro Valero-Mora · Universitat de València"
-    right: "[Documentation licence](license.qmd)"
+    right: |
+      <span class="linkeda-footer-tools">
+        <a href="license.html">Documentation licence</a>
+        <span class="linkeda-visit-counter">
+          <img src="https://api.visitorbadge.io/api/visitors?path=https%3A%2F%2Fwww.uv.es%2Fvalerop%2FLinkEDA%2F&amp;label=VISITS&amp;labelColor=%2360717a&amp;countColor=%230e6673&amp;style=flat" alt="Total LinkEDA page views" referrerpolicy="no-referrer">
+        </span>
+      </span>
 
 format:
   html:

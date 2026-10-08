@@ -1,3 +1,7 @@
+# LinkEDA 0.0.121
+
+- Added a compact site-wide visit counter to every LinkEDA web page while retaining the documentation-licence link.
+
 # LinkEDA 0.0.120
 
 - Published the current macOS release with standalone, system-R and binary R-package downloads.

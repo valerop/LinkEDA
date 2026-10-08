@@ -1,6 +1,6 @@
 Package: LinkEDA
 Title: Native Interactive Statistical Graphics and Analyses
-Version: 0.0.120
+Version: 0.0.121
 Authors@R: person("Pedro", "Valero-Mora", role = c("aut", "cre"), email = "valerop@uv.es")
 Author: Pedro Valero-Mora [aut, cre]
 Maintainer: Pedro Valero-Mora <valerop@uv.es>

@@ -248,6 +248,9 @@ a:hover { color: var(--sea-dark); }
 
 .nav-footer { border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; margin-top: 5rem; }
 .nav-footer a { color: var(--sea); }
+.linkeda-footer-tools { align-items: center; display: inline-flex; flex-wrap: wrap; gap: .55rem; justify-content: flex-end; }
+.linkeda-visit-counter { align-items: center; display: inline-flex; min-height: 20px; }
+.linkeda-visit-counter img { display: block; height: 20px; width: auto; }
 
 @media (max-width: 991px) {
   .hero { gap: 2.5rem; grid-template-columns: 1fr; padding-top: 4.5rem; }
