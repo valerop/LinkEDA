@@ -21,7 +21,7 @@ project:
 website:
   title: "LinkEDA"
   description: "Experimental exploratory data analysis with native, interactive, linked graphics and R."
-  site-url: "https://valerop.github.io/LinkEDA/"
+  site-url: "https://www.uv.es/valerop/LinkEDA/"
   repo-url: "https://github.com/valerop/LinkEDA"
   open-graph: true
   favicon: assets/LinkEDA.png
