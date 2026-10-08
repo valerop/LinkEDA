@@ -10,6 +10,7 @@ project:
     - linked-eda.qmd
     - development.qmd
     - release-notes.qmd
+    - license.qmd
   resources:
     - assets/LinkEDA.png
     - assets/screenshots/**
@@ -47,6 +48,7 @@ website:
   page-footer:
     left: "LinkEDA — experimental software"
     center: "Pedro Valero-Mora · Universitat de València"
+    right: "[Documentation licence](license.qmd)"
 
 format:
   html:
