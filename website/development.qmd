@@ -23,7 +23,7 @@ The R call starts a separate native process. This prevents the application event
 
 ## Current status
 
-The current macOS build is LinkEDA `0.0.119`, validated on Apple Silicon with macOS 14 or later. It is distributed in a standalone edition with a private R 4.6 runtime and an edition that uses an installed Apple Silicon R 4.6. The current Windows release is `v0.0.113R`, containing LinkEDA `0.0.113` for Windows 11 x64. Some commands are more mature than others, optional analyses require additional R packages, and multiple-imputation coverage differs by analysis. The macOS packages are not Developer ID signed or notarised, and the Windows installers are not code signed.
+The current macOS build is LinkEDA `0.0.119`, validated on Apple Silicon with macOS 14 or later. It is distributed in a standalone edition with a private R 4.6 runtime, an application edition that uses an installed Apple Silicon R 4.6, and a binary package for current R users. The current Windows release is `v0.0.113R`, containing LinkEDA `0.0.113` for Windows 11 x64. Some commands are more mature than others, optional analyses require additional R packages, and multiple-imputation coverage differs by analysis. The two macOS application installers are not Developer ID signed or notarised, and the Windows installers are not code signed. The macOS R binary package is installed from R or RStudio and does not require the application-approval workflow.
 
 Interface names, result layouts, file compatibility and model options can change without a migration period. Keep original data and analysis scripts outside the application, and verify important results directly in R.
 

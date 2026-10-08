@@ -15,87 +15,72 @@ analyses from the exported R recipe.
 ## macOS {#download}
 
 The current macOS build is **LinkEDA 0.0.119** for **Apple Silicon** (M1 or
-newer) and **macOS 14 or later**. The two application installers place
-`LinkEDA.app` in the Applications folder. Installing one application edition
-replaces the other. If you already work in R or RStudio, you can instead
-install the smaller R binary package in your personal R library.
+newer) and **macOS 14 or later**. Choose the option that matches how you work:
+
+- **Already use R or RStudio:** the R binary package is usually the most
+  convenient option. It installs into your R library and does not require
+  Apple's application notarisation or the **Open Anyway** approval.
+- **Want a self-contained application:** choose the Standalone edition. It
+  includes its own R runtime.
+- **Want an application that uses your installed R:** choose the System R
+  edition. It requires Apple Silicon R 4.6.
+
+The two application editions install `LinkEDA.app` in the Applications folder.
+Installing one application edition replaces the other.
+
+### Standalone edition
 
 ::: {.download-card}
 <img src="assets/LinkEDA.png" alt="LinkEDA application icon.">
 <div>
-<p class="eyebrow">Recommended · macOS arm64 · about 298 MB</p>
-<h3>Standalone edition</h3>
+<p class="eyebrow">Self-contained application · macOS arm64 · about 298 MB</p>
 <p>Includes a private R 4.6 runtime and the packages used by LinkEDA. Choose
-this edition for the simplest setup; an existing R installation is not
-required.</p>
+this edition when you want a self-contained application; an existing R
+installation is not required.</p>
 <p><a class="button button-primary" href="https://github.com/valerop/LinkEDA/releases/download/v0.0.119-macOS/LinkEDA-0.0.119-macOS-arm64-Standalone.pkg">Download standalone installer</a></p>
 </div>
 :::
 
+#### Install the Standalone edition
+
+1. Close LinkEDA if an older version is running.
+2. Open `LinkEDA-0.0.119-macOS-arm64-Standalone.pkg` and complete the installer.
+3. Open **LinkEDA** from the Applications folder.
+4. If macOS says that it cannot verify the developer, close that message and
+   open **System Settings > Privacy & Security**.
+5. Under **Security**, find the message saying that LinkEDA or its installer
+   was blocked and choose **Open Anyway** (or **Abrir igualmente**).
+6. Authenticate with your password or Touch ID and choose **Open**. If the
+   installer was blocked, run it again after approval. If installation
+   succeeds but the application is blocked at first launch, repeat the same
+   approval for `LinkEDA.app`.
+
+This edition is not yet signed with an Apple Developer ID or notarised by
+Apple, which is why macOS may request the one-time approval. You do not need to
+disable Gatekeeper. Control-clicking the installer or application and choosing
+**Open** may also display the approval directly.
+
+### R binary package
+
 ::: {.download-card}
 <img src="assets/LinkEDA.png" alt="LinkEDA application icon.">
 <div>
-<p class="eyebrow">For R users · macOS arm64 · about 8 MB</p>
-<h3>R binary package</h3>
+<p class="eyebrow">Recommended for current R users · macOS arm64 · about 8 MB</p>
 <p>Installs LinkEDA in an existing Apple Silicon R 4.6 library. Use this
-edition when you prefer to start LinkEDA from R or RStudio instead of
-installing a separate application.</p>
+edition when you already work in R or RStudio. It is the smallest download and
+does not install a separate application or macOS installer.</p>
 <p><a class="button button-primary" href="https://github.com/valerop/LinkEDA/releases/download/v0.0.119-macOS/LinkEDA_0.0.119.tgz">Download R package</a></p>
 </div>
 :::
 
-::: {.download-card}
-<img src="assets/LinkEDA.png" alt="LinkEDA application icon.">
-<div>
-<p class="eyebrow">macOS arm64 · about 218 MB</p>
-<h3>System R edition</h3>
-<p>Uses an existing Apple Silicon installation of R 4.6. Choose this edition
-when you already use that R version and want LinkEDA to connect to it.</p>
-<p><a class="button button-primary" href="https://github.com/valerop/LinkEDA/releases/download/v0.0.119-macOS/LinkEDA-0.0.119-macOS-arm64-System-R.pkg">Download System R installer</a></p>
-</div>
-:::
+#### Install the R binary package
 
-The application and installer are not yet signed with an Apple Developer ID
-or notarised. macOS may therefore ask you to confirm that you trust the
-downloaded software. Use the files linked on this page and verify their
-checksums when you need to confirm file integrity.
+**No Apple notarisation or Gatekeeper approval is needed for this option.** It
+is installed and started from R or RStudio, so the **Privacy & Security > Open
+Anyway** steps used by the two application installers do not apply.
 
-### macOS checksums
-
-| File | SHA-256 |
-|---|---|
-| Standalone installer | `5ff6efff69815e24604123c8e33d3c9e45b6236e9bba5e4829c83b0f3f613390` |
-| System R installer | `64314541bd87d99a7062b39da445303dabf00a2fb826b20e68902965b8a3ca6c` |
-| R binary package | `dccf4c03b27fcefa81e28becc558b2ea029b8058c3b741059d662f3d7b5286bf` |
-
-### Install and start on macOS
-
-1. Close LinkEDA if an older version is running.
-2. Open the downloaded `.pkg` and complete the installer.
-3. Open **LinkEDA** from the Applications folder.
-4. If macOS says that it cannot verify the developer, close that message and
-   open **System Settings > Privacy & Security**.
-5. Scroll to **Security**, find the message saying that LinkEDA or its
-   installer was blocked, and choose **Open Anyway** (or **Abrir igualmente**).
-6. Authenticate with your password or Touch ID, then choose **Open** in the
-   final confirmation. macOS normally asks for this approval only once for a
-   downloaded build.
-
-If the installer itself is blocked, complete steps 4--6 immediately after
-trying to open the `.pkg`, then run it again. If the installer succeeds but
-the application is blocked at its first launch, repeat the same steps for
-`LinkEDA.app`. Control-clicking the file and choosing **Open** may also display
-the approval directly. You do not need to disable Gatekeeper.
-
-The standalone edition keeps its R runtime inside the application. The System
-R edition requires an Apple Silicon build of R 4.6; it reports that requirement
-at launch if a compatible R installation cannot be found.
-
-### Install the R package on macOS
-
-The R package is a precompiled macOS binary for Apple Silicon, R 4.6 and
-macOS 14 or later. In R or the RStudio Console, install its required R packages
-and then install LinkEDA directly from the release:
+The package requires Apple Silicon R 4.6 and macOS 14 or later. In R or the
+RStudio Console, install the required packages and then LinkEDA:
 
 ```r
 install.packages(c(
@@ -113,10 +98,50 @@ library(LinkEDA)
 LinkEDA()
 ```
 
-You can also download the `.tgz` first and select it in RStudio through
-**Tools > Install Packages > Install from: Package Archive File**. Install the
-required packages in the first command before selecting the archive. Features
-that use optional R packages report what else is needed when you open them.
+You can instead download the `.tgz` and select it in RStudio through **Tools >
+Install Packages > Install from: Package Archive File**. Install the required
+packages in the first command before selecting the archive. Features that use
+optional R packages report what else is needed when you open them.
+
+### System R edition
+
+::: {.download-card}
+<img src="assets/LinkEDA.png" alt="LinkEDA application icon.">
+<div>
+<p class="eyebrow">Application using installed R · macOS arm64 · about 218 MB</p>
+<p>Uses an existing Apple Silicon installation of R 4.6. Choose this edition
+when you already use that R version and want LinkEDA to connect to it.</p>
+<p><a class="button button-primary" href="https://github.com/valerop/LinkEDA/releases/download/v0.0.119-macOS/LinkEDA-0.0.119-macOS-arm64-System-R.pkg">Download System R installer</a></p>
+</div>
+:::
+
+#### Install the System R edition
+
+1. Confirm that Apple Silicon R 4.6 is installed, then close LinkEDA if an
+   older version is running.
+2. Open `LinkEDA-0.0.119-macOS-arm64-System-R.pkg` and complete the installer.
+3. Open **LinkEDA** from the Applications folder.
+4. If macOS says that it cannot verify the developer, close that message and
+   open **System Settings > Privacy & Security**.
+5. Under **Security**, find the message saying that LinkEDA or its installer
+   was blocked and choose **Open Anyway** (or **Abrir igualmente**).
+6. Authenticate with your password or Touch ID and choose **Open**. If the
+   installer was blocked, run it again after approval. If installation
+   succeeds but the application is blocked at first launch, repeat the same
+   approval for `LinkEDA.app`.
+
+This edition is not yet signed with an Apple Developer ID or notarised by
+Apple, which is why macOS may request the one-time approval. You do not need to
+disable Gatekeeper. The application reports the R requirement at launch if a
+compatible installation cannot be found.
+
+### macOS checksums
+
+| File | SHA-256 |
+|---|---|
+| Standalone installer | `5ff6efff69815e24604123c8e33d3c9e45b6236e9bba5e4829c83b0f3f613390` |
+| System R installer | `64314541bd87d99a7062b39da445303dabf00a2fb826b20e68902965b8a3ca6c` |
+| R binary package | `dccf4c03b27fcefa81e28becc558b2ea029b8058c3b741059d662f3d7b5286bf` |
 
 ## Windows {#windows}
 

@@ -23,9 +23,11 @@ available for Apple Silicon Macs running macOS 14 or later.
 - Native linked data sheets, plots, scopes, model windows, export and example
   data in a normal Applications-folder installation.
 
-The application is ad-hoc signed for internal integrity. The packages are not
-yet signed with an Apple Developer ID or notarised by Apple. The download page
-explains the one-time approval through **System Settings > Privacy & Security**.
+The application is ad-hoc signed for internal integrity. The two application
+installers are not yet signed with an Apple Developer ID or notarised by Apple.
+The download page explains their one-time approval through **System Settings >
+Privacy & Security**. The R binary package is installed from R or RStudio and
+does not require that approval.
 
 [Download the macOS installers](getting-started.qmd#download){.button .button-primary}
 
