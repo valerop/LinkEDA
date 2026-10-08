@@ -12,10 +12,10 @@ title-block: false
 
 # See a case once. Follow it everywhere.
 
-LinkEDA is a native desktop application for exploratory data analysis. Data sheets, interactive plots and statistical analyses remain connected while R performs the statistical computation. The current public release is available for 64 bit Windows.
+LinkEDA is a native desktop application for exploratory data analysis. Data sheets, interactive plots and statistical analyses remain connected while R performs the statistical computation. Experimental installers are available for Apple Silicon macOS and 64 bit Windows.
 
 ::: {.hero-actions}
-[Download v0.0.113R](getting-started.qmd#download){.button .button-primary}
+[Download LinkEDA](getting-started.qmd#download){.button .button-primary}
 [Explore the plots](plots.qmd){.button .button-quiet}
 :::
 
@@ -28,7 +28,7 @@ LinkEDA is a native desktop application for exploratory data analysis. Data shee
 :::::
 
 ::: {.experimental-banner}
-**Public experimental release.** Windows release `v0.0.113R` contains LinkEDA `0.0.113`. The interface, analyses, file formats and R integration may change in future versions. Keep copies of important data and verify consequential analyses from the exported R recipe.
+**Experimental releases.** The macOS build contains LinkEDA `0.0.119`; the Windows release `v0.0.113R` contains LinkEDA `0.0.113`. The interface, analyses, file formats and R integration may change in future versions. Keep copies of important data and verify consequential analyses from the exported R recipe.
 :::
 
 ::: {.section-intro}

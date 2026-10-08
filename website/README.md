@@ -46,8 +46,9 @@ the repository's `LICENSE-DOCUMENTATION.md` for scope and attribution.
 - Shared visual styling is in `assets/styles.css`.
 - The real application icon is `assets/LinkEDA.png`.
 - Verified native captures and the contextual-menu animation are under `assets/screenshots/`.
-- Download buttons point to immutable assets in the GitHub Release tagged
-  `v0.0.113R`; installers are not stored in the Git repository.
+- Download buttons point to immutable assets in the GitHub Releases tagged
+  `v0.0.119-macOS` and `v0.0.113R`; installers are not stored in the Git
+  repository.
 - The Quarto configuration uses the public repository and GitHub Pages URLs.
 
 ## GitHub Pages
